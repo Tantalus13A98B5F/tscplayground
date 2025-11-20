@@ -8,9 +8,11 @@
     // Environment Settings
     // See also https://aka.ms/tsconfig/module
     "module": "nodenext",
-    "types": ["jest", "node"],
-    "target": "es6",
-    "lib": ["es6"],
+    "target": "esnext",
+    // For nodejs:
+    "lib": ["esnext"],
+    "types": ["node", "jest"],
+    // and npm install -D @types/node
 
     // Other Outputs
     "sourceMap": true,
