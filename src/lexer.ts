@@ -5,7 +5,7 @@ export class Token
   readonly ln: number;
   readonly col: number;
 
-  constructor (cat: string, text: string, ln: number, col: number)
+  constructor(cat: string, text: string, ln: number, col: number)
   {
     this.cat = cat; this.text = text; this.ln = ln; this.col = col;
   }
@@ -61,17 +61,17 @@ function calcIndent()
 
 function tokenize()
 {
-  let toks: [string, string][] =
-  [
-    ["key", "let|fun|ref"],
-    ["num", "\\d+"],
-    ["id", "[_a-zA-Z]\\w*"],
-    ["delim", "[\\[\\]():]"],
-    ["op", "[-=]>|[-+*/=!]|:="],
-    ["white", "\\s+"],
-  ]
+  let toks: [string, RegExp][] =
+    [
+      ["key", /let\b|ref\b|type\b/],
+      ["num", /\d+\b/],
+      ["id", /[_a-zA-Z][_a-zA-Z0-9!?]*/],
+      ["op", /[-+*/!]|:?=/],
+      ["delim", /->|<:|[\[\](){}:;\\]/],
+      ["white", /\s+/],
+    ];
   let re = new RegExp(toks.map(([cat, pat]) =>
-    `(?<${cat}>${pat})`).join("|"), "y");
+    `(?<${cat}>${pat.source})`).join("|"), "y");
 
   return function* (data: Token)
   {
@@ -116,7 +116,7 @@ export class Tokenizer
     {
       for await (let ln of reader)
       {
-        yield* iterlines.proc(ln).flatMap(calcIndent_).flatMap(tokenize_);
+        yield* iterlines.proc(ln).flatMap(tokenize_);
       }
       return new Token("eof", "", iterlines.idx + 1, 0);
     })();
@@ -124,7 +124,8 @@ export class Tokenizer
 
   private peek: Token | undefined;
 
-  async peekToken(): Promise<Token> {
+  async peekToken(): Promise<Token>
+  {
     if (this.peek == null)
     {
       this.peek = (await this.stream.next()).value;
@@ -134,7 +135,7 @@ export class Tokenizer
 
   async getToken(): Promise<Token>
   {
-    let res: Token
+    let res: Token;
     if (this.peek == null)
     {
       res = (await this.stream.next()).value;
@@ -146,4 +147,22 @@ export class Tokenizer
     }
     return res;
   }
-}
+
+  async requireToken(cond: string | { cat: string; text?: string; }): Promise<Token>
+  {
+    let res = await this.getToken();
+    let msg = `Syntax Error (${res.ln}, ${res.col}): ${res.text} <${res.cat}>`;
+    if (typeof cond === "string" &&
+      !(res.text == cond && res.cat != "eof"))
+    {
+      throw new Error(`${msg}\nExpect ${cond}`);
+    }
+    else if (typeof cond === 'object' &&
+      !(cond.cat == res.cat && (cond.text == null || cond.text == res.text)))
+    {
+      throw new Error(`${msg}\nExpect ${cond.text ?? ""} <${cond.cat}>`);
+
+    }
+    return res;
+  }
+};

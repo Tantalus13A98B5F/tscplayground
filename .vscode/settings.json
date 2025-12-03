@@ -1,0 +1,9 @@
+{
+    "typescript.format.placeOpenBraceOnNewLineForControlBlocks": true,
+    "typescript.format.placeOpenBraceOnNewLineForFunctions": true,
+    "typescript.format.semicolons": "insert",
+    "[typescript]": {
+        "editor.formatOnSave": true
+    },
+    "typescript.preferences.quoteStyle": "double"
+}
