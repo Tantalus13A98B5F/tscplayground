@@ -1,20 +1,24 @@
 import { Tokenizer } from "./lexer";
 
 type TypeNode =
-  | { kind: "dummy"; };
+  | { kind: "prim"; name: string; }
+  | { kind: "tvar"; name: string; }
+  | { kind: "ref"; t: TypeNode; }
+  | { kind: "fun"; argname: string; t1: TypeNode; t2: TypeNode; }
+  | { kind: "tfun"; argname: string; t1: TypeNode; t2: TypeNode; };
 
 type Tree =
-  | { kind: "num", num: number; }
-  | { kind: "id", name: string; }
-  | { kind: "ref", arg: Tree; }
-  | { kind: "get", arg: Tree; }
-  | { kind: "put", dst: Tree, src: Tree; }
-  | { kind: "op", op: string, args: Tree[]; }
-  | { kind: "let", name: string, e1: Tree, e2: Tree; }
-  | { kind: "fun", arg: string, typ?: TypeNode, body: Tree; }
-  | { kind: "app", fun: Tree, arg: Tree; }
-  | { kind: "tfun", arg: string, typ?: TypeNode, body: Tree; }
-  | { kind: "tapp", fun: Tree, typ: TypeNode; };
+  | { kind: "num"; num: number; }
+  | { kind: "id"; name: string; }
+  | { kind: "ref"; arg: Tree; }
+  | { kind: "get"; arg: Tree; }
+  | { kind: "put"; dst: Tree; src: Tree; }
+  | { kind: "op"; op: string; args: Tree[]; }
+  | { kind: "let"; name: string; e1: Tree; e2: Tree; }
+  | { kind: "fun"; arg: string; typ?: TypeNode; body: Tree; }
+  | { kind: "app"; fun: Tree; arg: Tree; }
+  | { kind: "tfun"; arg: string; typ?: TypeNode; body: Tree; }
+  | { kind: "tapp"; fun: Tree; typ: TypeNode; };
 
 
 let binops = new Map([
@@ -26,7 +30,54 @@ export class Parser extends Tokenizer
 {
   async parseType(): Promise<TypeNode>
   {
-    return { kind: "dummy" };
+    let peek = await this.peekToken();
+    if (["Int", "Unit"].includes(peek.text))
+    {
+      await this.requireToken(peek);
+      return { kind: "prim", name: peek.text };
+    }
+
+    if (peek.text == "Ref")
+    {
+      await this.requireToken(peek);
+      await this.requireToken("[");
+      let typ = await this.parseType();
+      await this.requireToken("]");
+      return { kind: "ref", t: typ };
+    }
+
+    if (peek.cat == "id")
+    {
+      await this.requireToken(peek);
+      return { kind: "tvar", name: peek.text };
+    }
+
+    if (peek.text == "(")
+    {
+      await this.requireToken(peek);
+      let arg = await this.requireToken({ cat: "id" });
+      await this.requireToken(":");
+      let t1 = await this.parseType();
+      await this.requireToken(")");
+      await this.requireToken("->");
+      let t2 = await this.parseType();
+      return { kind: "fun", argname: arg.text, t1, t2 };
+    }
+
+    if (peek.text == "[")
+    {
+      await this.requireToken(peek);
+      let arg = await this.requireToken({ cat: "id" });
+      await this.requireToken("<:");
+      let t1 = await this.parseType();
+      await this.requireToken("]");
+      await this.requireToken("->");
+      let t2 = await this.parseType();
+      return { kind: "tfun", argname: arg.text, t1, t2 };
+    }
+
+    await this.requireToken({ cat: "type start", text: "id|([" });
+    throw new Error();  // to keep the typer happy
   }
 
   async parseExp(prec: number): Promise<Tree>
