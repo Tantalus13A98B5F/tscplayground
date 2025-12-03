@@ -69,6 +69,7 @@ function tokenize()
       ["op", /[-+*/!]|:?=/],
       ["delim", /->|<:|[\[\](){}:;\\]/],
       ["white", /\s+/],
+      ["comment", /#.*/],
     ];
   let re = new RegExp(toks.map(([cat, pat]) =>
     `(?<${cat}>${pat.source})`).join("|"), "y");
@@ -94,7 +95,7 @@ function tokenize()
         let kv = match.groups!;
         for (let [cat, text] of Object.entries(kv))
         {
-          if (text == null || cat == "white") continue;
+          if (text == null || ["white", "comment"].includes(cat)) continue;
           yield new Token(cat, text, data.ln, col);
         }
       }
