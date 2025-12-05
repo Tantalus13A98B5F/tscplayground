@@ -8,30 +8,54 @@ const arityMap = new Map([
   ["+", [1, 2]], ["-", [1, 2]], ["*", [2]], ["/", [2]]
 ]);
 
+function tySubst(tvar: string, t1: TypeNode)
+{
+  return function subst(t: TypeNode): TypeNode
+  {
+    if (t.kind === "tvar" && t.name === tvar)
+      return t1;
+
+    else if (t.kind === "ref")
+      return { ...t, t: subst(t.t) };
+
+    else if (t.kind === "fun")
+      return { ...t, t1: subst(t.t1), t2: subst(t.t2) };
+
+    else if (t.kind === "tfun")
+    {
+      if (t.arg === tvar)
+        return t;
+      else
+        return {
+          ...t,
+          t1: subst(t.t1),
+          t2: subst(t.t2)
+        };
+    }
+    else return t;
+  };
+}
+
 
 export class Typer
 {
   ctx: Map<string, CtxEntry> = new Map();
 
-  private get withEntry()
+  private withEntry<T>(k: string, v: CtxEntry, f: () => T): T
   {
-    let self = this;
-    return function* (k: string, v: CtxEntry): Generator<void>
+    let v0 = this.ctx.get(k);
+    this.ctx.set(k, v);
+    try
     {
-      let v0 = self.ctx.get(k);
-      self.ctx.set(k, v);
-      try
-      {
-        yield;
-      }
-      finally
-      {
-        if (v0)
-          self.ctx.set(k, v0);
-        else
-          self.ctx.delete(k);
-      }
-    };
+      return f();
+    }
+    finally
+    {
+      if (v0)
+        this.ctx.set(k, v0);
+      else
+        this.ctx.delete(k);
+    }
   }
 
   tinfer(t: Tree): TypeNode
@@ -89,18 +113,16 @@ export class Typer
     else if (t.kind == "let")
     {
       const e1Ty = this.tinfer(t.e1);
-      for (let _ of this.withEntry(t.name, { kind: "var", t: e1Ty }))
-        return this.tinfer(t.e2);
-      throw new Error("unreachable");
+      return this.withEntry(t.name, { kind: "var", t: e1Ty },
+        () => this.tinfer(t.e2));
     }
 
     else if (t.kind == "fun")
     {
       const argTy = t.typ!;
-      let bodyTy: TypeNode;
-      for (let _ of this.withEntry(t.arg, { kind: "var", t: argTy }))
-        bodyTy = this.tinfer(t.body);
-      return { kind: "fun", pos: t.pos, t1: argTy, t2: bodyTy! };
+      const bodyTy = this.withEntry(t.arg, { kind: "var", t: argTy },
+        () => this.tinfer(t.body));
+      return { kind: "fun", pos: t.pos, t1: argTy, t2: bodyTy };
     }
 
     else if (t.kind == "app")
@@ -115,18 +137,16 @@ export class Typer
 
     else if (t.kind == "tlet")
     {
-      for (let _ of this.withEntry(t.name, { kind: "tvar", t: t.e1 }))
-        return this.tinfer(t.e2);
-      throw new Error("unreachable");
+      return this.withEntry(t.name, { kind: "tvar", t: t.e1 },
+        () => this.tinfer(t.e2));
     }
 
     else if (t.kind == "tfun")
     {
       const typ = t.typ!;
-      let bodyTy: TypeNode;
-      for (let _ of this.withEntry(t.arg, { kind: "tvar", t: typ }))
-        bodyTy = this.tinfer(t.body);
-      return { kind: "tfun", pos: t.pos, arg: t.arg, t1: typ, t2: bodyTy! };
+      const bodyTy = this.withEntry(t.arg, { kind: "tvar", t: typ },
+        () => this.tinfer(t.body));
+      return { kind: "tfun", pos: t.pos, arg: t.arg, t1: typ, t2: bodyTy };
     }
 
     else //if (t.kind == "tapp")
@@ -135,7 +155,7 @@ export class Typer
       if (funTy.kind !== "tfun")
         throw new Error("Trying to type-apply non-type-function");
       this.subtype(t.typ, funTy.t1);
-      return funTy.t2;
+      return tySubst(funTy.arg, t.typ)(funTy.t2);
     }
   }
 
