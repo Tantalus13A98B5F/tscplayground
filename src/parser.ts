@@ -17,6 +17,7 @@ export type Tree =
   | { kind: "let"; pos: Pos; name: string; e1: Tree; e2: Tree; }
   | { kind: "fun"; pos: Pos; arg: string; typ?: TypeNode; body: Tree; }
   | { kind: "app"; pos: Pos; fun: Tree; arg: Tree; }
+  | { kind: "tlet"; pos: Pos; name: string; e1: TypeNode; e2: Tree; }
   | { kind: "tfun"; pos: Pos; arg: string; typ?: TypeNode; body: Tree; }
   | { kind: "tapp"; pos: Pos; fun: Tree; typ: TypeNode; };
 
@@ -31,7 +32,7 @@ export class Parser extends Tokenizer
   async parseType(): Promise<TypeNode>
   {
     let peek: Token | undefined;
-    if (peek = await this.tryGetToken(["Int", "Unit"]))
+    if (peek = await this.tryGetToken(["Int", "Unit", "Any"]))
       return { kind: "prim", pos: peek.pos, name: peek.text };
 
     else if (peek = await this.tryGetToken("Ref"))
@@ -90,14 +91,28 @@ export class Parser extends Tokenizer
         return { kind: "let", pos: peek.pos, name: id.text, e1, e2 };
       }
 
-      peek = await this.peekToken();
-      let e1 = await this.parseExp(1);
-      if (await this.parseLineSep(peek.pos))
+      else if (peek = await this.tryGetToken("type"))
       {
+        let id = await this.requireToken({ cat: "id" });
+        await this.requireToken("<:");
+        let e1 = await this.parseType();
+        if (!(await this.parseLineSep(peek.pos)))
+          await this.requireToken(";");
         let e2 = await this.parseExp(0);
-        return { kind: "let", pos: peek.pos, name: "", e1, e2 };
+        return { kind: "tlet", pos: peek.pos, name: id.text, e1, e2 };
       }
-      else return e1;
+
+      else
+      {
+        peek = await this.peekToken();
+        let e1 = await this.parseExp(1);
+        if (await this.parseLineSep(peek.pos))
+        {
+          let e2 = await this.parseExp(0);
+          return { kind: "let", pos: peek.pos, name: "", e1, e2 };
+        }
+        else return e1;
+      }
     }
 
     else if (prec <= 10 && (peek = await this.tryGetToken("\\")))
@@ -142,10 +157,7 @@ export class Parser extends Tokenizer
 
       let body = await this.parseExp(10);
       let arg = id ? id.text : "";
-      if (typ)
-        return { kind, pos: peek.pos, arg, body, typ };
-      else
-        return { kind, pos: peek.pos, arg, body };
+      return { kind, pos: peek.pos, arg, body, typ };
     }
 
     else if (prec <= 30 && (peek = await this.tryGetToken("ref")))
