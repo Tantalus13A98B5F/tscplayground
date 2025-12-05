@@ -1,15 +1,5 @@
-export class Token
-{
-  readonly cat: string;
-  readonly text: string;
-  readonly ln: number;
-  readonly col: number;
-
-  constructor(cat: string, text: string, ln: number, col: number)
-  {
-    this.cat = cat; this.text = text; this.ln = ln; this.col = col;
-  }
-}
+export type Pos = [number, number];
+export type Token = { cat: string; text: string; pos: Pos; };
 
 
 class IterLines
@@ -19,11 +9,11 @@ class IterLines
   get proc()
   {
     let self = this;
-    return function* (ln: string)
+    return function* (ln: string): Generator<Token>
     {
       self.idx++;
       if (ln.trim().length > 0)
-        yield new Token("", ln, self.idx, 0);
+        yield { cat: "", text: ln, pos: [self.idx, 0] };
     };
   }
 }
@@ -33,28 +23,28 @@ function calcIndent()
 {
   let hist = [0];
 
-  return function* (lineData: Token)
+  return function* (lineData: Token): Generator<Token>
   {
-    let { text: ln, ln: idx } = lineData;
+    let { text: ln, pos: [idx] } = lineData;
     let whites = ln.match(/ */)![0];
     if (whites.length > hist.at(-1)!)
     {
       hist.push(whites.length);
-      yield new Token("indent", whites, idx, 0);
+      yield { cat: "indent", text: whites, pos: [idx, 0] };
     }
     else
     {
       while (whites.length < hist.at(-1)!)
       {
         hist.pop();
-        yield new Token("dedent", whites, idx, 0);
+        yield { cat: "dedent", text: whites, pos: [idx, 0] };
       }
       if (whites.length > hist.at(-1)!)
       {
         throw new Error(`Fatal: unexpected indent\n${idx}|${ln}`);
       }
     }
-    yield new Token("", ln, idx, whites.length);
+    yield { cat: "", text: ln, pos: [idx, whites.length] };
   };
 }
 
@@ -63,7 +53,8 @@ function tokenize()
 {
   let toks: [string, RegExp][] =
     [
-      ["key", /let\b|ref\b|type\b/],
+      ["key", /let\b|ref\b/],
+      ["Prim", /Int\b|Unit\b|Ref\b/],
       ["num", /\d+\b/],
       ["id", /[_a-zA-Z][_a-zA-Z0-9!?]*/],
       ["op", /[-+*/!]|:?=/],
@@ -74,7 +65,7 @@ function tokenize()
   let re = new RegExp(toks.map(([cat, pat]) =>
     `(?<${cat}>${pat.source})`).join("|"), "y");
 
-  return function* (data: Token)
+  return function* (data: Token): Generator<Token>
   {
     if (data.cat.length > 0)
     {
@@ -82,7 +73,8 @@ function tokenize()
     }
     else
     {
-      re.lastIndex = data.col;
+      let [ln, col] = data.pos;
+      re.lastIndex = col;
       while (re.lastIndex < data.text.length)
       {
         let col = re.lastIndex;
@@ -90,17 +82,39 @@ function tokenize()
         if (match == null)
         {
           let text = data.text.substring(col);
-          throw new Error(`Fatal: unknown token\n${data.ln}|${text}`);
+          throw new Error(`Fatal: unknown token\n${ln}|${text}`);
         }
         let kv = match.groups!;
         for (let [cat, text] of Object.entries(kv))
         {
           if (text == null || ["white", "comment"].includes(cat)) continue;
-          yield new Token(cat, text, data.ln, col);
+          yield { cat, text, pos: [ln, col] };
         }
       }
     }
   };
+}
+
+
+type TokenSpec =
+  | string
+  | string[]
+  | { cat: string, text?: string; };
+
+function checkTokenSpec(tok: Token, spec: TokenSpec): boolean
+{
+  if (typeof spec === "string")
+    return tok.text === spec;
+  if (Array.isArray(spec))
+    return spec.includes(tok.text);
+  return tok.cat == spec.cat && tok.text == (spec.text ?? tok.text);
+}
+
+function formatTokenSpec(spec: TokenSpec): string
+{
+  if (typeof spec === "string" || Array.isArray(spec))
+    return `${spec}`;
+  return `${spec.text ?? ""} <${spec.cat}>`;
 }
 
 
@@ -111,7 +125,6 @@ export class Tokenizer
   constructor(reader: AsyncGenerator<string>)
   {
     let iterlines = new IterLines();
-    let calcIndent_ = calcIndent();
     let tokenize_ = tokenize();
     this.stream = (async function* ()
     {
@@ -119,7 +132,7 @@ export class Tokenizer
       {
         yield* iterlines.proc(ln).flatMap(tokenize_);
       }
-      return new Token("eof", "", iterlines.idx + 1, 0);
+      return { cat: "eof", text: "", pos: [iterlines.idx + 1, 0] };
     })();
   }
 
@@ -149,21 +162,22 @@ export class Tokenizer
     return res;
   }
 
-  async requireToken(cond: string | { cat: string; text?: string; }): Promise<Token>
+  async requireToken(cond: TokenSpec): Promise<Token>
   {
     let res = await this.getToken();
-    let msg = `Syntax Error (${res.ln}, ${res.col}): ${res.text} <${res.cat}>`;
-    if (typeof cond === "string" &&
-      !(res.text == cond && res.cat != "eof"))
+    if (!checkTokenSpec(res, cond))
     {
-      throw new Error(`${msg}\nExpect ${cond}`);
-    }
-    else if (typeof cond === 'object' &&
-      !(cond.cat == res.cat && (cond.text == null || cond.text == res.text)))
-    {
-      throw new Error(`${msg}\nExpect ${cond.text ?? ""} <${cond.cat}>`);
-
+      let msg = `Syntax Error ${res.pos}: ${res.text} <${res.cat}>`;
+      throw new Error(`${msg}\nExpect ${formatTokenSpec(cond)}`);
     }
     return res;
+  }
+
+  async tryGetToken(spec: TokenSpec): Promise<Token | undefined>
+  {
+    let tok = await this.peekToken();
+    if (checkTokenSpec(tok, spec))
+      return await this.requireToken(tok);
+    return undefined;
   }
 };

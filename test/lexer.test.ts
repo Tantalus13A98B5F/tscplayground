@@ -1,5 +1,5 @@
 import { readFile, readString } from "../src/reader";
-import { Tokenizer, Token } from "../src/lexer";
+import { Tokenizer } from "../src/lexer";
 
 
 async function linearTokens(stream: AsyncGenerator<string>)

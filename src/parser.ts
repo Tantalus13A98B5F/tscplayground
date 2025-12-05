@@ -1,24 +1,24 @@
-import { Tokenizer } from "./lexer";
+import { Tokenizer, Pos, Token } from "./lexer";
 
 type TypeNode =
-  | { kind: "prim"; name: string; }
-  | { kind: "tvar"; name: string; }
-  | { kind: "ref"; t: TypeNode; }
-  | { kind: "fun"; argname: string; t1: TypeNode; t2: TypeNode; }
-  | { kind: "tfun"; argname: string; t1: TypeNode; t2: TypeNode; };
+  | { kind: "prim"; pos: Pos; name: string; }
+  | { kind: "tvar"; pos: Pos; name: string; }
+  | { kind: "ref"; pos: Pos; t: TypeNode; }
+  | { kind: "fun"; pos: Pos; argname: string; t1: TypeNode; t2: TypeNode; }
+  | { kind: "tfun"; pos: Pos; argname: string; t1: TypeNode; t2: TypeNode; };
 
 type Tree =
-  | { kind: "num"; num: number; }
-  | { kind: "id"; name: string; }
-  | { kind: "ref"; arg: Tree; }
-  | { kind: "get"; arg: Tree; }
-  | { kind: "put"; dst: Tree; src: Tree; }
-  | { kind: "op"; op: string; args: Tree[]; }
-  | { kind: "let"; name: string; e1: Tree; e2: Tree; }
-  | { kind: "fun"; arg: string; typ?: TypeNode; body: Tree; }
-  | { kind: "app"; fun: Tree; arg: Tree; }
-  | { kind: "tfun"; arg: string; typ?: TypeNode; body: Tree; }
-  | { kind: "tapp"; fun: Tree; typ: TypeNode; };
+  | { kind: "num"; pos: Pos; num: number; }
+  | { kind: "id"; pos: Pos; name: string; }
+  | { kind: "ref"; pos: Pos; arg: Tree; }
+  | { kind: "get"; pos: Pos; arg: Tree; }
+  | { kind: "put"; pos: Pos; dst: Tree; src: Tree; }
+  | { kind: "op"; pos: Pos; op: string; args: Tree[]; }
+  | { kind: "let"; pos: Pos; name: string; e1: Tree; e2: Tree; }
+  | { kind: "fun"; pos: Pos; arg: string; typ?: TypeNode; body: Tree; }
+  | { kind: "app"; pos: Pos; fun: Tree; arg: Tree; }
+  | { kind: "tfun"; pos: Pos; arg: string; typ?: TypeNode; body: Tree; }
+  | { kind: "tapp"; pos: Pos; fun: Tree; typ: TypeNode; };
 
 
 let binops = new Map([
@@ -30,216 +30,219 @@ export class Parser extends Tokenizer
 {
   async parseType(): Promise<TypeNode>
   {
-    let peek = await this.peekToken();
-    if (["Int", "Unit"].includes(peek.text))
-    {
-      await this.requireToken(peek);
-      return { kind: "prim", name: peek.text };
-    }
+    let peek: Token | undefined;
+    if (peek = await this.tryGetToken(["Int", "Unit"]))
+      return { kind: "prim", pos: peek.pos, name: peek.text };
 
-    if (peek.text == "Ref")
+    else if (peek = await this.tryGetToken("Ref"))
     {
-      await this.requireToken(peek);
       await this.requireToken("[");
       let typ = await this.parseType();
       await this.requireToken("]");
-      return { kind: "ref", t: typ };
+      return { kind: "ref", pos: peek.pos, t: typ };
     }
 
-    if (peek.cat == "id")
-    {
-      await this.requireToken(peek);
-      return { kind: "tvar", name: peek.text };
-    }
+    else if (peek = await this.tryGetToken({ cat: "id" }))
+      return { kind: "tvar", pos: peek.pos, name: peek.text };
 
-    if (peek.text == "(")
+    else if (peek = await this.tryGetToken("("))
     {
-      await this.requireToken(peek);
       let arg = await this.requireToken({ cat: "id" });
       await this.requireToken(":");
       let t1 = await this.parseType();
       await this.requireToken(")");
       await this.requireToken("->");
       let t2 = await this.parseType();
-      return { kind: "fun", argname: arg.text, t1, t2 };
+      return { kind: "fun", pos: peek.pos, argname: arg.text, t1, t2 };
     }
 
-    if (peek.text == "[")
+    else if (peek = await this.tryGetToken("["))
     {
-      await this.requireToken(peek);
       let arg = await this.requireToken({ cat: "id" });
       await this.requireToken("<:");
       let t1 = await this.parseType();
       await this.requireToken("]");
       await this.requireToken("->");
       let t2 = await this.parseType();
-      return { kind: "tfun", argname: arg.text, t1, t2 };
+      return { kind: "tfun", pos: peek.pos, argname: arg.text, t1, t2 };
     }
 
-    await this.requireToken({ cat: "type start", text: "id|([" });
-    throw new Error();  // to keep the typer happy
+    else
+    {
+      await this.requireToken({ cat: "type start", text: "id|([" });
+      throw new Error();  // to keep the typer happy
+    }
   }
 
   async parseExp(prec: number): Promise<Tree>
   {
-    let peek = await this.peekToken();
+    let peek: Token | undefined;
     if (prec <= 0)
     {
-      if (peek.text == "let")
+      if (peek = await this.tryGetToken("let"))
       {
-        await this.requireToken(peek);
         let id = await this.requireToken({ cat: "id" });
         await this.requireToken("=");
         let e1 = await this.parseExp(1);
-        await this.requireToken(";");
+        if (!(await this.parseLineSep(peek.pos)))
+          await this.requireToken(";");
         let e2 = await this.parseExp(0);
-        return { kind: "let", name: id.text, e1, e2 };
+        return { kind: "let", pos: peek.pos, name: id.text, e1, e2 };
       }
 
-      let e1 = await this.parseExp(1);
       peek = await this.peekToken();
-      if (peek.text == ";")
+      let e1 = await this.parseExp(1);
+      if (await this.parseLineSep(peek.pos))
       {
-        await this.requireToken(peek);
         let e2 = await this.parseExp(0);
-        return { kind: "let", name: "", e1, e2 };
+        return { kind: "let", pos: peek.pos, name: "", e1, e2 };
       }
       else return e1;
     }
 
-    if (prec <= 10 && peek.text == "\\")
+    else if (prec <= 10 && (peek = await this.tryGetToken("\\")))
     {
-      await this.requireToken(peek);
-      let argd = await this.peekToken();
-      if (argd.text == "(")
+      let kind: "fun" | "tfun";
+      let id: Token | undefined;
+      let typ: TypeNode | undefined;
+      if (id = await this.tryGetToken({ cat: "id" }))
+        kind = "fun";
+
+      else if (await this.tryGetToken("("))
       {
-        await this.requireToken(argd);
-        let id = await this.requireToken({ cat: "id" });
-        let peek = await this.peekToken();
-        let typ: TypeNode | undefined;
-        if (peek.text == ":")
+        kind = "fun";
+        if (id = await this.tryGetToken(")"))
         {
-          await this.requireToken(peek);
-          typ = await this.parseType();
+          typ = { kind: "prim", pos: id.pos, name: "Unit" };
+          id = undefined;
         }
-        await this.requireToken(")");
-        let body = await this.parseExp(10);
-        let res: Tree = { kind: "fun", arg: id.text, body };
-        return typ ? { ...res, typ } : res;
+        else
+        {
+          id = await this.requireToken({ cat: "id" });
+          if (await this.tryGetToken(":"))
+            typ = await this.parseType();
+          await this.requireToken(")");
+        }
       }
 
-      if (argd.text == "[")
+      else if (await this.tryGetToken("["))
       {
-        await this.requireToken(argd);
-        let id = await this.requireToken({ cat: "id" });
-        let peek = await this.peekToken();
-        let typ: TypeNode | undefined;
-        if (peek.text == "<:")
-        {
-          await this.requireToken(peek);
+        kind = "tfun";
+        id = await this.requireToken({ cat: "id" });
+        if (await this.tryGetToken("<:"))
           typ = await this.parseType();
-        }
         await this.requireToken("]");
-        let body = await this.parseExp(10);
-        let res: Tree = { kind: "tfun", arg: id.text, body };
-        return typ ? { ...res, typ } : res;
       }
 
-      await this.requireToken({ cat: "delim", text: "([" });
-      throw new Error();  // only to keep the typer happy
+      else
+      {
+        await this.requireToken({ cat: "delim", text: "([" });
+        throw new Error();  // only to keep the typer happy
+      }
+
+      let body = await this.parseExp(10);
+      let arg = id ? id.text : "";
+      if (typ)
+        return { kind, pos: peek.pos, arg, body, typ };
+      else
+        return { kind, pos: peek.pos, arg, body };
     }
 
-    if (prec <= 30 && peek.text == "ref")
+    else if (prec <= 30 && (peek = await this.tryGetToken("ref")))
     {
-      await this.requireToken(peek);
       let arg = await this.parseExp(31);
-      return { kind: "ref", arg };
+      return { kind: "ref", pos: peek.pos, arg };
     }
 
-    let res = await this.parseUAtom();
-    peek = await this.peekToken();
-    if (prec <= 20 && peek.text == ":=")
+    else
     {
-      await this.requireToken(peek);
-      let src = await this.parseExp(21);
-      return { kind: "put", dst: res, src };
-    }
+      let res = await this.parseUAtom();
+      if (prec <= 20 && (peek = await this.tryGetToken(":=")))
+      {
+        let src = await this.parseExp(21);
+        return { kind: "put", pos: peek.pos, dst: res, src };
+      }
 
-    for (; binops.has(peek.text); peek = await this.peekToken())
-    {
-      let opprec = binops.get(peek.text)!;
-      if (prec > opprec) break;
-      await this.requireToken(peek);
-      let rhs = await this.parseExp(opprec + 1);
-      res = { kind: "op", op: peek.text, args: [res, rhs] };
+      let ops = binops.entries().filter(([_, p]) => prec <= p).map(([s]) => s).toArray();
+      while (peek = await this.tryGetToken(ops))
+      {
+        let opprec = binops.get(peek.text)!;
+        let rhs = await this.parseExp(opprec + 1);
+        res = { kind: "op", pos: peek.pos, op: peek.text, args: [res, rhs] };
+      }
+      return res;
     }
-    return res;
   }
 
   async parseUAtom(): Promise<Tree>
   {
-    let peek = await this.peekToken();
-    if ("+-!".includes(peek.text))
+    let peek: Token | undefined;
+    if (peek = await this.tryGetToken(["+", "-", "!"]))
     {
-      await this.requireToken(peek);
       let arg = await this.parseUAtom();
       if (peek.text == "!")
-        return { kind: "get", arg };
+        return { kind: "get", pos: peek.pos, arg };
       else
-        return { kind: "op", op: peek.text, args: [arg] };
+        return { kind: "op", pos: peek.pos, op: peek.text, args: [arg] };
     }
 
-    if (peek.cat == "num")
+    else if (peek = await this.tryGetToken({ cat: "num" }))
+      return { kind: "num", pos: peek.pos, num: parseInt(peek.text) };
+
+    else
     {
-      await this.requireToken(peek);
-      return { kind: "num", num: parseInt(peek.text) };
+      let res: Tree | undefined;
+      while (true)
+      {
+        if (res === undefined && (peek = await this.tryGetToken({ cat: "id" })))
+          res = { kind: "id", pos: peek.pos, name: peek.text };
+
+        else if (peek = await this.tryGetToken("("))
+        {
+          let arg = await this.parseExp(1);
+          await this.requireToken(")");
+          res = res ? { kind: "app", pos: peek.pos, fun: res, arg } : arg;
+        }
+
+        else if (peek = await this.tryGetToken("{"))
+        {
+          let arg = await this.parseExp(0);
+          await this.requireToken("}");
+          res = res ? { kind: "app", pos: peek.pos, fun: res, arg } : arg;
+        }
+
+        else if (res !== undefined && (peek = await this.tryGetToken("[")))
+        {
+          let typ = await this.parseType();
+          await this.requireToken("]");
+          res = { kind: "tapp", pos: peek.pos, fun: res, typ };
+        }
+
+        else if (res === undefined)
+          await this.requireToken({ cat: "uatom start", text: "+-!id({" });
+
+        else break;
+      }
+
+      return res;
     }
-
-    let res: Tree | undefined;
-    while (true)
-    {
-      peek = await this.peekToken();
-      if (res === undefined && peek.cat == "id")
-      {
-        await this.requireToken(peek);
-        res = { kind: "id", name: peek.text };
-      }
-
-      else if (peek.text == "(")
-      {
-        await this.requireToken(peek);
-        let arg = await this.parseExp(1);
-        await this.requireToken(")");
-        res = res ? { kind: "app", fun: res, arg } : arg;
-      }
-
-      else if (peek.text == "{")
-      {
-        await this.requireToken(peek);
-        let arg = await this.parseExp(0);
-        await this.requireToken("}");
-        res = res ? { kind: "app", fun: res, arg } : arg;
-      }
-
-      else if (res !== undefined && peek.text == "[")
-      {
-        await this.requireToken(peek);
-        let typ = await this.parseType();
-        await this.requireToken("]");
-        res = { kind: "tapp", fun: res, typ };
-      }
-
-      else if (res === undefined)
-        await this.requireToken({ cat: "uatom start", text: "+-!id({" });
-
-      else break;
-    }
-
-    return res;
   }
 
   parse()
   {
     return this.parseExp(0);
+  }
+
+  async parseLineSep(pos: Pos): Promise<boolean>
+  {
+    let peek = await this.peekToken();
+    if (peek.text == ";")
+    {
+      await this.getToken();
+      return true;
+    }
+    if (peek.pos[0] > pos[0] && peek.text != "}" && peek.cat != "eof")
+      return true;
+    return false;
   }
 }

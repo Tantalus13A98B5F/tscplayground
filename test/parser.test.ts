@@ -11,7 +11,7 @@ test("first parser", async () =>
 test("refs", async () =>
 {
     let parser = new Parser(readString(`
-let a = ref 1 + 2*3;
+let a = ref 1 + 2*3
 a := -1 + !a`));
     console.log(await parser.parse());
 });
@@ -19,7 +19,7 @@ a := -1 + !a`));
 test("fun", async () =>
 {
     let parser = new Parser(readString(`
-let f = \\(x) x := !x + 1;
+let f = \\(x) { x := !x + 1 }
 f(ref 1 + 2 * 3)`));
     console.log(await parser.parse());
 });
