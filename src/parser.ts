@@ -4,8 +4,8 @@ export type TypeNode =
   | { kind: "prim"; pos: Pos; name: string; }
   | { kind: "tvar"; pos: Pos; name: string; }
   | { kind: "ref"; pos: Pos; t: TypeNode; }
-  | { kind: "fun"; pos: Pos; argname: string; t1: TypeNode; t2: TypeNode; }
-  | { kind: "tfun"; pos: Pos; argname: string; t1: TypeNode; t2: TypeNode; };
+  | { kind: "fun"; pos: Pos; t1: TypeNode; t2: TypeNode; }
+  | { kind: "tfun"; pos: Pos; arg: string; t1: TypeNode; t2: TypeNode; };
 
 export type Tree =
   | { kind: "num"; pos: Pos; num: number; }
@@ -22,7 +22,7 @@ export type Tree =
   | { kind: "tapp"; pos: Pos; fun: Tree; typ: TypeNode; };
 
 
-let binops = new Map([
+const binops = new Map([
   ["+", 40], ["-", 40], ["*", 50], ["/", 50]
 ]);
 
@@ -48,13 +48,11 @@ export class Parser extends Tokenizer
 
     else if (peek = await this.tryGetToken("("))
     {
-      let arg = await this.requireToken({ cat: "id" });
-      await this.requireToken(":");
       let t1 = await this.parseType();
       await this.requireToken(")");
       await this.requireToken("->");
       let t2 = await this.parseType();
-      return { kind: "fun", pos: peek.pos, argname: arg.text, t1, t2 };
+      return { kind: "fun", pos: peek.pos, t1, t2 };
     }
 
     else if (peek = await this.tryGetToken("["))
@@ -65,7 +63,7 @@ export class Parser extends Tokenizer
       await this.requireToken("]");
       await this.requireToken("->");
       let t2 = await this.parseType();
-      return { kind: "tfun", pos: peek.pos, argname: arg.text, t1, t2 };
+      return { kind: "tfun", pos: peek.pos, arg: arg.text, t1, t2 };
     }
 
     else

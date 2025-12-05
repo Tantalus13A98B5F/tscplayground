@@ -14,11 +14,11 @@ function inspectType(t: TypeNode): Inspected
   else if (t.kind == "ref")
     return ["Ref", inspectType(t.t)];
   else if (t.kind == "fun")
-    return ["(", t.argname, inspectType(t.t1), ")->", inspectType(t.t2)];
+    return ["(", inspectType(t.t1), ")->", inspectType(t.t2)];
   else if (t.kind == "tvar")
     return t.name;
   else //if (t.kind == "tfun")
-    return ["[", t.argname, inspectType(t.t1), "]->", inspectType(t.t2)];
+    return ["[", t.arg, "<:", inspectType(t.t1), "]->", inspectType(t.t2)];
 }
 
 function inspectTree(t: Tree): Inspected
