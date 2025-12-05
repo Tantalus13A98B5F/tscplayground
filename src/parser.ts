@@ -1,13 +1,13 @@
 import { Tokenizer, Pos, Token } from "./lexer";
 
-type TypeNode =
+export type TypeNode =
   | { kind: "prim"; pos: Pos; name: string; }
   | { kind: "tvar"; pos: Pos; name: string; }
   | { kind: "ref"; pos: Pos; t: TypeNode; }
   | { kind: "fun"; pos: Pos; argname: string; t1: TypeNode; t2: TypeNode; }
   | { kind: "tfun"; pos: Pos; argname: string; t1: TypeNode; t2: TypeNode; };
 
-type Tree =
+export type Tree =
   | { kind: "num"; pos: Pos; num: number; }
   | { kind: "id"; pos: Pos; name: string; }
   | { kind: "ref"; pos: Pos; arg: Tree; }
