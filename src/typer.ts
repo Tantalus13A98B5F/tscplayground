@@ -114,10 +114,9 @@ export class Typer
     else if (t.kind == "app")
     {
       const funTy = this.tinfer(t.fun);
-      const argTy = this.tinfer(t.arg);
       if (funTy.kind !== "fun")
         throw new Error("Trying to apply non-function");
-      this.subtype(argTy, funTy.t1);
+      this.tcheck(t.arg, funTy.t1);
       return funTy.t2;
     }
 
@@ -126,7 +125,7 @@ export class Typer
       const ren = this.ctxPush(t.name, { kind: "tvar", t: t.e1 });
       const e2Ty = this.tinfer(ren.treeRename(t.e2));
       this.ctxPop(t.name);
-      return e2Ty;
+      return tySubst(ren.dst, t.e1)(e2Ty);
     }
 
     else if (t.kind == "tfun")
