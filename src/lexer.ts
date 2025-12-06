@@ -1,4 +1,5 @@
-export type Pos = [number, number];
+import { Pos } from "./defs";
+
 export type Token = { cat: string; text: string; pos: Pos; };
 
 
@@ -177,7 +178,7 @@ export class Tokenizer
   {
     let tok = await this.peekToken();
     if (checkTokenSpec(tok, spec))
-      return await this.requireToken(tok);
+      return await this.getToken();
     return undefined;
   }
 };

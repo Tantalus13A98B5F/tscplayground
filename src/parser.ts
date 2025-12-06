@@ -1,25 +1,5 @@
-import { Tokenizer, Pos, Token } from "./lexer";
-
-export type TypeNode =
-  | { kind: "prim"; pos: Pos; name: string; }
-  | { kind: "tvar"; pos: Pos; name: string; }
-  | { kind: "ref"; pos: Pos; t: TypeNode; }
-  | { kind: "fun"; pos: Pos; t1: TypeNode; t2: TypeNode; }
-  | { kind: "tfun"; pos: Pos; arg: string; t1: TypeNode; t2: TypeNode; };
-
-export type Tree =
-  | { kind: "num"; pos: Pos; num: number; }
-  | { kind: "id"; pos: Pos; name: string; }
-  | { kind: "ref"; pos: Pos; arg: Tree; }
-  | { kind: "get"; pos: Pos; arg: Tree; }
-  | { kind: "put"; pos: Pos; dst: Tree; src: Tree; }
-  | { kind: "op"; pos: Pos; op: string; args: Tree[]; }
-  | { kind: "let"; pos: Pos; name: string; e1: Tree; e2: Tree; }
-  | { kind: "fun"; pos: Pos; arg: string; typ?: TypeNode; body: Tree; }
-  | { kind: "app"; pos: Pos; fun: Tree; arg: Tree; }
-  | { kind: "tlet"; pos: Pos; name: string; e1: TypeNode; e2: Tree; }
-  | { kind: "tfun"; pos: Pos; arg: string; typ?: TypeNode; body: Tree; }
-  | { kind: "tapp"; pos: Pos; fun: Tree; typ: TypeNode; };
+import { Pos, Tree, TypeNode } from "./defs";
+import { Tokenizer, Token } from "./lexer";
 
 
 const binops = new Map([
@@ -243,7 +223,7 @@ export class Parser extends Tokenizer
     return this.parseExp(0);
   }
 
-  async parseLineSep(pos: Pos): Promise<boolean>
+  private async parseLineSep(pos: Pos): Promise<boolean>
   {
     let peek = await this.peekToken();
     if (peek.text == ";")
