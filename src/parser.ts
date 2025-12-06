@@ -51,11 +51,7 @@ export class Parser extends Tokenizer
       return { kind: "all", pos: peek.pos, arg: arg.text, t1, t2 };
     }
 
-    else
-    {
-      await this.requireToken({ cat: "type start", text: "id|([" });
-      throw new Error();  // to keep the typer happy
-    }
+    else return await this.unexpectedToken({ cat: "type start" });
   }
 
   async parseExp(prec: number): Promise<Tree>
@@ -134,11 +130,7 @@ export class Parser extends Tokenizer
         await this.requireToken("]");
       }
 
-      else
-      {
-        await this.requireToken({ cat: "delim", text: "([" });
-        throw new Error();  // only to keep the typer happy
-      }
+      else return await this.unexpectedToken({ cat: "fun arg" });
 
       let body = await this.parseExp(10);
       let arg = id ? id.text : "";
@@ -222,7 +214,7 @@ export class Parser extends Tokenizer
         }
 
         else if (res === undefined)
-          await this.requireToken({ cat: "uatom start", text: "+-!id({" });
+          return await this.unexpectedToken({ cat: "uatom start" });
 
         else break;
       }

@@ -33,3 +33,26 @@ double(\\(x) !y := 1 + !!y)
   let typer = new Typer();
   typer.tinfer(tree);
 });
+
+test("type and var", async () =>
+{
+  let src = readString(`
+type x <: Ref[Int]
+!x
+`);
+  let parser = new Parser(src);
+  let tree = await parser.parse();
+  let typer = new Typer();
+  expect(() => typer.tinfer(tree)).toThrow();
+});
+
+test("expose", async () =>
+{
+  let src = readString(`
+1 := 1
+`);
+  let parser = new Parser(src);
+  let tree = await parser.parse();
+  let typer = new Typer();
+  expect(() => typer.tinfer(tree)).toThrow();
+});

@@ -1,13 +1,8 @@
-import { TypeNode, Tree, tySubst, mkRenamer } from "./defs";
+import { TypeNode, Tree, tySubst, mkRenamer, typeError, Pos } from "./defs";
 
 type CtxEntry =
   | { kind: 'var'; t: TypeNode; }
   | { kind: 'tvar'; t: TypeNode; };
-
-const arityMap = new Map([
-  ["+", [1, 2]], ["-", [1, 2]], ["*", [2]], ["/", [2]]
-]);
-
 
 
 export class Typer
@@ -41,6 +36,27 @@ export class Typer
     if (!kn.length) this.reps.delete(k);
   }
 
+  private ctxGet<K extends CtxEntry["kind"]>(name: string, pos: Pos, k: K)
+  {
+    let entry = this.ctx.get(name);
+    if (!entry || entry.kind != k)
+      throw typeError(pos, `unbound ${k} ${name}`);
+    return entry as Extract<CtxEntry, { kind: K; }>;
+  }
+
+  private texpose<K extends TypeNode["kind"]>(t: Tree, k: K)
+  {
+    let ty = this.tinfer(t);
+    while (ty.kind == "tvar")
+    {
+      let tmp = this.ctxGet(ty.name, ty.pos, "tvar");
+      ty = tmp.t;
+    }
+    if (ty.kind != k)
+      throw typeError(t.pos, `expect ${k}, got ${ty.kind}`);
+    return ty as Extract<TypeNode, { kind: K; }>;
+  }
+
   tinfer(t: Tree): TypeNode
   {
     if (t.kind == "num")
@@ -51,9 +67,7 @@ export class Typer
 
     else if (t.kind == "id")
     {
-      const entry = this.ctx.get(t.name);
-      if (!entry || entry.kind != "var")
-        throw new Error(`Unbound variable: ${t.name}`);
+      const entry = this.ctxGet(t.name, t.pos, "var");
       return entry.t;
     }
 
@@ -65,29 +79,21 @@ export class Typer
 
     else if (t.kind == "get")
     {
-      const argTy = this.tinfer(t.arg);
-      if (argTy.kind !== "ref")
-        throw new Error("Cannot dereference non-ref type");
+      const argTy = this.texpose(t.arg, "ref");
       return argTy.t;
     }
 
     else if (t.kind == "put")
     {
       const srcTy = this.tinfer(t.src);
-      let dstTy = this.tinfer(t.dst);
-      if (dstTy.kind !== "ref")
-        throw new Error("Put destination must be a ref");
-      dstTy = dstTy.t;
-      this.subtype(srcTy, dstTy);
-      this.subtype(dstTy, srcTy);
+      let dstTy = this.texpose(t.dst, "ref");
+      this.subtype(srcTy, dstTy.t);
+      this.subtype(dstTy.t, srcTy);
       return { kind: "prim", pos: t.pos, name: "Unit" };
     }
 
     else if (t.kind == "op")
     {
-      if (!arityMap.get(t.op)!.includes(t.args.length))
-        throw new Error("Wrong arity");
-
       for (const arg of t.args)
         this.tcheck(arg, { kind: "prim", name: "Int", pos: arg.pos });
 
@@ -105,18 +111,16 @@ export class Typer
 
     else if (t.kind == "fun")
     {
-      const argTy = t.typ!;
-      const ren = this.ctxPush(t.arg, { kind: "var", t: argTy });
+      if (!t.typ) throw typeError(t.pos, "cannot infer without argument");
+      const ren = this.ctxPush(t.arg, { kind: "var", t: t.typ });
       const bodyTy = this.tinfer(ren.treeRename(t.body));
       this.ctxPop(t.arg);
-      return { kind: "fun", pos: t.pos, t1: argTy, t2: bodyTy };
+      return { kind: "fun", pos: t.pos, t1: t.typ, t2: bodyTy };
     }
 
     else if (t.kind == "app")
     {
-      const funTy = this.tinfer(t.fun);
-      if (funTy.kind !== "fun")
-        throw new Error("Trying to apply non-function");
+      const funTy = this.texpose(t.fun, "fun");
       this.tcheck(t.arg, funTy.t1);
       return funTy.t2;
     }
@@ -131,39 +135,46 @@ export class Typer
 
     else if (t.kind == "tfun")
     {
-      const typ = t.typ!;
-      const ren = this.ctxPush(t.arg, { kind: "tvar", t: typ });
+      if (!t.typ) throw typeError(t.pos, "cannot infer without argument");
+      const ren = this.ctxPush(t.arg, { kind: "tvar", t: t.typ });
       const bodyTy = this.tinfer(ren.treeRename(t.body));
       this.ctxPop(t.arg);
-      return { kind: "all", pos: t.pos, arg: t.arg, t1: typ, t2: bodyTy };
+      return { kind: "all", pos: t.pos, arg: t.arg, t1: t.typ, t2: bodyTy };
     }
 
-    else //if (t.kind == "tapp")
+    else if (t.kind == "tapp")
     {
-      const funTy = this.tinfer(t.fun);
-      if (funTy.kind !== "all")
-        throw new Error("Trying to type-apply non-type-function");
+      const funTy = this.texpose(t.fun, "all");
       this.subtype(t.typ, funTy.t1);
       return tySubst(funTy.arg, t.typ)(funTy.t2);
     }
+
+    else return t;  // never
   }
 
   subtype(t1: TypeNode, t2: TypeNode): void
   {
     if (t2.kind == "any") return;
 
-    else if (t1.kind == "prim" && t2.kind == "prim" && t1.name == t2.name)
-      return;
+    else if (t1.kind == "prim" && t2.kind == "prim")
+    {
+      if (t1.name != t2.name)
+        throw typeError(t1.pos, `unmatched prims ${t1.name} <: ${t2.name}`);
+    }
 
     else if (t1.kind == "tvar")
     {
-      if (t2.kind == "tvar" && t1.name == t2.name)
-        return;
+      if (t2.kind == "tvar")
+      {
+        if (t1.name != t2.name)
+          throw typeError(t1.pos, `unmatched tvars ${t1.name} <: ${t2.name}`);
+      }
 
-      let entry = this.ctx.get(t1.name)!;
-      if (entry.kind != "tvar")
-        throw new Error("t1 not a tvar");
-      this.subtype(entry.t, t2);
+      else
+      {
+        let entry = this.ctxGet(t1.name, t1.pos, "tvar");
+        this.subtype(entry.t, t2);
+      }
     }
 
     else if (t1.kind == "ref" && t2.kind == "ref")
@@ -187,7 +198,7 @@ export class Typer
       this.ctxPop(t1.arg);
     }
 
-    else throw new Error("incomparable types");
+    else throw typeError(t1.pos, `unmatched kinds ${t1.kind} <: ${t2.kind}`);
   }
 
   tcheck(t: Tree, ty: TypeNode): void

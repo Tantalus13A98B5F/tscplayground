@@ -1,4 +1,4 @@
-import { Pos } from "./defs";
+import { Pos, syntaxError } from "./defs";
 
 export type Token = { cat: string; text: string; pos: Pos; };
 
@@ -41,9 +41,7 @@ function calcIndent()
         yield { cat: "dedent", text: whites, pos: [idx, 0] };
       }
       if (whites.length > hist.at(-1)!)
-      {
-        throw new Error(`Fatal: unexpected indent\n${idx}|${ln}`);
-      }
+        throw syntaxError([idx, 0], `unexpected indent\n\t${ln}`);
     }
     yield { cat: "", text: ln, pos: [idx, whites.length] };
   };
@@ -83,7 +81,7 @@ function tokenize()
         if (match == null)
         {
           let text = data.text.substring(col);
-          throw new Error(`Fatal: unknown token\n${ln}|${text}`);
+          throw syntaxError([ln, col], `unknown token\n\t${text}`);
         }
         let kv = match.groups!;
         for (let [cat, text] of Object.entries(kv))
@@ -167,11 +165,16 @@ export class Tokenizer
   {
     let res = await this.getToken();
     if (!checkTokenSpec(res, cond))
-    {
-      let msg = `Syntax Error ${res.pos}: ${res.text} <${res.cat}>`;
-      throw new Error(`${msg}\nExpect ${formatTokenSpec(cond)}`);
-    }
+      throw syntaxError(res.pos,
+        `expect ${formatTokenSpec(cond)}, got ${res.text} <${res.cat}>`);
     return res;
+  }
+
+  async unexpectedToken(cond: TokenSpec): Promise<never>
+  {
+    let res = await this.getToken();
+    throw syntaxError(res.pos,
+      `expect ${formatTokenSpec(cond)}, got ${res.text} <${res.cat}>`);
   }
 
   async tryGetToken(spec: TokenSpec): Promise<Token | undefined>
