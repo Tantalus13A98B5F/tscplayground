@@ -189,5 +189,30 @@ export class Typer
 
   tcheck(t: Tree, ty: TypeNode): void
   {
+    if (t.kind == "ref" && ty.kind == "ref")
+      this.tcheck(t.arg, ty.t);
+
+    else if (t.kind == "fun" && ty.kind == "fun")
+    {
+      if (t.typ) this.subtype(ty.t1, t.typ);
+      const ren = this.ctxPush(t.arg, { kind: "var", t: ty.t1 });
+      this.tcheck(ren.treeRename(t.body), ty.t2);
+      this.ctxPop(t.arg);
+    }
+
+    else if (t.kind == "tfun" && ty.kind == "all")
+    {
+      if (t.typ) this.subtype(ty.t1, t.typ);
+      const ren = this.ctxPush(t.arg, { kind: "tvar", t: ty.t1 });
+      const renTy = mkRenamer(ty.arg, ren.dst);
+      this.tcheck(ren.treeRename(t.body), renTy.tyRename(ty.t2));
+      this.ctxPop(t.arg);
+    }
+
+    else
+    {
+      const ty0 = this.tinfer(t);
+      this.subtype(ty0, ty);
+    }
   }
 }
