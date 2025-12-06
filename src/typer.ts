@@ -135,13 +135,13 @@ export class Typer
       const ren = this.ctxPush(t.arg, { kind: "tvar", t: typ });
       const bodyTy = this.tinfer(ren.treeRename(t.body));
       this.ctxPop(t.arg);
-      return { kind: "tfun", pos: t.pos, arg: t.arg, t1: typ, t2: bodyTy };
+      return { kind: "all", pos: t.pos, arg: t.arg, t1: typ, t2: bodyTy };
     }
 
     else //if (t.kind == "tapp")
     {
       const funTy = this.tinfer(t.fun);
-      if (funTy.kind !== "tfun")
+      if (funTy.kind !== "all")
         throw new Error("Trying to type-apply non-type-function");
       this.subtype(t.typ, funTy.t1);
       return tySubst(funTy.arg, t.typ)(funTy.t2);
@@ -150,7 +150,7 @@ export class Typer
 
   subtype(t1: TypeNode, t2: TypeNode): void
   {
-    if (t2.kind == "prim" && t2.name == "Any") return;
+    if (t2.kind == "any") return;
 
     else if (t1 == t2) return;
 
@@ -175,7 +175,7 @@ export class Typer
       this.subtype(t1.t2, t2.t2);
     }
 
-    else if (t1.kind == "tfun" && t2.kind == "tfun")
+    else if (t1.kind == "all" && t2.kind == "all")
     {
       this.subtype(t2.t1, t1.t1);
       const ren1 = this.ctxPush(t1.arg, { kind: "tvar", t: t2.t1 });

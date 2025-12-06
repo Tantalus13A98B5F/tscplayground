@@ -13,7 +13,12 @@ export class Parser extends Tokenizer
   {
     let peek: Token | undefined;
     if (peek = await this.tryGetToken(["Int", "Unit", "Any"]))
-      return { kind: "prim", pos: peek.pos, name: peek.text };
+    {
+      if (peek.text == "Any")
+        return { kind: "any" };
+      else
+        return { kind: "prim", pos: peek.pos, name: peek.text };
+    }
 
     else if (peek = await this.tryGetToken("Ref"))
     {
@@ -43,7 +48,7 @@ export class Parser extends Tokenizer
       await this.requireToken("]");
       await this.requireToken("->");
       let t2 = await this.parseType();
-      return { kind: "tfun", pos: peek.pos, arg: arg.text, t1, t2 };
+      return { kind: "all", pos: peek.pos, arg: arg.text, t1, t2 };
     }
 
     else

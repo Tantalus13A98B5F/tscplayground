@@ -1,11 +1,12 @@
 export type Pos = [number, number];
 
 export type TypeNode =
+  | { kind: "any"; }
   | { kind: "prim"; pos: Pos; name: string; }
   | { kind: "tvar"; pos: Pos; name: string; }
   | { kind: "ref"; pos: Pos; t: TypeNode; }
   | { kind: "fun"; pos: Pos; t1: TypeNode; t2: TypeNode; }
-  | { kind: "tfun"; pos: Pos; arg: string; t1: TypeNode; t2: TypeNode; };
+  | { kind: "all"; pos: Pos; arg: string; t1: TypeNode; t2: TypeNode; };
 
 export type Tree =
   | { kind: "num"; pos: Pos; num: number; }
@@ -29,7 +30,9 @@ type Inspected =
 
 export function inspectType(t: TypeNode): Inspected
 {
-  if (t.kind == "prim")
+  if (t.kind == "any")
+    return "Any";
+  else if (t.kind == "prim")
     return t.name;
   else if (t.kind == "ref")
     return ["Ref", inspectType(t.t)];
@@ -86,7 +89,7 @@ export function tySubst(tvar: string, t1: TypeNode)
     else if (t.kind === "fun")
       return { ...t, t1: subst(t.t1), t2: subst(t.t2) };
 
-    else if (t.kind === "tfun")
+    else if (t.kind === "all")
     {
       if (t.arg === tvar)
         return t;
@@ -131,7 +134,7 @@ class Renamer implements IRenamer
     else if (t.kind === "fun")
       return { ...t, t1: this.tyRename(t.t1), t2: this.tyRename(t.t2) };
 
-    else if (t.kind === "tfun")
+    else if (t.kind === "all")
     {
       let t2 = t.arg == this.src ? t.t2 : this.tyRename(t.t2);
       return { ...t, t1: this.tyRename(t.t1), t2 };
