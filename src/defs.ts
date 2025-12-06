@@ -51,8 +51,7 @@ export function inspectType(t: TypeNode): Inspected
     return t.name;
   else if (t.kind == "all")
     return ["[", t.arg, "<:", inspectType(t.t1), "]->", inspectType(t.t2)];
-  else
-    return t;
+  else return t;  // never
 }
 
 export function inspectTree(t: Tree): Inspected
@@ -86,7 +85,7 @@ export function inspectTree(t: Tree): Inspected
     let args = t.args.map(inspectTree);
     return [t.op, ...args];
   }
-  else return t;
+  else return t;  // never
 }
 
 
@@ -114,7 +113,8 @@ export function tySubst(tvar: string, t1: TypeNode)
           t2: subst(t.t2)
         };
     }
-    else return t;
+
+    else return t;  // never
   };
 }
 
@@ -154,7 +154,7 @@ class Renamer implements IRenamer
       return { ...t, t1: this.tyRename(t.t1), t2 };
     }
 
-    else return t;
+    else return t;  // never
   };
 
   treeRename(t: Tree): Tree
@@ -206,8 +206,7 @@ class Renamer implements IRenamer
     else if (t.kind === "tapp")
       return { ...t, fun: this.treeRename(t.fun), typ: this.tyRename(t.typ) };
 
-    else
-      return t;
+    else return t;  // never
   }
 }
 
