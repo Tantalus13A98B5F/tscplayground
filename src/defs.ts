@@ -202,7 +202,7 @@ class Renamer implements IRenamer
 
 export function mkRenamer(src: string, dst: string): IRenamer
 {
-  if (src == dst)
+  if (src == dst || src == "")
     return new DummyRenamer(dst);
   else
     return new Renamer(src, dst);

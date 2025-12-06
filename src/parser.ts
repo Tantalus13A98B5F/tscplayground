@@ -68,9 +68,11 @@ export class Parser extends Tokenizer
         let id = await this.requireToken({ cat: "id" });
         await this.requireToken("=");
         let e1 = await this.parseExp(1);
-        if (!(await this.parseLineSep(peek.pos)))
-          await this.requireToken(";");
-        let e2 = await this.parseExp(0);
+        let e2: Tree;
+        if (await this.parseLineSep(peek.pos))
+          e2 = await this.parseExp(0);
+        else
+          e2 = { kind: "unit", pos: peek.pos };
         return { kind: "let", pos: peek.pos, name: id.text, e1, e2 };
       }
 
@@ -79,9 +81,11 @@ export class Parser extends Tokenizer
         let id = await this.requireToken({ cat: "id" });
         await this.requireToken("<:");
         let e1 = await this.parseType();
-        if (!(await this.parseLineSep(peek.pos)))
-          await this.requireToken(";");
-        let e2 = await this.parseExp(0);
+        let e2: Tree;
+        if (await this.parseLineSep(peek.pos))
+          e2 = await this.parseExp(0);
+        else
+          e2 = { kind: "unit", pos: peek.pos };
         return { kind: "tlet", pos: peek.pos, name: id.text, e1, e2 };
       }
 
