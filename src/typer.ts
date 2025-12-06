@@ -46,6 +46,9 @@ export class Typer
     if (t.kind == "num")
       return { kind: "prim", pos: t.pos, name: "Int" };
 
+    else if (t.kind == "unit")
+      return { kind: "prim", pos: t.pos, name: "Unit" };
+
     else if (t.kind == "id")
     {
       const entry = this.ctx.get(t.name);
@@ -84,12 +87,10 @@ export class Typer
     {
       if (!arityMap.get(t.op)!.includes(t.args.length))
         throw new Error("Wrong arity");
+
       for (const arg of t.args)
-      {
-        const argTy = this.tinfer(arg);
-        if (argTy.kind !== "prim" || argTy.name !== "Int")
-          throw new Error("Operator arguments must be Int");
-      }
+        this.tcheck(arg, { kind: "prim", name: "Int", pos: arg.pos });
+
       return { kind: "prim", pos: t.pos, name: "Int" };
     }
 
@@ -151,15 +152,18 @@ export class Typer
   {
     if (t2.kind == "any") return;
 
-    else if (t1 == t2) return;
+    else if (t1.kind == "prim" && t2.kind == "prim" && t1.name == t2.name)
+      return;
 
     else if (t1.kind == "tvar")
     {
-      let entry = this.ctx.get(t1.name);
-      if (entry && entry.kind == "tvar")
-        this.subtype(entry.t, t2);
-      else
-        throw new Error("t1 not a type");
+      if (t2.kind == "tvar" && t1.name == t2.name)
+        return;
+
+      let entry = this.ctx.get(t1.name)!;
+      if (entry.kind != "tvar")
+        throw new Error("t1 not a tvar");
+      this.subtype(entry.t, t2);
     }
 
     else if (t1.kind == "ref" && t2.kind == "ref")
@@ -208,10 +212,6 @@ export class Typer
       this.ctxPop(t.arg);
     }
 
-    else
-    {
-      const ty0 = this.tinfer(t);
-      this.subtype(ty0, ty);
-    }
+    else this.subtype(this.tinfer(t), ty);
   }
 }

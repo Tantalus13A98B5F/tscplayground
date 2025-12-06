@@ -55,11 +55,11 @@ function tokenize()
   let toks: [string, RegExp][] =
     [
       ["key", /let\b|ref\b/],
-      ["Prim", /Int\b|Unit\b|Ref\b|Any\b/],
+      ["prim", /Int\b|Unit\b|Ref\b|Any\b/],
       ["num", /\d+\b/],
       ["id", /[_a-zA-Z][_a-zA-Z0-9!?]*/],
-      ["op", /[-+*/!]|:?=/],
-      ["delim", /->|<:|[\[\](){}:;\\]/],
+      ["op2", /->|<:|:=/],
+      ["op1", /[-+*/=!\[\](){}:;\\]/],
       ["white", /\s+/],
       ["comment", /#.*/],
     ];

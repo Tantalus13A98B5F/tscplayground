@@ -1,7 +1,7 @@
 export type Pos = [number, number];
 
 export type TypeNode =
-  | { kind: "any"; }
+  | { kind: "any"; pos: Pos; }
   | { kind: "prim"; pos: Pos; name: string; }
   | { kind: "tvar"; pos: Pos; name: string; }
   | { kind: "ref"; pos: Pos; t: TypeNode; }
@@ -9,6 +9,7 @@ export type TypeNode =
   | { kind: "all"; pos: Pos; arg: string; t1: TypeNode; t2: TypeNode; };
 
 export type Tree =
+  | { kind: "unit"; pos: Pos; }
   | { kind: "num"; pos: Pos; num: number; }
   | { kind: "id"; pos: Pos; name: string; }
   | { kind: "ref"; pos: Pos; arg: Tree; }
@@ -48,6 +49,8 @@ export function inspectTree(t: Tree): Inspected
 {
   if (t.kind == "id")
     return t.name;
+  else if (t.kind == "unit")
+    return "()";
   else if (t.kind == "num")
     return t.num;
   else if (t.kind == "ref")

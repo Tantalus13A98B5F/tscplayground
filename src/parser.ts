@@ -15,7 +15,7 @@ export class Parser extends Tokenizer
     if (peek = await this.tryGetToken(["Int", "Unit", "Any"]))
     {
       if (peek.text == "Any")
-        return { kind: "any" };
+        return { kind: "any", pos: peek.pos };
       else
         return { kind: "prim", pos: peek.pos, name: peek.text };
     }
@@ -103,10 +103,8 @@ export class Parser extends Tokenizer
       let kind: "fun" | "tfun";
       let id: Token | undefined;
       let typ: TypeNode | undefined;
-      if (id = await this.tryGetToken({ cat: "id" }))
-        kind = "fun";
 
-      else if (await this.tryGetToken("("))
+      if (await this.tryGetToken("("))
       {
         kind = "fun";
         if (id = await this.tryGetToken(")"))
@@ -194,8 +192,14 @@ export class Parser extends Tokenizer
 
         else if (peek = await this.tryGetToken("("))
         {
-          let arg = await this.parseExp(1);
-          await this.requireToken(")");
+          let arg: Tree;
+          if (await this.tryGetToken(")"))
+            arg = { kind: "unit", pos: peek.pos };
+          else
+          {
+            arg = await this.parseExp(1);
+            await this.requireToken(")");
+          }
           res = res ? { kind: "app", pos: peek.pos, fun: res, arg } : arg;
         }
 
