@@ -56,3 +56,19 @@ test("expose", async () =>
   let typer = new Typer();
   expect(() => typer.tinfer(tree)).toThrow();
 });
+
+test("pair", async () =>
+{
+  let src = readString(`
+let mkPair = \\[A <: Any] \\[B <: Any] \\(a: A) \\(b: B)
+  \\[C <: Any] \\(f: (A) -> (B) -> C) f(a)(b)
+let p = mkPair[Int][Unit](1)()
+let fst = \\[A <: Any] \\[B <: Any] \\(p: [C <: Any] -> ((A) -> (B) -> C) -> C)
+  p[A](\\(x) \\(y) x)
+let _: Int = fst[Int][Unit](p)
+`);
+  let parser = new Parser(src);
+  let tree = await parser.parse();
+  let typer = new Typer();
+  typer.tinfer(tree);
+});

@@ -24,7 +24,7 @@ export type Tree =
   | { kind: "get"; pos: Pos; arg: Tree; }
   | { kind: "put"; pos: Pos; dst: Tree; src: Tree; }
   | { kind: "op"; pos: Pos; op: string; args: Tree[]; }
-  | { kind: "let"; pos: Pos; name: string; e1: Tree; e2: Tree; }
+  | { kind: "let"; pos: Pos; name: string; typ?: TypeNode; e1: Tree; e2: Tree; }
   | { kind: "fun"; pos: Pos; arg: string; typ?: TypeNode; body: Tree; }
   | { kind: "app"; pos: Pos; fun: Tree; arg: Tree; }
   | { kind: "tlet"; pos: Pos; name: string; e1: TypeNode; e2: Tree; }
@@ -77,7 +77,7 @@ export function inspectTree(t: Tree): Inspected
   else if (t.kind == "tfun")
     return ["tfun", t.arg, t.typ ? inspectType(t.typ) : "", inspectTree(t.body)];
   else if (t.kind == "let")
-    return ["let", t.name, inspectTree(t.e1), inspectTree(t.e2)];
+    return ["let", t.name, t.typ ? inspectType(t.typ) : "", inspectTree(t.e1), inspectTree(t.e2)];
   else if (t.kind == "tlet")
     return ["type", t.name, inspectType(t.e1), inspectTree(t.e2)];
   else if (t.kind == "op")
@@ -103,18 +103,9 @@ export function tySubst(tvar: string, t1: TypeNode)
       return { ...t, t1: subst(t.t1), t2: subst(t.t2) };
 
     else if (t.kind === "all")
-    {
-      if (t.arg === tvar)
-        return t;
-      else
-        return {
-          ...t,
-          t1: subst(t.t1),
-          t2: subst(t.t2)
-        };
-    }
+      return { ...t, t1: subst(t.t1), t2: t.arg == tvar ? t.t2 : subst(t.t2) };
 
-    else return t;  // never
+    else return t;
   };
 }
 
@@ -154,7 +145,7 @@ class Renamer implements IRenamer
       return { ...t, t1: this.tyRename(t.t1), t2 };
     }
 
-    else return t;  // never
+    else return t;
   };
 
   treeRename(t: Tree): Tree
@@ -176,8 +167,9 @@ class Renamer implements IRenamer
 
     else if (t.kind === "let")
     {
+      let typ = t.typ ? this.tyRename(t.typ) : undefined;
       let e2 = t.name === this.src ? t.e2 : this.treeRename(t.e2);
-      return { ...t, e1: this.treeRename(t.e1), e2 };
+      return { ...t, typ, e1: this.treeRename(t.e1), e2 };
     }
 
     else if (t.kind === "fun")
@@ -206,7 +198,7 @@ class Renamer implements IRenamer
     else if (t.kind === "tapp")
       return { ...t, fun: this.treeRename(t.fun), typ: this.tyRename(t.typ) };
 
-    else return t;  // never
+    else return t;
   }
 }
 

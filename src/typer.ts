@@ -102,7 +102,8 @@ export class Typer
 
     else if (t.kind == "let")
     {
-      const e1Ty = this.tinfer(t.e1);
+      const e1Ty = t.typ ?? this.tinfer(t.e1);
+      if (t.typ) this.tcheck(t.e1, t.typ);
       const ren = this.ctxPush(t.name, { kind: "var", t: e1Ty });
       const e2Ty = this.tinfer(ren.treeRename(t.e2));
       this.ctxPop(t.name);

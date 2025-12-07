@@ -6,6 +6,11 @@ const binops = new Map([
   ["+", 40], ["-", 40], ["*", 50], ["/", 50]
 ]);
 
+function idName(id?: Token): string
+{
+  return (!id || id.text == "_") ? "" : id.text;
+}
+
 
 export class Parser extends Tokenizer
 {
@@ -62,6 +67,9 @@ export class Parser extends Tokenizer
       if (peek = await this.tryGetToken("let"))
       {
         let id = await this.requireToken({ cat: "id" });
+        let typ: TypeNode | undefined;
+        if (await this.tryGetToken(":"))
+          typ = await this.parseType();
         await this.requireToken("=");
         let e1 = await this.parseExp(1);
         let e2: Tree;
@@ -69,7 +77,7 @@ export class Parser extends Tokenizer
           e2 = await this.parseExp(0);
         else
           e2 = { kind: "unit", pos: peek.pos };
-        return { kind: "let", pos: peek.pos, name: id.text, e1, e2 };
+        return { kind: "let", pos: peek.pos, name: idName(id), typ, e1, e2 };
       }
 
       else if (peek = await this.tryGetToken("type"))
@@ -82,7 +90,7 @@ export class Parser extends Tokenizer
           e2 = await this.parseExp(0);
         else
           e2 = { kind: "unit", pos: peek.pos };
-        return { kind: "tlet", pos: peek.pos, name: id.text, e1, e2 };
+        return { kind: "tlet", pos: peek.pos, name: idName(id), e1, e2 };
       }
 
       else
@@ -133,8 +141,7 @@ export class Parser extends Tokenizer
       else return await this.unexpectedToken({ cat: "fun arg" });
 
       let body = await this.parseExp(10);
-      let arg = id ? id.text : "";
-      return { kind, pos: peek.pos, arg, body, typ };
+      return { kind, pos: peek.pos, arg: idName(id), body, typ };
     }
 
     else if (prec <= 30 && (peek = await this.tryGetToken("ref")))
