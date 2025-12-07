@@ -1,11 +1,16 @@
 export type Pos = [number, number];
+
 export function syntaxError(pos: Pos, msg: string): Error
 {
-  return Error(`Syntax Error (${pos}): ${msg}`);
+  let e = Error(`at (${pos}) ${msg}`);
+  e.name = "Syntax Error";
+  return e;
 }
 export function typeError(pos: Pos, msg: string): Error
 {
-  return Error(`Type Error (${pos}): ${msg}`);
+  let e = Error(`at (${pos}) ${msg}`);
+  e.name = "Type Error";
+  return e;
 }
 
 export type TypeNode =
