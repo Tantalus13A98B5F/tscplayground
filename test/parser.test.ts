@@ -19,7 +19,7 @@ test("refs", async () =>
 let a = ref 1 + 2*3
 a := -1 + !a`));
   expect(inspectTree(await parser.parse())).toStrictEqual(
-    ["let", "a", ["ref", ["+", 1, ["*", 2, 3]]],
+    ["let", "a", "", ["ref", ["+", 1, ["*", 2, 3]]],
       [":=", "a", ["+", ["-", 1], ["!", "a"]]]]
   );
 });
@@ -33,9 +33,9 @@ let f = \\(x) {
 }
 f(ref 1 + 2 * 3)`));
   expect(inspectTree(await parser.parse())).toStrictEqual(
-    ["let", "f",
+    ["let", "f", "",
       ["fun", "x", "",
-        ["let", "y", ["+", ["!", "x"], 1],
+        ["let", "y", "", ["+", ["!", "x"], 1],
           [":=", "x", "y"]]],
       ["@", "f", ["ref", ["+", 1, ["*", 2, 3]]]]]
   );
@@ -52,9 +52,9 @@ let f = \\(x: Ref[T]) {
 f(ref 1 + 2 * 3)`));
   expect(inspectTree(await parser.parse())).toStrictEqual(
     ["type", "T", "Any",
-      ["let", "f",
+      ["let", "f", "",
         ["fun", "x", ["Ref", "T"],
-          ["let", "y", ["+", ["!", "x"], 1],
+          ["let", "y", "", ["+", ["!", "x"], 1],
             [":=", "x", "y"]]],
         ["@", "f", ["ref", ["+", 1, ["*", 2, 3]]]]]]
   );
