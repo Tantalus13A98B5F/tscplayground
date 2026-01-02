@@ -1,6 +1,6 @@
-import type { Config } from 'jest'
-import { createDefaultPreset } from 'ts-jest'
+import type { Config } from 'jest';
+import { createDefaultPreset } from 'ts-jest';
 
 export default {
   ...createDefaultPreset(),
-} satisfies Config
+} satisfies Config;
