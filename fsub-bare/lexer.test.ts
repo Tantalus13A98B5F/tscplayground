@@ -1,6 +1,6 @@
 import { test, expect } from "vitest";
-import { readFile, readString } from "../src/reader.js";
-import { Tokenizer } from "../src/lexer.js";
+import { readFile, readString } from "./reader.js";
+import { Tokenizer } from "./lexer.js";
 
 
 async function linearTokens(stream: AsyncGenerator<string>)

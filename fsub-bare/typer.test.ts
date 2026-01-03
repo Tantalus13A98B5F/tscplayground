@@ -1,7 +1,7 @@
 import { test, expect } from "vitest";
-import { readString } from "../src/reader.js";
-import { Parser } from "../src/parser.js";
-import { Typer } from "../src/typer.js";
+import { readString } from "./reader.js";
+import { Parser } from "./parser.js";
+import { Typer } from "./typer.js";
 
 test("simple", async () =>
 {
