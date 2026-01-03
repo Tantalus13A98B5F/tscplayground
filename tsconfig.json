@@ -7,8 +7,9 @@
 
     // Environment Settings
     // See also https://aka.ms/tsconfig/module
-    "module": "nodenext",
-    "target": "esnext",
+    "module": "es2022",
+    "target": "es2022",
+    "esModuleInterop": true,
     // For nodejs:
     "lib": ["esnext"],
     "types": ["node", "jest"],
