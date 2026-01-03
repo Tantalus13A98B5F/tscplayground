@@ -1,5 +1,5 @@
-import { Pos, Tree, TypeNode } from "./defs";
-import { Tokenizer, Token } from "./lexer";
+import { Pos, Tree, TypeNode } from "./defs.js";
+import { Tokenizer, Token } from "./lexer.js";
 
 
 const binops = new Map([

@@ -1,4 +1,4 @@
-import { TypeNode, Tree, tySubst, mkRenamer, typeError, Pos } from "./defs";
+import { TypeNode, Tree, tySubst, mkRenamer, typeError, Pos } from "./defs.js";
 
 type CtxEntry =
   | { kind: 'var'; t: TypeNode; }

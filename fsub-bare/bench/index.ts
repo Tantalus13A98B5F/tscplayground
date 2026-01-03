@@ -1,5 +1,5 @@
 import { Bench } from 'tinybench';
-import { Typer } from "../src/typer";
+import { Typer } from "../src/typer.js";
 
 const bench = new Bench({ name: 'simple benchmark', time: 100 });
 

@@ -1,6 +1,7 @@
-import { Parser } from "../src/parser";
-import { readString } from "../src/reader";
-import { inspectTree } from "../src/defs";
+import { test, expect } from "vitest";
+import { Parser } from "../src/parser.js";
+import { readString } from "../src/reader.js";
+import { inspectTree } from "../src/defs.js";
 
 
 

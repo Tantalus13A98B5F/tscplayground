@@ -1,4 +1,4 @@
-import { Pos, syntaxError } from "./defs";
+import { Pos, syntaxError } from "./defs.js";
 
 export type Token = { cat: string; text: string; pos: Pos; };
 
