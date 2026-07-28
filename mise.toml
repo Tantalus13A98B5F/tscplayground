@@ -1,0 +1,5 @@
+[tools]
+# Pinned exactly: the bundled TypeScript version is determined by the Deno
+# version and is not separately configurable, so this line pins the type
+# checker too. Deno 2.9.4 bundles TypeScript 6.0.3 (V8 15.0).
+deno = "2.9.4"

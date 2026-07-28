@@ -1,9 +1,13 @@
 {
-    "typescript.format.placeOpenBraceOnNewLineForControlBlocks": true,
-    "typescript.format.placeOpenBraceOnNewLineForFunctions": true,
-    "typescript.format.semicolons": "insert",
-    "[typescript]": {
-        "editor.formatOnSave": true
-    },
-    "typescript.preferences.quoteStyle": "double"
+  "deno.enablePaths": [
+    "./src"
+  ],
+  "deno.lint": true,
+  "deno.config": "./deno.json",
+  "js/ts.preferences.quoteStyle": "double",
+  "js/ts.format.semicolons": "insert",
+  "[typescript]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "denoland.vscode-deno"
+  },
 }
