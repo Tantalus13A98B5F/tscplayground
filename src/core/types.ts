@@ -11,10 +11,10 @@
  * `open*` and `close*` are the only functions permitted to touch index
  * arithmetic. Everything else goes through them.
  *
- * Binders are n-ary and their bindings are *simultaneous*: the j-th variable of
- * a binder is `BVar j`, with no telescope reversal. `TAll`'s bounds are
- * therefore parallel -- a bound may not mention another variable of the same
- * quantifier. Nest quantifiers when you need that dependency.
+ * Binders are n-ary and *simultaneous*: the j-th variable of a binder is
+ * `BVar j`, with no telescope reversal. `TAll`'s bounds are therefore parallel
+ * -- a bound may not mention another variable of the same quantifier. Nest
+ * quantifiers when you need that dependency.
  */
 
 export type VarId = number & { readonly __brand: "VarId" };
@@ -26,26 +26,22 @@ export const mkEVarId = (n: number): EVarId => n as EVarId;
 export const mkDataName = (s: string): DataName => s as DataName;
 
 /** One variable of a `TAll`, with its upper bound. */
-export interface Binder {
+export type Binder = {
   readonly hint: string;
   readonly bound: Type;
-}
+};
 
 /**
- * A quantifier's variables. Non-empty by construction: `forall . T` is just
- * `T`, and allowing it would mean every consumer has to handle a quantifier
- * that quantifies nothing. Elaboration is responsible for rejecting or
- * collapsing an empty binder list before it reaches this representation.
- *
- * (A nullary *function* type is a different matter -- `() -> Bool` is a real
- * type, so `TFun` takes a plain array.)
+ * A quantifier's variables, non-empty by construction: `forall . T` is just
+ * `T`. Elaboration must reject or collapse an empty binder list before it
+ * reaches here. A nullary *function* type is a different matter -- `() -> Bool`
+ * is real, so `TFun` takes a plain array.
  */
 export type Binders = readonly [Binder, ...Binder[]];
 
 /**
- * Map over a quantifier's binders. Exists so that the one cast needed to
- * preserve non-emptiness lives in a single place rather than at every
- * traversal: `map` preserves length, but its type does not say so.
+ * Map over a quantifier's binders. Exists so the one cast needed to preserve
+ * non-emptiness lives in one place: `map` preserves length, its type does not.
  */
 export function mapBinders(
   binders: Binders,
@@ -119,18 +115,15 @@ export function TData(name: DataName, args: readonly Type[] = []): Type {
   return { kind: "TData", name, args };
 }
 
-/** Convenience for the common single-variable quantifier. */
 export function mkBinder(hint: string, bound: Type): Binder {
   return { hint, bound };
 }
 
 /**
- * Replace the variables bound by the nearest enclosing binder, where that
- * binder's j-th variable is `BVar j`.
- *
- * A datatype declaration binds all its parameters this way too -- fields are
- * stored with params as `BVar 0..n-1` and no enclosing node -- so instantiating
- * a constructor is the same operation as instantiating a quantifier.
+ * Replace the variables bound by the nearest enclosing binder, whose j-th
+ * variable is `BVar j`. A datatype declaration binds its parameters the same
+ * way -- fields stored with params as `BVar 0..n-1`, no enclosing node -- so
+ * instantiating a constructor and instantiating a quantifier are one operation.
  */
 function openAt(
   type: Type,
@@ -220,12 +213,10 @@ function closeAt(type: Type, depth: number, ids: readonly VarId[]): Type {
 /**
  * Abstract several free variables *simultaneously*: `ids[j]` becomes `BVar j`.
  *
- * Not the same as iterating `close`. Two `close` calls both run at depth 0, and
- * the second leaves the `BVar` produced by the first alone, so both variables
- * collapse onto index 0. Iterating is only correct when a binder node is
- * wrapped around the result between calls, which is what advances the depth.
- *
- * `ids` must be pairwise distinct.
+ * Not the same as iterating `close`: both calls run at depth 0 and the second
+ * leaves the first's `BVar` alone, collapsing every variable onto index 0.
+ * Iterating is correct only when a binder node is wrapped between calls, which
+ * is what advances the depth. `ids` must be pairwise distinct.
  */
 export function closeMany(type: Type, ids: readonly VarId[]): Type {
   return closeAt(type, 0, ids);
@@ -238,17 +229,14 @@ export function close(type: Type, id: VarId): Type {
 
 /**
  * Replace free variables by identity, all at once: `ids[j]` becomes
- * `replacements[j]`.
+ * `replacements[j]`. Simultaneous, unlike iterating the single-variable
+ * version, which would substitute later replacements into earlier ones.
  *
- * Simultaneous, which is *not* what iterating the single-variable version
- * gives you -- that would substitute later replacements into earlier ones.
+ * Touches no indices, unlike `open`: an `FVar` carries identity rather than
+ * position, so nothing shifts when a replacement lands under a binder.
  *
- * Unlike `open`, this touches no indices: an `FVar` carries an identity rather
- * than a position, so nothing shifts when a replacement lands under a binder.
- *
- * Precondition: `ids` pairwise distinct, and every replacement locally closed.
- * A dangling `BVar` in a replacement would be captured by whatever binder it
- * is substituted under.
+ * Precondition: `ids` pairwise distinct, every replacement locally closed -- a
+ * dangling `BVar` would be captured by whatever binder it lands under.
  */
 export function substMany(
   type: Type,
