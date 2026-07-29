@@ -19,7 +19,7 @@
     "fmt": "deno fmt",
     "ci": "deno fmt --check && deno lint && deno check src/ && deno test",
     "bundle": "deno bundle --platform browser src/mod.ts -o dist/checker.js",
-    "repl": "deno run --allow-read src/cli.ts"
+    "run": "deno run --allow-read src/cli.ts"
   },
   "imports": {
     "@std/assert": "jsr:@std/assert@^1.0.19",
