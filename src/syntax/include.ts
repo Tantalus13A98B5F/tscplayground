@@ -1,21 +1,15 @@
 /**
- * The include walker: entry file in, ordered list of files out.
+ * The include walker: entry file in, splice order out.
  *
- * Inclusion is textual and flat, in the spirit of `#include`. With no separate
- * compilation a module is not a unit with an interface -- it is a run of `let`
- * bindings with no body, and including it splices those bindings ahead of the
- * including file's own. A walk therefore yields just an *order*: concatenate the
- * files in it and you have one program.
+ * Inclusion is textual and flat. With no separate compilation a module is a run
+ * of `let` bindings with no body, and including it splices those ahead of the
+ * including file's own -- so a walk yields just an *order*.
  *
- *   - **Order is significant.** Bindings are sequential -- binding n sees
- *     bindings 1..n-1 and not the reverse.
- *   - **So cycles are an error and diamonds are not.** Post-order DFS gives a
- *     well-defined order exactly when the graph is acyclic. A diamond reaches a
- *     file by two routes and the second is skipped; a cycle has no order to
- *     give. The tri-colour marking distinguishes them exactly.
+ * Bindings are sequential, so order is significant, so cycles are an error while
+ * diamonds are not: post-order DFS gives an order exactly when the graph is
+ * acyclic. The tri-colour marking below tells the two apart.
  *
- * Nothing here parses: directives are recognised lexically, since the walk must
- * know the file set before any file can be parsed as part of the whole.
+ * Nothing here parses -- the walk must know the file set first.
  */
 
 import {
@@ -33,6 +27,7 @@ import {
   type Sources,
 } from "../diagnostics/diagnostic.ts";
 import type { FileSystem } from "../io/files.ts";
+import { stripComment } from "./lexer.ts";
 
 /** `#include "path"` -- the whole directive must be its own line. */
 const DIRECTIVE = /^#include[ ]+"([^"]*)"[ ]*$/;
@@ -44,24 +39,24 @@ export type Include = {
 };
 
 /**
- * Read the directives at the top of a file.
+ * Read the directives at the top of a file. They must precede all other content:
+ * C allows them anywhere, but with sequential bindings that would make a file's
+ * meaning depend on where its includes sit.
  *
- * Directives must precede all other content. C allows them anywhere, but with
- * sequential bindings that would make a file's meaning depend on where its
- * includes sit; requiring them first makes splice order equal walk order.
- *
- * A `#` in column 1 is always a directive: leading whitespace is significant
- * here, so no expression can start there and be mistaken for one.
+ * A `#` in column 1 is always a directive -- leading whitespace is significant
+ * here, so no expression can start there.
  */
 export function scanIncludes(source: Source): Result<readonly Include[]> {
   const includes: Include[] = [];
   const diagnostics: Diagnostic[] = [];
   let open = true;
 
-  for (const [index, line] of source.lines.entries()) {
+  for (const [index, raw] of source.lines.entries()) {
     const at = mkPosition(source.id, index + 1, 1);
+    // Comments are whitespace: one above the directives must not close the
+    // section, one after a directive must not spoil the match.
+    const line = stripComment(raw).trimEnd();
     if (!line.startsWith("#")) {
-      // TODO: once line comments exist they must be skippable here too.
       if (line.trim() !== "") open = false;
       continue;
     }
@@ -93,22 +88,18 @@ export function scanIncludes(source: Source): Result<readonly Include[]> {
   return ok(includes, diagnostics);
 }
 
-/** The outcome of a walk: what was read, and in what order to splice it. */
 export type Loaded = {
   /** Every file read, indexed by `FileId`. */
   readonly sources: Sources;
-  /** Post-order: concatenate the files in this order to get one program. */
+  /** Post-order: concatenate in this order to get one program. */
   readonly order: readonly FileId[];
 };
 
-/** Where a file stands in the walk. See the tri-colour note above. */
 type Mark = "grey" | "black";
 
 /**
- * Walk the include graph from `entry`, depth first.
- *
- * A file that cannot be read is still registered, empty, so that its `FileId`
- * resolves and diagnostics against it can name a path rather than `<unknown>`.
+ * Walk the include graph from `entry`, depth first. An unreadable file is still
+ * registered, empty, so its `FileId` resolves and diagnostics can name a path.
  */
 export function loadSources(
   fileSystem: FileSystem,
@@ -129,8 +120,7 @@ export function loadSources(
 
   const walk = (path: string): void => {
     const mark = marks.get(path);
-    // A diamond: already reached by another route and finished. Nothing to
-    // report -- this is what include-once is for.
+    // A diamond: reached by another route and finished. Nothing to report.
     if (mark === "black") return;
     marks.set(path, "grey");
 
@@ -159,8 +149,7 @@ export function loadSources(
         );
         continue;
       }
-      // A grey hit is a cycle: no order puts its bindings before ours and
-      // ours before its. Unlike a diamond, skipping cannot resolve it.
+      // Grey: a cycle. No order works, so skipping cannot resolve it.
       if (marks.get(resolved) === "grey") {
         diagnostics.push(
           reportError(

@@ -29,14 +29,12 @@ const Pair = mkDataName("Pair");
 const Bool = mkDataName("Bool");
 
 Deno.test("open replaces the nearest bound variable", () => {
-  // The body of `forall A <: unknown. (A) -> A`, instantiated at `never`.
   const opened = open(TFun([BVar(0)], BVar(0)), TNever);
   expect(alphaEq(opened, TFun([TNever], TNever))).toBe(true);
 });
 
 Deno.test("TAll bounds are parallel, outside the scope of the quantifier", () => {
-  // Opening `forall B <: X. X` replaces the bound, but the body's index 0 is
-  // bound by the inner quantifier rather than by the one being opened.
+  // The body's index 0 belongs to the inner quantifier, not the opened one.
   const opened = open(TAll([mkBinder("B", BVar(0))], BVar(0)), TData(Bool));
   expect(alphaEq(opened, TAll([mkBinder("B", TData(Bool))], BVar(0)))).toBe(
     true,
@@ -44,7 +42,7 @@ Deno.test("TAll bounds are parallel, outside the scope of the quantifier", () =>
 });
 
 Deno.test("open moves inward by the full arity of a quantifier", () => {
-  // Under `forall A, B`, the outer binder's variable is BVar 2, not BVar 1.
+  // Under `forall A, B` the outer variable is BVar 2, not BVar 1.
   const type = TAll(
     [mkBinder("A", TUnknown), mkBinder("B", TUnknown)],
     TFun([BVar(0)], BVar(2)),
@@ -76,9 +74,8 @@ Deno.test("closeMany abstracts variables simultaneously", () => {
 });
 
 Deno.test("iterating close collapses variables onto one index", () => {
-  // Regression: both `close` calls run at depth 0, and the second leaves the
-  // BVar produced by the first alone, so X and Y both become BVar 0. This is
-  // why closeMany exists and is not a loop over close.
+  // Both calls run at depth 0 and the second leaves the first's BVar alone, so
+  // X and Y collapse onto index 0. Why closeMany is not a loop over close.
   const body = TFun([FVar(X, "X")], FVar(Y, "Y"));
   const iterated = close(close(body, X), Y);
   expect(alphaEq(iterated, TFun([BVar(0)], BVar(0)))).toBe(true);
@@ -106,8 +103,7 @@ Deno.test("close shifts by the arity of each enclosing quantifier", () => {
 });
 
 Deno.test("substFVar is open after close", () => {
-  // The classic locally nameless identity, and a check that the direct
-  // implementation agrees with the encoded one.
+  // The classic identity, and a check that both implementations agree.
   const type = TFun([FVar(X, "X")], TData(Pair, [FVar(X, "X"), FVar(Y, "Y")]));
   const replacement = TData(Bool);
   expect(
@@ -119,8 +115,7 @@ Deno.test("substFVar is open after close", () => {
 });
 
 Deno.test("substMany is simultaneous, unlike iterated substFVar", () => {
-  // Swapping X and Y: done at once this is a swap, done in sequence the second
-  // substitution rewrites what the first just introduced.
+  // At once this is a swap; in sequence the second rewrites the first's output.
   const type = TFun([FVar(X, "X")], FVar(Y, "Y"));
   const swapped = substMany(type, [X, Y], [FVar(Y, "Y"), FVar(X, "X")]);
   expect(alphaEq(swapped, TFun([FVar(Y, "Y")], FVar(X, "X")))).toBe(true);
@@ -134,8 +129,7 @@ Deno.test("substMany is simultaneous, unlike iterated substFVar", () => {
 });
 
 Deno.test("substFVar does not shift when landing under a binder", () => {
-  // An FVar carries identity, not position, so the replacement is unchanged
-  // however deep it goes.
+  // An FVar is an identity, not a position, so depth changes nothing.
   const type = TAll([mkBinder("A", TUnknown)], TFun([BVar(0)], FVar(X, "X")));
   const substituted = substFVar(type, X, TData(Bool));
   const expected = TAll(
@@ -180,4 +174,16 @@ Deno.test("typeToString parenthesises by arity, not habit", () => {
   expect(
     typeToString(TFun([TFun([TData(Bool)], TData(Bool))], TData(Bool))),
   ).toBe("(Bool -> Bool) -> Bool");
+});
+
+Deno.test("TAll with no binders is its body", () => {
+  // `forall . T = T`, so the constructor normalizes instead of building one.
+  expect(alphaEq(TAll([], TData(Bool)), TData(Bool))).toBe(true);
+  expect(TAll([], TData(Bool)).kind).toBe("TData");
+});
+
+Deno.test("normalizing an empty quantifier survives a traversal", () => {
+  // closeAt rebuilds every TAll it passes; a real one must survive that.
+  const type = TAll([mkBinder("A", TUnknown)], FVar(X, "X"));
+  expect(close(type, X).kind).toBe("TAll");
 });

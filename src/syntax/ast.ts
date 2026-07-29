@@ -1,42 +1,25 @@
 /**
- * Surface syntax: the calculus as the user writes it.
- *
- * This is deliberately *not* `core/types.ts`. The differences are the whole
- * reason both exist:
- *
- *   - Names, not identities. `A` and `Pair` are both strings here; only
- *     elaboration knows which is a variable and which a declaration, since
- *     forward references mean the declaration table is incomplete until the
- *     file is.
- *   - A `Position` on every node, `Type` having none by design -- so any
- *     diagnostic pointing at source must be raised during elaboration, while
- *     the surface node is still in hand. `at` is where the node *starts*.
- *   - Sugar. Omitted bounds, omitted annotations, holes.
- *
- * Naming: core kinds are `T`-prefixed (`TFun`, `TAll`), surface kinds are
- * `Type`-suffixed (`FunType`, `AllType`). Elaboration handles both at once and
- * the two must never be confusable at a glance.
+ * Surface syntax: names rather than identities, a `Position` on every node, and
+ * sugar. Core kinds are `T`-prefixed (`TFun`), surface kinds `Type`-suffixed
+ * (`FunType`); elaboration handles both at once, so they must not be confusable.
  */
 
 import type { Position } from "../diagnostics/diagnostic.ts";
 
-/** A name written in source, with the place it was written. */
 export type Name = {
   readonly text: string;
   readonly at: Position;
 };
 
-/** Syntactic types. */
 export type TypeNode =
   /** `unknown` -- top. */
   | { readonly kind: "UnknownType"; readonly at: Position }
   /** `never` -- bottom. */
   | { readonly kind: "NeverType"; readonly at: Position }
   /**
-   * `A`, or `Pair[A, B]`. One node for type variables *and* saturated data
-   * applications, since the parser cannot tell them apart without the
-   * declaration table. Elaboration resolves it: in scope gives an `FVar`,
-   * declared gives a `TData` after an arity check, neither gives `TBad`.
+   * `A`, or `Pair[A, B]`: type variables and data applications share a node,
+   * being indistinguishable without the declaration table. Elaboration resolves
+   * it to `FVar`, to `TData` after an arity check, or to `TBad`.
    */
   | {
     readonly kind: "NameType";
@@ -51,41 +34,26 @@ export type TypeNode =
     readonly result: TypeNode;
     readonly at: Position;
   }
-  /** `forall A <: B, C. body`. Rejected if it binds nothing; see `Binders`. */
+  /** `forall A <: B, C. body`. The grammar requires at least one binder. */
   | {
     readonly kind: "AllType";
     readonly binders: readonly TypeBinder[];
     readonly body: TypeNode;
     readonly at: Position;
   }
-  /** `_` -- elaborates to a fresh existential. The user-facing handle on inference. */
-  | { readonly kind: "HoleType"; readonly at: Position }
-  /**
-   * Parser recovery, so one unparseable annotation does not abort the file.
-   * Elaborates to `TBad` *without* a second diagnostic -- the parser already
-   * reported it.
-   */
+  /** Parser recovery. Elaborates to `TBad` with no second diagnostic. */
   | { readonly kind: "BadType"; readonly at: Position };
 
-/**
- * One variable of a `forall`. The bound is optional in source -- `forall A. T`
- * means `A <: unknown` -- and elaboration fills it in. The core's
- * `Binder.bound` stays mandatory: sugar lives on this side.
- */
+/** An omitted `bound` means `<: unknown`; the core's `Binder.bound` is required. */
 export type TypeBinder = {
   readonly name: Name;
   readonly bound?: TypeNode;
   readonly at: Position;
 };
 
-/** Terms. */
 export type Term =
   | { readonly kind: "Var"; readonly name: Name; readonly at: Position }
-  /**
-   * `\(x: A, y) => body`. N-ary to match `TFun`, so that `\(x, y) => e` and
-   * `\x => \y => e` are writable as the distinct things they now are.
-   * Annotations are optional; an omitted one becomes a fresh existential.
-   */
+  /** `\(x: A, y) => body`. N-ary to match `TFun`. */
   | {
     readonly kind: "Abs";
     readonly params: readonly Param[];
@@ -99,17 +67,14 @@ export type Term =
     readonly args: readonly Term[];
     readonly at: Position;
   }
-  /** `/\A <: B. body` -- explicit type abstraction. */
+  /** `/\A <: B. body`. */
   | {
     readonly kind: "TypeAbs";
     readonly binders: readonly TypeBinder[];
     readonly body: Term;
     readonly at: Position;
   }
-  /**
-   * `f[A, B]` -- explicit instantiation. Implicit instantiation at `App` is
-   * intended too, but this node stays because full F-sub needs it.
-   */
+  /** `f[A, B]`. Implicit instantiation at `App` is intended too. */
   | {
     readonly kind: "TypeApp";
     readonly callee: Term;
@@ -117,32 +82,16 @@ export type Term =
     readonly at: Position;
   }
   /**
-   * `(term : A)`. Not sugar: in a bidirectional checker this is the only way to
-   * enter checking mode from synthesis mode.
+   * `let x = bound in body`, or `let x : A = bound in body`. With no ascription
+   * node the annotated form is the only way into checking mode, so checking a
+   * subexpression means naming it: `f((e : A))` is `let t : A = e in f(t)`.
    */
-  | {
-    readonly kind: "Ann";
-    readonly term: Term;
-    readonly type: TypeNode;
-    readonly at: Position;
-  }
-  /** `let x = bound in body`, or `let x : A = bound in body`. */
   | {
     readonly kind: "Let";
     readonly name: Name;
     readonly annotation?: TypeNode;
     readonly bound: Term;
     readonly body: Term;
-    readonly at: Position;
-  }
-  /**
-   * `C(a, b)`, saturated. Constructors are nominal and declared, so there is no
-   * literal form: `true` is `Con("true", [])` over a nullary `Bool`.
-   */
-  | {
-    readonly kind: "Con";
-    readonly name: Name;
-    readonly args: readonly Term[];
     readonly at: Position;
   }
   /** `match scrutinee { arms }`. */
@@ -152,10 +101,9 @@ export type Term =
     readonly arms: readonly Arm[];
     readonly at: Position;
   }
-  /** Parser recovery. Synthesizes `TBad` without a second diagnostic. */
+  /** Parser recovery. Synthesizes `TBad` with no second diagnostic. */
   | { readonly kind: "BadTerm"; readonly at: Position };
 
-/** A lambda parameter. An omitted annotation is what inference is for. */
 export type Param = {
   readonly name: Name;
   readonly annotation?: TypeNode;
@@ -169,32 +117,31 @@ export type Arm = {
 };
 
 /**
- * One level deep: a constructor's arguments are plain binders, not nested
- * patterns. Non-recursive data gains little from nesting, and one level makes
- * exhaustiveness a set-membership test rather than Maranget's algorithm.
+ * One level deep, which keeps exhaustiveness a set-membership test rather than
+ * Maranget's algorithm.
  */
 export type Pattern =
-  /** `_` */
   | { readonly kind: "PWild"; readonly at: Position }
-  /** `x` -- an irrefutable catch-all that binds the scrutinee. */
-  | { readonly kind: "PVar"; readonly name: Name; readonly at: Position }
-  /** `C(x, y)` -- saturated, and `x`/`y` bind the fields. */
+  /**
+   * `C`, or `C(x, y)` -- always a constructor. There is no catch-all *binding*
+   * form, and that absence is what disambiguates: `C` in arm position is a
+   * constructor, `x` inside `C(x, y)` is a binder. Allowing a bare binder would
+   * collide with nullary constructors and make a misspelling swallow every case.
+   */
   | {
     readonly kind: "PCon";
     readonly name: Name;
-    readonly binders: readonly Name[];
+    readonly args: readonly Name[];
     readonly at: Position;
   };
 
 /**
- * `data Pair[A, B] = MkPair(A, B)`.
+ * `data Pair[A, B] = MkPair(A, B)`, top-level only.
  *
- * Top-level only. `params` are the binding site: elaboration mints a fresh
- * `VarId` for each, elaborates the fields, then closes over them in *declared*
- * order -- which is why `closeMany` takes its order from the caller.
- *
- * Non-recursive in v1, so the declaration graph must be a DAG. That check
- * belongs with the declaration table, not here.
+ * Contributes *term bindings* -- `MkPair : forall A, B. (A, B) -> Pair[A, B]`,
+ * `true : Bool` -- so there is no constructor term form, and saturation comes
+ * free from function arity. `params` are a binding site: elaboration mints a
+ * fresh `VarId` for each and closes over them in *declared* order.
  */
 export type DataDecl = {
   readonly name: Name;
@@ -209,7 +156,6 @@ export type ConDecl = {
   readonly at: Position;
 };
 
-/** A whole source file: declarations, then the term to check. */
 export type Program = {
   readonly decls: readonly DataDecl[];
   readonly term: Term;

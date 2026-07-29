@@ -19,8 +19,7 @@ Deno.test("a plain path has no ., .., or empty segments", () => {
 });
 
 Deno.test("a non-plain spec resolves to nothing, even if the file exists", () => {
-  // What forbidding `.` and `..` buys: one file has exactly one spelling, so
-  // include-once cannot be defeated by a second name for the same file.
+  // What forbidding `.` and `..` buys: one file has exactly one spelling.
   const files = memoryFileSystem({ "a.tg": "" });
   expect(files.resolve("a.tg")).toBe("a.tg");
   expect(files.resolve("./a.tg")).toBeUndefined();
@@ -46,6 +45,21 @@ Deno.test("a directive after other content is rejected", () => {
 Deno.test("blank lines do not close the directive section", () => {
   const source = mkSource('#include "a.tg"\n\n#include "b.tg"\n', "m");
   expect(scanIncludes(source).value?.length).toBe(2);
+});
+
+Deno.test("a comment above the directives does not close the section", () => {
+  // If this counted as content, the directive below it would be rejected.
+  const source = mkSource('// prelude\n#include "a.tg"\n', "m");
+  const scanned = scanIncludes(source);
+  expect(scanned.diagnostics).toEqual([]);
+  expect(scanned.value?.map((i) => i.spec)).toEqual(["a.tg"]);
+});
+
+Deno.test("a directive may carry a trailing comment", () => {
+  const source = mkSource('#include "a.tg" // why\n', "m");
+  const scanned = scanIncludes(source);
+  expect(scanned.diagnostics).toEqual([]);
+  expect(scanned.value?.map((i) => i.spec)).toEqual(["a.tg"]);
 });
 
 Deno.test("a malformed directive is reported, not silently skipped", () => {
@@ -105,7 +119,7 @@ Deno.test("a file including itself is a cycle", () => {
 });
 
 Deno.test("a cycle still yields an order for the files it did reach", () => {
-  // Recovery: the checker gets a program, and the user gets both diagnostics.
+  // Recovery: the checker still gets a program.
   const files = memoryFileSystem({
     "a.tg": '#include "b.tg"\n',
     "b.tg": '#include "a.tg"\nlet b = 1\n',

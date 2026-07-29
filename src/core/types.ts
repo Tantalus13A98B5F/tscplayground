@@ -1,20 +1,12 @@
 /**
- * Internal type representation.
+ * Internal type representation. Locally nameless: `BVar` under binders, `FVar`
+ * free in the context. Invariants: a `BVar` never escapes into the context, an
+ * `FVar` never appears under an unopened binder, and only `open*`/`close*` touch
+ * index arithmetic.
  *
- * Locally nameless: variables bound by an enclosing binder are `BVar` (de Bruijn
- * index), variables standing free in the context are `FVar` (stable identity).
- * The invariant that makes this pay off:
- *
- *   - a `BVar` never escapes into the context;
- *   - an `FVar` never appears under a binder that has not been opened.
- *
- * `open*` and `close*` are the only functions permitted to touch index
- * arithmetic. Everything else goes through them.
- *
- * Binders are n-ary and *simultaneous*: the j-th variable of a binder is
- * `BVar j`, with no telescope reversal. `TAll`'s bounds are therefore parallel
- * -- a bound may not mention another variable of the same quantifier. Nest
- * quantifiers when you need that dependency.
+ * Binders are n-ary and *simultaneous* -- the j-th variable is `BVar j`, no
+ * telescope reversal -- so `TAll`'s bounds are parallel. Nest quantifiers when a
+ * bound must mention another variable of the same one.
  */
 
 export type VarId = number & { readonly __brand: "VarId" };
@@ -25,30 +17,10 @@ export const mkVarId = (n: number): VarId => n as VarId;
 export const mkEVarId = (n: number): EVarId => n as EVarId;
 export const mkDataName = (s: string): DataName => s as DataName;
 
-/** One variable of a `TAll`, with its upper bound. */
 export type Binder = {
   readonly hint: string;
   readonly bound: Type;
 };
-
-/**
- * A quantifier's variables, non-empty by construction: `forall . T` is just
- * `T`. Elaboration must reject or collapse an empty binder list before it
- * reaches here. A nullary *function* type is a different matter -- `() -> Bool`
- * is real, so `TFun` takes a plain array.
- */
-export type Binders = readonly [Binder, ...Binder[]];
-
-/**
- * Map over a quantifier's binders. Exists so the one cast needed to preserve
- * non-emptiness lives in one place: `map` preserves length, its type does not.
- */
-export function mapBinders(
-  binders: Binders,
-  f: (binder: Binder) => Binder,
-): Binders {
-  return binders.map(f) as unknown as Binders;
-}
 
 export type Type =
   | { readonly kind: "TUnknown" } // Top
@@ -66,21 +38,13 @@ export type Type =
     readonly params: readonly Type[];
     readonly result: Type;
   }
-  /**
-   * `forall b0 <: B0, ..., bn <: Bn. body`, where `body` refers to the j-th
-   * variable as `BVar j`. Bounds are parallel: they are outside the scope of
-   * every variable the quantifier introduces, including earlier ones.
-   */
+  /** `forall b0 <: B0, .., bn <: Bn. body`, the j-th variable being `BVar j`. */
   | {
     readonly kind: "TAll";
-    readonly binders: Binders;
+    readonly binders: readonly Binder[];
     readonly body: Type;
   }
-  /**
-   * A saturated nominal type constructor: `args.length` always equals the
-   * arity of the declaration named `name`. Primitives are the nullary case,
-   * declared in the prelude, so they need no separate node.
-   */
+  /** Saturated nominal constructor. Primitives are the nullary case. */
   | {
     readonly kind: "TData";
     readonly name: DataName;
@@ -107,8 +71,9 @@ export function TFun(params: readonly Type[], result: Type): Type {
   return { kind: "TFun", params, result };
 }
 
-export function TAll(binders: Binders, body: Type): Type {
-  return { kind: "TAll", binders, body };
+/** Normalizes `forall . T` to `T`, so no `TAll` ever quantifies nothing. */
+export function TAll(binders: readonly Binder[], body: Type): Type {
+  return binders.length === 0 ? body : { kind: "TAll", binders, body };
 }
 
 export function TData(name: DataName, args: readonly Type[] = []): Type {
@@ -120,10 +85,9 @@ export function mkBinder(hint: string, bound: Type): Binder {
 }
 
 /**
- * Replace the variables bound by the nearest enclosing binder, whose j-th
- * variable is `BVar j`. A datatype declaration binds its parameters the same
- * way -- fields stored with params as `BVar 0..n-1`, no enclosing node -- so
- * instantiating a constructor and instantiating a quantifier are one operation.
+ * Replace the variables of the nearest enclosing binder. A datatype declaration
+ * binds its parameters the same way, with no enclosing node, so instantiating a
+ * constructor and a quantifier are one operation.
  */
 function openAt(
   type: Type,
@@ -140,10 +104,8 @@ function openAt(
     case "BVar": {
       // Bound by a binder inside the one being opened: leave it alone.
       if (type.index < depth) return type;
-      const replacement = replacements[type.index - depth];
-      // Only reachable if a node's arity disagrees with its binder or its
-      // declaration, which earlier passes are responsible for rejecting.
-      return replacement ?? TBad;
+      // `TBad` only on an arity disagreement, which earlier passes reject.
+      return replacements[type.index - depth] ?? TBad;
     }
     case "TFun":
       return TFun(
@@ -151,18 +113,15 @@ function openAt(
         openAt(type.result, depth, replacements),
       );
     case "TAll":
-      // Bounds are parallel, so they stay at this depth; only the body moves
-      // inward, and by the full arity of the quantifier at once.
+      // Bounds are parallel, so only the body moves inward -- by the full arity.
       return TAll(
-        mapBinders(
-          type.binders,
-          (b) => mkBinder(b.hint, openAt(b.bound, depth, replacements)),
+        type.binders.map((b) =>
+          mkBinder(b.hint, openAt(b.bound, depth, replacements))
         ),
         openAt(type.body, depth + type.binders.length, replacements),
       );
     case "TData":
-      // Not a binder, but very much a traversal case: skipping this would leave
-      // stale `BVar`s inside type arguments, and nothing would complain.
+      // Not a binder, but skipping it leaves stale `BVar`s and nothing objects.
       return TData(
         type.name,
         type.args.map((arg) => openAt(arg, depth, replacements)),
@@ -199,10 +158,7 @@ function closeAt(type: Type, depth: number, ids: readonly VarId[]): Type {
       );
     case "TAll":
       return TAll(
-        mapBinders(
-          type.binders,
-          (b) => mkBinder(b.hint, closeAt(b.bound, depth, ids)),
-        ),
+        type.binders.map((b) => mkBinder(b.hint, closeAt(b.bound, depth, ids))),
         closeAt(type.body, depth + type.binders.length, ids),
       );
     case "TData":
@@ -211,12 +167,10 @@ function closeAt(type: Type, depth: number, ids: readonly VarId[]): Type {
 }
 
 /**
- * Abstract several free variables *simultaneously*: `ids[j]` becomes `BVar j`.
- *
- * Not the same as iterating `close`: both calls run at depth 0 and the second
- * leaves the first's `BVar` alone, collapsing every variable onto index 0.
- * Iterating is correct only when a binder node is wrapped between calls, which
- * is what advances the depth. `ids` must be pairwise distinct.
+ * Abstract free variables *simultaneously*: `ids[j]` becomes `BVar j`. Not
+ * iterated `close` -- both calls run at depth 0 and the second leaves the
+ * first's `BVar` alone, collapsing everything onto index 0. `ids` must be
+ * pairwise distinct.
  */
 export function closeMany(type: Type, ids: readonly VarId[]): Type {
   return closeAt(type, 0, ids);
@@ -228,12 +182,9 @@ export function close(type: Type, id: VarId): Type {
 }
 
 /**
- * Replace free variables by identity, all at once: `ids[j]` becomes
- * `replacements[j]`. Simultaneous, unlike iterating the single-variable
- * version, which would substitute later replacements into earlier ones.
- *
- * Touches no indices, unlike `open`: an `FVar` carries identity rather than
- * position, so nothing shifts when a replacement lands under a binder.
+ * Replace free variables by identity, all at once. Simultaneous, unlike
+ * iterating, which would substitute later replacements into earlier ones.
+ * Touches no indices: an `FVar` is an identity, not a position.
  *
  * Precondition: `ids` pairwise distinct, every replacement locally closed -- a
  * dangling `BVar` would be captured by whatever binder it lands under.
@@ -261,9 +212,8 @@ export function substMany(
       );
     case "TAll":
       return TAll(
-        mapBinders(
-          type.binders,
-          (b) => mkBinder(b.hint, substMany(b.bound, ids, replacements)),
+        type.binders.map((b) =>
+          mkBinder(b.hint, substMany(b.bound, ids, replacements))
         ),
         substMany(type.body, ids, replacements),
       );
@@ -280,7 +230,7 @@ export function substFVar(type: Type, id: VarId, replacement: Type): Type {
   return substMany(type, [id], [replacement]);
 }
 
-/** Does the existential `id` occur in `type`? The occurs check. */
+/** The occurs check. */
 export function occurs(id: EVarId, type: Type): boolean {
   switch (type.kind) {
     case "TUnknown":
@@ -313,7 +263,7 @@ function allPairs(
   });
 }
 
-/** Structural equality. Alpha-equivalence is free: bound variables are indices. */
+/** Alpha-equivalence, free because bound variables are indices. */
 export function alphaEq(left: Type, right: Type): boolean {
   switch (left.kind) {
     case "TUnknown":
@@ -331,7 +281,7 @@ export function alphaEq(left: Type, right: Type): boolean {
         allPairs(left.params, right.params, alphaEq) &&
         alphaEq(left.result, right.result);
     case "TAll":
-      // `hint` is for printing only and deliberately not compared.
+      // `hint` is for printing only, so not compared.
       return right.kind === "TAll" &&
         allPairs(
           left.binders.map((b) => b.bound),
@@ -353,10 +303,9 @@ function toStringAt(type: Type, names: readonly string[]): string {
     case "TNever":
       return "never";
     case "TBad":
-      // Should be filtered out before display; visible only in dumps.
       return "<bad>";
     case "BVar":
-      // Well-formed types are closed, so an unnamed index means a bug upstream.
+      // Well-formed types are closed, so an unnamed index is a bug upstream.
       return names[type.index] ?? `?${type.index}`;
     case "FVar":
       return type.hint;
@@ -364,8 +313,7 @@ function toStringAt(type: Type, names: readonly string[]): string {
       return `?${type.hint}`;
     case "TFun": {
       const params = type.params.map((param) => toStringAt(param, names));
-      // A lone parameter reads better bare, but not when it is itself a
-      // function or a quantifier, where the arrow would be ambiguous.
+      // A lone parameter reads better bare, unless it is itself an arrow.
       const only = type.params[0];
       const head = params.length === 1 && only !== undefined &&
           only.kind !== "TFun" && only.kind !== "TAll"
@@ -378,7 +326,7 @@ function toStringAt(type: Type, names: readonly string[]): string {
       const bounds = type.binders
         .map((b) => `${b.hint} <: ${toStringAt(b.bound, names)}`)
         .join(", ");
-      // The j-th variable is `BVar j`, so hints go in front in binder order.
+      // The j-th variable is `BVar j`, so hints go in front, in binder order.
       return `forall ${bounds}. ${toStringAt(type.body, [...hints, ...names])}`;
     }
     case "TData":
@@ -390,7 +338,7 @@ function toStringAt(type: Type, names: readonly string[]): string {
   }
 }
 
-/** Render a type using the name hints carried on binders. */
+/** Render using the name hints carried on binders. */
 export function typeToString(type: Type): string {
   return toStringAt(type, []);
 }
