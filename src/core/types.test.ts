@@ -15,7 +15,6 @@ import {
   openMany,
   substFVar,
   substMany,
-  TAll,
   TData,
   TFun,
   TNever,
@@ -29,28 +28,32 @@ const Pair = mkDataName("Pair");
 const Bool = mkDataName("Bool");
 
 Deno.test("open replaces the nearest bound variable", () => {
-  const opened = open(TFun([BVar(0)], BVar(0)), TNever);
-  expect(alphaEq(opened, TFun([TNever], TNever))).toBe(true);
+  const opened = open(TFun([], [BVar(0)], BVar(0)), TNever);
+  expect(alphaEq(opened, TFun([], [TNever], TNever))).toBe(true);
 });
 
-Deno.test("TAll bounds are parallel, outside the scope of the quantifier", () => {
-  // The body's index 0 belongs to the inner quantifier, not the opened one.
-  const opened = open(TAll([mkBinder("B", BVar(0))], BVar(0)), TData(Bool));
-  expect(alphaEq(opened, TAll([mkBinder("B", TData(Bool))], BVar(0)))).toBe(
-    true,
+Deno.test("bounds are parallel, but parameters are inside the binder", () => {
+  // The bound's index 0 is the enclosing binder; the parameter's is this one.
+  const opened = open(
+    TFun([mkBinder("B", BVar(0))], [BVar(0)], TUnknown),
+    TData(Bool),
   );
+  const expected = TFun([mkBinder("B", TData(Bool))], [BVar(0)], TUnknown);
+  expect(alphaEq(opened, expected)).toBe(true);
 });
 
 Deno.test("open moves inward by the full arity of a quantifier", () => {
   // Under `forall A, B` the outer variable is BVar 2, not BVar 1.
-  const type = TAll(
+  const type = TFun(
     [mkBinder("A", TUnknown), mkBinder("B", TUnknown)],
-    TFun([BVar(0)], BVar(2)),
+    [BVar(0)],
+    BVar(2),
   );
   const opened = open(type, TData(Bool));
-  const expected = TAll(
+  const expected = TFun(
     [mkBinder("A", TUnknown), mkBinder("B", TUnknown)],
-    TFun([BVar(0)], TData(Bool)),
+    [BVar(0)],
+    TData(Bool),
   );
   expect(alphaEq(opened, expected)).toBe(true);
 });
@@ -62,28 +65,31 @@ Deno.test("open traverses TData arguments", () => {
 });
 
 Deno.test("openMany instantiates a binder's variables simultaneously", () => {
-  const field = TFun([BVar(0)], TData(Pair, [BVar(1), BVar(0)]));
+  const field = TFun([], [BVar(0)], TData(Pair, [BVar(1), BVar(0)]));
   const opened = openMany(field, [TData(Bool), TNever]);
-  const expected = TFun([TData(Bool)], TData(Pair, [TNever, TData(Bool)]));
+  const expected = TFun([], [TData(Bool)], TData(Pair, [TNever, TData(Bool)]));
   expect(alphaEq(opened, expected)).toBe(true);
 });
 
 Deno.test("closeMany abstracts variables simultaneously", () => {
-  const body = TFun([FVar(X, "X")], FVar(Y, "Y"));
-  expect(alphaEq(closeMany(body, [X, Y]), TFun([BVar(0)], BVar(1)))).toBe(true);
+  const body = TFun([], [FVar(X, "X")], FVar(Y, "Y"));
+  expect(alphaEq(closeMany(body, [X, Y]), TFun([], [BVar(0)], BVar(1)))).toBe(
+    true,
+  );
 });
 
 Deno.test("iterating close collapses variables onto one index", () => {
   // Both calls run at depth 0 and the second leaves the first's BVar alone, so
   // X and Y collapse onto index 0. Why closeMany is not a loop over close.
-  const body = TFun([FVar(X, "X")], FVar(Y, "Y"));
+  const body = TFun([], [FVar(X, "X")], FVar(Y, "Y"));
   const iterated = close(close(body, X), Y);
-  expect(alphaEq(iterated, TFun([BVar(0)], BVar(0)))).toBe(true);
+  expect(alphaEq(iterated, TFun([], [BVar(0)], BVar(0)))).toBe(true);
   expect(alphaEq(iterated, closeMany(body, [X, Y]))).toBe(false);
 });
 
 Deno.test("close then open is the identity on a free variable", () => {
   const original = TFun(
+    [],
     [FVar(X, "X")],
     TData(Pair, [FVar(X, "X"), FVar(Y, "Y")]),
   );
@@ -92,11 +98,12 @@ Deno.test("close then open is the identity on a free variable", () => {
 
 Deno.test("close shifts by the arity of each enclosing quantifier", () => {
   const closed = close(
-    TAll([mkBinder("A", TUnknown), mkBinder("B", TUnknown)], FVar(X, "X")),
+    TFun([mkBinder("A", TUnknown), mkBinder("B", TUnknown)], [], FVar(X, "X")),
     X,
   );
-  const expected = TAll(
+  const expected = TFun(
     [mkBinder("A", TUnknown), mkBinder("B", TUnknown)],
+    [],
     BVar(2),
   );
   expect(alphaEq(closed, expected)).toBe(true);
@@ -104,7 +111,11 @@ Deno.test("close shifts by the arity of each enclosing quantifier", () => {
 
 Deno.test("substFVar is open after close", () => {
   // The classic identity, and a check that both implementations agree.
-  const type = TFun([FVar(X, "X")], TData(Pair, [FVar(X, "X"), FVar(Y, "Y")]));
+  const type = TFun(
+    [],
+    [FVar(X, "X")],
+    TData(Pair, [FVar(X, "X"), FVar(Y, "Y")]),
+  );
   const replacement = TData(Bool);
   expect(
     alphaEq(
@@ -116,26 +127,25 @@ Deno.test("substFVar is open after close", () => {
 
 Deno.test("substMany is simultaneous, unlike iterated substFVar", () => {
   // At once this is a swap; in sequence the second rewrites the first's output.
-  const type = TFun([FVar(X, "X")], FVar(Y, "Y"));
+  const type = TFun([], [FVar(X, "X")], FVar(Y, "Y"));
   const swapped = substMany(type, [X, Y], [FVar(Y, "Y"), FVar(X, "X")]);
-  expect(alphaEq(swapped, TFun([FVar(Y, "Y")], FVar(X, "X")))).toBe(true);
+  expect(alphaEq(swapped, TFun([], [FVar(Y, "Y")], FVar(X, "X")))).toBe(true);
 
   const sequential = substFVar(
     substFVar(type, X, FVar(Y, "Y")),
     Y,
     FVar(X, "X"),
   );
-  expect(alphaEq(sequential, TFun([FVar(X, "X")], FVar(X, "X")))).toBe(true);
+  expect(alphaEq(sequential, TFun([], [FVar(X, "X")], FVar(X, "X")))).toBe(
+    true,
+  );
 });
 
 Deno.test("substFVar does not shift when landing under a binder", () => {
   // An FVar is an identity, not a position, so depth changes nothing.
-  const type = TAll([mkBinder("A", TUnknown)], TFun([BVar(0)], FVar(X, "X")));
+  const type = TFun([mkBinder("A", TUnknown)], [BVar(0)], FVar(X, "X"));
   const substituted = substFVar(type, X, TData(Bool));
-  const expected = TAll(
-    [mkBinder("A", TUnknown)],
-    TFun([BVar(0)], TData(Bool)),
-  );
+  const expected = TFun([mkBinder("A", TUnknown)], [BVar(0)], TData(Bool));
   expect(alphaEq(substituted, expected)).toBe(true);
 });
 
@@ -150,40 +160,46 @@ Deno.test("occurs finds an existential nested in TData arguments", () => {
 Deno.test("alphaEq ignores printing hints but not arity", () => {
   expect(
     alphaEq(
-      TAll([mkBinder("A", TUnknown)], BVar(0)),
-      TAll([mkBinder("Z", TUnknown)], BVar(0)),
+      TFun([mkBinder("A", TUnknown)], [], BVar(0)),
+      TFun([mkBinder("Z", TUnknown)], [], BVar(0)),
     ),
   ).toBe(true);
   expect(
-    alphaEq(TFun([TData(Bool)], TData(Bool)), TFun([], TData(Bool))),
+    alphaEq(TFun([], [TData(Bool)], TData(Bool)), TFun([], [], TData(Bool))),
   ).toBe(false);
 });
 
 Deno.test("typeToString names bound variables from their binders", () => {
-  const type = TAll(
+  const type = TFun(
     [mkBinder("A", TUnknown), mkBinder("B", TUnknown)],
-    TFun([BVar(0)], TData(Pair, [BVar(1), TNever])),
+    [BVar(0)],
+    TData(Pair, [BVar(1), TNever]),
   );
-  expect(typeToString(type))
-    .toBe("forall A <: unknown, B <: unknown. A -> Pair[B, never]");
+  expect(typeToString(type)).toBe("[A, B](A) -> Pair[B, never]");
+});
+
+Deno.test("typeToString elides only the trivial bound", () => {
+  // `<: unknown` is the default, so printing it is noise on every signature.
+  const type = TFun([mkBinder("A", TData(Bool))], [BVar(0)], BVar(0));
+  expect(typeToString(type)).toBe("[A <: Bool](A) -> A");
 });
 
 Deno.test("typeToString parenthesises by arity, not habit", () => {
-  expect(typeToString(TFun([TData(Bool), TData(Bool)], TData(Bool))))
+  expect(typeToString(TFun([], [TData(Bool), TData(Bool)], TData(Bool))))
     .toBe("(Bool, Bool) -> Bool");
   expect(
-    typeToString(TFun([TFun([TData(Bool)], TData(Bool))], TData(Bool))),
+    typeToString(TFun([], [TFun([], [TData(Bool)], TData(Bool))], TData(Bool))),
   ).toBe("(Bool -> Bool) -> Bool");
 });
 
-Deno.test("TAll with no binders is its body", () => {
-  // `forall . T = T`, so the constructor normalizes instead of building one.
-  expect(alphaEq(TAll([], TData(Bool)), TData(Bool))).toBe(true);
-  expect(TAll([], TData(Bool)).kind).toBe("TData");
+Deno.test("TFun is TPoly binding nothing", () => {
+  // One node, so a monomorphic arrow needs no case of its own anywhere.
+  expect(alphaEq(TFun([], [TNever], TUnknown), TFun([], [TNever], TUnknown)))
+    .toBe(true);
 });
 
-Deno.test("normalizing an empty quantifier survives a traversal", () => {
-  // closeAt rebuilds every TAll it passes; a real one must survive that.
-  const type = TAll([mkBinder("A", TUnknown)], FVar(X, "X"));
-  expect(close(type, X).kind).toBe("TAll");
+Deno.test("a quantifier survives a traversal that rebuilds it", () => {
+  const type = TFun([mkBinder("A", TUnknown)], [], FVar(X, "X"));
+  const closed = close(type, X);
+  expect(closed.kind === "TFun" && closed.tyParams.length).toBe(1);
 });

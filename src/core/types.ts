@@ -4,9 +4,11 @@
  * `FVar` never appears under an unopened binder, and only `open*`/`close*` touch
  * index arithmetic.
  *
- * Binders are n-ary and *simultaneous* -- the j-th variable is `BVar j`, no
- * telescope reversal -- so `TAll`'s bounds are parallel. Nest quantifiers when a
- * bound must mention another variable of the same one.
+ * `TFun` is the only binder: quantification is fused into the arrow, so there is
+ * no bare `forall`. Binders are n-ary and simultaneous -- the j-th variable is
+ * `BVar j`, no telescope reversal. `params` and `result` are inside the binder;
+ * the bounds are *parallel*, standing outside it, so a bound may mention an
+ * enclosing binder but never one of its own group.
  */
 
 export type VarId = number & { readonly __brand: "VarId" };
@@ -30,19 +32,17 @@ export type Type =
   | { readonly kind: "FVar"; readonly id: VarId; readonly hint: string }
   | { readonly kind: "EVar"; readonly id: EVarId; readonly hint: string }
   /**
-   * Uncurried: `(params) -> result`. Arity is part of the type, so `(A, B) -> C`
-   * and `A -> B -> C` are unrelated and a mismatch is an arity diagnostic.
+   * `[b0 <: B0, ..] (params) -> result`, uncurried and possibly polymorphic.
+   * Arity is part of the type, so `(A, B) -> C` and `A -> B -> C` are unrelated
+   * and a mismatch is an arity diagnostic. An empty `tyParams` is the ordinary
+   * monomorphic arrow; requiring the parameter list is what keeps a quantifier
+   * off a non-function, which is the value restriction.
    */
   | {
     readonly kind: "TFun";
+    readonly tyParams: readonly Binder[];
     readonly params: readonly Type[];
     readonly result: Type;
-  }
-  /** `forall b0 <: B0, .., bn <: Bn. body`, the j-th variable being `BVar j`. */
-  | {
-    readonly kind: "TAll";
-    readonly binders: readonly Binder[];
-    readonly body: Type;
   }
   /** Saturated nominal constructor. Primitives are the nullary case. */
   | {
@@ -67,13 +67,13 @@ export function EVar(id: EVarId, hint: string): Type {
   return { kind: "EVar", id, hint };
 }
 
-export function TFun(params: readonly Type[], result: Type): Type {
-  return { kind: "TFun", params, result };
-}
-
-/** Normalizes `forall . T` to `T`, so no `TAll` ever quantifies nothing. */
-export function TAll(binders: readonly Binder[], body: Type): Type {
-  return binders.length === 0 ? body : { kind: "TAll", binders, body };
+/** Pass an empty `tyParams` for the monomorphic arrow. */
+export function TFun(
+  tyParams: readonly Binder[],
+  params: readonly Type[],
+  result: Type,
+): Type {
+  return { kind: "TFun", tyParams, params, result };
 }
 
 export function TData(name: DataName, args: readonly Type[] = []): Type {
@@ -107,19 +107,18 @@ function openAt(
       // `TBad` only on an arity disagreement, which earlier passes reject.
       return replacements[type.index - depth] ?? TBad;
     }
-    case "TFun":
+    case "TFun": {
+      // Bounds are parallel, so they stay at `depth`; only what the binder
+      // scopes over -- the parameters and the result -- moves inward.
+      const inner = depth + type.tyParams.length;
       return TFun(
-        type.params.map((param) => openAt(param, depth, replacements)),
-        openAt(type.result, depth, replacements),
-      );
-    case "TAll":
-      // Bounds are parallel, so only the body moves inward -- by the full arity.
-      return TAll(
-        type.binders.map((b) =>
+        type.tyParams.map((b) =>
           mkBinder(b.hint, openAt(b.bound, depth, replacements))
         ),
-        openAt(type.body, depth + type.binders.length, replacements),
+        type.params.map((param) => openAt(param, inner, replacements)),
+        openAt(type.result, inner, replacements),
       );
+    }
     case "TData":
       // Not a binder, but skipping it leaves stale `BVar`s and nothing objects.
       return TData(
@@ -151,16 +150,16 @@ function closeAt(type: Type, depth: number, ids: readonly VarId[]): Type {
       const at = ids.indexOf(type.id);
       return at === -1 ? type : BVar(depth + at);
     }
-    case "TFun":
+    case "TFun": {
+      const inner = depth + type.tyParams.length;
       return TFun(
-        type.params.map((param) => closeAt(param, depth, ids)),
-        closeAt(type.result, depth, ids),
+        type.tyParams.map((b) =>
+          mkBinder(b.hint, closeAt(b.bound, depth, ids))
+        ),
+        type.params.map((param) => closeAt(param, inner, ids)),
+        closeAt(type.result, inner, ids),
       );
-    case "TAll":
-      return TAll(
-        type.binders.map((b) => mkBinder(b.hint, closeAt(b.bound, depth, ids))),
-        closeAt(type.body, depth + type.binders.length, ids),
-      );
+    }
     case "TData":
       return TData(type.name, type.args.map((arg) => closeAt(arg, depth, ids)));
   }
@@ -207,15 +206,11 @@ export function substMany(
     }
     case "TFun":
       return TFun(
-        type.params.map((param) => substMany(param, ids, replacements)),
-        substMany(type.result, ids, replacements),
-      );
-    case "TAll":
-      return TAll(
-        type.binders.map((b) =>
+        type.tyParams.map((b) =>
           mkBinder(b.hint, substMany(b.bound, ids, replacements))
         ),
-        substMany(type.body, ids, replacements),
+        type.params.map((param) => substMany(param, ids, replacements)),
+        substMany(type.result, ids, replacements),
       );
     case "TData":
       return TData(
@@ -242,11 +237,9 @@ export function occurs(id: EVarId, type: Type): boolean {
     case "EVar":
       return type.id === id;
     case "TFun":
-      return type.params.some((param) => occurs(id, param)) ||
+      return type.tyParams.some((b) => occurs(id, b.bound)) ||
+        type.params.some((param) => occurs(id, param)) ||
         occurs(id, type.result);
-    case "TAll":
-      return type.binders.some((b) => occurs(id, b.bound)) ||
-        occurs(id, type.body);
     case "TData":
       return type.args.some((arg) => occurs(id, arg));
   }
@@ -277,18 +270,15 @@ export function alphaEq(left: Type, right: Type): boolean {
     case "EVar":
       return right.kind === "EVar" && left.id === right.id;
     case "TFun":
-      return right.kind === "TFun" &&
-        allPairs(left.params, right.params, alphaEq) &&
-        alphaEq(left.result, right.result);
-    case "TAll":
       // `hint` is for printing only, so not compared.
-      return right.kind === "TAll" &&
+      return right.kind === "TFun" &&
         allPairs(
-          left.binders.map((b) => b.bound),
-          right.binders.map((b) => b.bound),
+          left.tyParams.map((b) => b.bound),
+          right.tyParams.map((b) => b.bound),
           alphaEq,
         ) &&
-        alphaEq(left.body, right.body);
+        allPairs(left.params, right.params, alphaEq) &&
+        alphaEq(left.result, right.result);
     case "TData":
       return right.kind === "TData" &&
         left.name === right.name &&
@@ -312,22 +302,25 @@ function toStringAt(type: Type, names: readonly string[]): string {
     case "EVar":
       return `?${type.hint}`;
     case "TFun": {
-      const params = type.params.map((param) => toStringAt(param, names));
-      // A lone parameter reads better bare, unless it is itself an arrow.
+      const hints = type.tyParams.map((b) => b.hint);
+      // Bounds are parallel, so they read in the *enclosing* scope.
+      const bounds = type.tyParams
+        .map((b) =>
+          b.bound.kind === "TUnknown"
+            ? b.hint
+            : `${b.hint} <: ${toStringAt(b.bound, names)}`
+        )
+        .join(", ");
+      const inner = [...hints, ...names];
+      const params = type.params.map((param) => toStringAt(param, inner));
+      // A lone parameter reads better bare, unless bound or itself an arrow.
       const only = type.params[0];
-      const head = params.length === 1 && only !== undefined &&
-          only.kind !== "TFun" && only.kind !== "TAll"
+      const head = hints.length === 0 && params.length === 1 &&
+          only !== undefined && only.kind !== "TFun"
         ? params[0]
         : `(${params.join(", ")})`;
-      return `${head} -> ${toStringAt(type.result, names)}`;
-    }
-    case "TAll": {
-      const hints = type.binders.map((b) => b.hint);
-      const bounds = type.binders
-        .map((b) => `${b.hint} <: ${toStringAt(b.bound, names)}`)
-        .join(", ");
-      // The j-th variable is `BVar j`, so hints go in front, in binder order.
-      return `forall ${bounds}. ${toStringAt(type.body, [...hints, ...names])}`;
+      const quantifier = hints.length === 0 ? "" : `[${bounds}]`;
+      return `${quantifier}${head} -> ${toStringAt(type.result, inner)}`;
     }
     case "TData":
       return type.args.length === 0

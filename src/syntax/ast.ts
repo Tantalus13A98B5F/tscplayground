@@ -27,24 +27,28 @@ export type TypeNode =
     readonly args: readonly TypeNode[];
     readonly at: Position;
   }
-  /** `(A, B) -> C`, or `A -> B`. Arity is significant; see `TFun`. */
+  /**
+   * `(A, B) -> C`, or `[T <: A](B) -> C`.
+   *
+   * Quantifiers fuse into the arrow rather than standing alone: a bare `forall`
+   * over a non-function is the unsound case once effects exist, so requiring a
+   * parameter list *is* the value restriction. Arity is significant; see `TFun`.
+   */
   | {
     readonly kind: "FunType";
+    readonly tyParams: readonly TypeBinder[];
     readonly params: readonly TypeNode[];
     readonly result: TypeNode;
-    readonly at: Position;
-  }
-  /** `forall A <: B, C. body`. The grammar requires at least one binder. */
-  | {
-    readonly kind: "AllType";
-    readonly binders: readonly TypeBinder[];
-    readonly body: TypeNode;
     readonly at: Position;
   }
   /** Parser recovery. Elaborates to `TBad` with no second diagnostic. */
   | { readonly kind: "BadType"; readonly at: Position };
 
-/** An omitted `bound` means `<: unknown`; the core's `Binder.bound` is required. */
+/**
+ * An omitted `bound` means `<: unknown`; the core's `Binder.bound` is required.
+ * Bounds telescope: binder `j` may mention binders before it, not itself or any
+ * after it.
+ */
 export type TypeBinder = {
   readonly name: Name;
   readonly bound?: TypeNode;
@@ -53,9 +57,10 @@ export type TypeBinder = {
 
 export type Term =
   | { readonly kind: "Var"; readonly name: Name; readonly at: Position }
-  /** `\(x: A, y) => body`. N-ary to match `TFun`. */
+  /** `\(x: A, y) e`, or `\[T <: A](x: T) e`. Binders fuse as in `FunType`. */
   | {
     readonly kind: "Abs";
+    readonly tyParams: readonly TypeBinder[];
     readonly params: readonly Param[];
     readonly body: Term;
     readonly at: Position;
@@ -67,14 +72,11 @@ export type Term =
     readonly args: readonly Term[];
     readonly at: Position;
   }
-  /** `/\A <: B. body`. */
-  | {
-    readonly kind: "TypeAbs";
-    readonly binders: readonly TypeBinder[];
-    readonly body: Term;
-    readonly at: Position;
-  }
-  /** `f[A, B]`. Implicit instantiation at `App` is intended too. */
+  /**
+   * `f[A, B]`. Separate from `App` so `f[A]` and `f[A]()` stay distinct, and
+   * must be saturated -- partial instantiation needs index arithmetic that
+   * implicit instantiation at `App` makes pointless.
+   */
   | {
     readonly kind: "TypeApp";
     readonly callee: Term;
@@ -82,9 +84,9 @@ export type Term =
     readonly at: Position;
   }
   /**
-   * `let x = bound in body`, or `let x : A = bound in body`. With no ascription
-   * node the annotated form is the only way into checking mode, so checking a
-   * subexpression means naming it: `f((e : A))` is `let t : A = e in f(t)`.
+   * `let x = e1; e2`, or `let x : A = e1; e2`. With no ascription node the
+   * annotated form is the only way into checking mode, so checking a
+   * subexpression means naming it.
    */
   | {
     readonly kind: "Let";
@@ -94,7 +96,7 @@ export type Term =
     readonly body: Term;
     readonly at: Position;
   }
-  /** `match scrutinee { arms }`. */
+  /** `match e` followed by `| pat => body` arms, at least one. */
   | {
     readonly kind: "Match";
     readonly scrutinee: Term;
@@ -136,12 +138,16 @@ export type Pattern =
   };
 
 /**
- * `data Pair[A, B] = MkPair(A, B)`, top-level only.
+ * `data Pair[A, B] | MkPair(a: A, b: B)`, top-level only -- `parseExp` has no
+ * `data` case, so that holds by absence rather than by a check.
  *
- * Contributes *term bindings* -- `MkPair : forall A, B. (A, B) -> Pair[A, B]`,
+ * Contributes *term bindings* -- `MkPair : [A, B](a: A, b: B) -> Pair[A, B]`,
  * `true : Bool` -- so there is no constructor term form, and saturation comes
- * free from function arity. `params` are a binding site: elaboration mints a
- * fresh `VarId` for each and closes over them in *declared* order.
+ * free from function arity. Declarations are unscoped: the table is built before
+ * any term is elaborated and every constructor is seeded ahead of the first
+ * `let`, so a type and its constructors share one scope. Among themselves they
+ * telescope -- decl `j` sees only decls before it, which is what rules out
+ * recursion in v1.
  */
 export type DataDecl = {
   readonly name: Name;
@@ -152,7 +158,22 @@ export type DataDecl = {
 
 export type ConDecl = {
   readonly name: Name;
-  readonly fields: readonly TypeNode[];
+  readonly fields: readonly Field[];
+  readonly at: Position;
+};
+
+/** The annotation is required: unlike `Param`, there is nothing to infer from. */
+export type Field = {
+  readonly name: Name;
+  readonly annotation: TypeNode;
+  readonly at: Position;
+};
+
+/** One top-level `let`, before `parseProgram` folds the chain into `term`. */
+export type Bind = {
+  readonly name: Name;
+  readonly annotation?: TypeNode;
+  readonly bound: Term;
   readonly at: Position;
 };
 
