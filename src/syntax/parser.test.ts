@@ -2,7 +2,7 @@ import { expect } from "@std/expect";
 import { mkSource } from "../diagnostics/diagnostic.ts";
 import { tokenize } from "./lexer.ts";
 import { parseProgram, parseType } from "./parser.ts";
-import type { Program, Term, TypeNode } from "./ast.ts";
+import type { DataDecl, Program, Term, TypeNode } from "./ast.ts";
 
 function parse(text: string): { program: Program; errors: readonly string[] } {
   const tokens = tokenize(mkSource(text, "demo.tg")).value ?? [];
@@ -24,6 +24,13 @@ function type(text: string): TypeNode {
   const result = parseType(tokens);
   expect(result.diagnostics).toEqual([]);
   return result.value as TypeNode;
+}
+
+/** The datatype declarations, narrowed out of the mixed declaration list. */
+function datatypes(program: Program): DataDecl[] {
+  return program.decls.filter((decl): decl is DataDecl =>
+    decl.kind === "DataDecl"
+  );
 }
 
 /** The chain of names bound by the top-level `let`s, outermost first. */
@@ -73,19 +80,93 @@ Deno.test("a bare expression before the last one binds nothing", () => {
 
 Deno.test("declarations are collected, never nested in the chain", () => {
   const program = clean(
-    "let a = x\ndata Pair[A, B]\n| MkPair(a: A, b: B)\nlet b = y\na\n",
+    "let a = x\ndatatype Pair[A, B] =\n| MkPair(a: A, b: B)\nlet b = y\na\n",
   );
-  expect(program.decls.map((d) => d.name.text)).toEqual(["Pair"]);
-  expect(program.decls[0]?.params.map((p) => p.text)).toEqual(["A", "B"]);
-  expect(program.decls[0]?.constructors[0]?.fields.map((f) => f.name.text))
-    .toEqual(["a", "b"]);
-  // Interleaving is erased: a `data` between two `let`s was never in the chain.
+  expect(datatypes(program).map((d) => d.name.text)).toEqual(["Pair"]);
+  expect(datatypes(program)[0]?.params.map((p) => p.text)).toEqual(["A", "B"]);
+  expect(
+    datatypes(program)[0]?.constructors[0]?.fields.map((f) => f.name.text),
+  ).toEqual(["a", "b"]);
+  // Interleaving is erased: a `datatype` between two `let`s never entered the chain.
   expect(bindings(program.term)).toEqual(["a", "b"]);
+});
+
+Deno.test("typedef declares a transparent alias, with parameters", () => {
+  const program = clean("typedef Endo[A] = (A) -> A\nx\n");
+  const alias = program.decls[0];
+  expect(alias?.kind).toBe("TypeAlias");
+  if (alias?.kind !== "TypeAlias") return;
+  expect(alias.params.map((p) => p.text)).toEqual(["A"]);
+  expect(alias.body.kind).toBe("FunType");
+});
+
+Deno.test("aliases and datatypes share one ordered list", () => {
+  // Not two, or the order the telescoping check reads would be lost.
+  const program = clean(
+    "typedef Id = Bool\ndatatype Foo = | A\ntypedef Alt = Foo\nx\n",
+  );
+  expect(program.decls.map((d) => [d.kind, d.name.text])).toEqual([
+    ["TypeAlias", "Id"],
+    ["DataDecl", "Foo"],
+    ["TypeAlias", "Alt"],
+  ]);
+});
+
+Deno.test("the Church encodings parse, quantifier fused into the arrow", () => {
+  const program = clean(
+    "typedef CBool = [A](A, A) -> A\n" +
+      "typedef CNat = [A]((A) -> A, A) -> A\n" +
+      "let czero = \\[A](s: (A) -> A, z: A) z\n" +
+      "czero\n",
+  );
+  const [cbool, cnat] = program.decls;
+  expect(
+    cbool?.kind === "TypeAlias" && cbool.body.kind === "FunType" &&
+      cbool.body.tyParams.length,
+  ).toBe(1);
+  expect(
+    cnat?.kind === "TypeAlias" && cnat.body.kind === "FunType" &&
+      cnat.body.params.length,
+  ).toBe(2);
+});
+
+Deno.test("arms read the same on one line as on several", () => {
+  // The block opens at the first `|` either way, so `=` costs nothing.
+  const inline = clean("datatype Foo = | A | B\nx\n");
+  const spread = clean("datatype Foo =\n| A\n| B\nx\n");
+  const names = (p: Program) =>
+    datatypes(p)[0]?.constructors.map((c) => c.name.text);
+  expect(names(inline)).toEqual(["A", "B"]);
+  expect(names(spread)).toEqual(["A", "B"]);
+});
+
+Deno.test("`;` separates items, never arms", () => {
+  // `|` already separates arms, so a `;` there must not be swallowed as one.
+  expect(parse("match x | A -> p; | B -> q\n").errors.length)
+    .toBeGreaterThan(0);
+  expect(parse("datatype Foo = | A; | B\nx\n").errors.length)
+    .toBeGreaterThan(0);
+});
+
+Deno.test("a `;` may not follow an arm at all", () => {
+  // It would read as part of the arm but bind to the enclosing block, and the
+  // same tokens legitimately end a one-line item -- so neither reading is safe.
+  const { errors } = parse("match x\n| A -> f(y); g(z)\n");
+  expect(errors.length).toBe(1);
+  expect(errors[0]).toContain("cannot follow an arm");
+  expect(parse("datatype Foo = | A; x\n").errors.length).toBe(1);
+});
+
+Deno.test("both ways of sequencing around a match stay open", () => {
+  // Indent the body to sequence within the arm; brace the form to sequence
+  // after it. The error above names exactly these two.
+  clean("match x\n| A ->\n    f(y); g(z)\n");
+  clean("let r = { match x | A -> f(y) }; g(z)\nr\n");
 });
 
 Deno.test("match arms may sit at the column of the enclosing block", () => {
   // Safe only because `|` marks them: `let` at that column ends the run.
-  const program = clean("let x = match y\n| A => p\n| B => q\nlet z = w\nx\n");
+  const program = clean("let x = match y\n| A -> p\n| B -> q\nlet z = w\nx\n");
   const bound = program.term.kind === "Let" ? program.term.bound : undefined;
   expect(bound?.kind).toBe("Match");
   expect(bound?.kind === "Match" && bound.arms.length).toBe(2);
@@ -93,12 +174,20 @@ Deno.test("match arms may sit at the column of the enclosing block", () => {
 });
 
 Deno.test("patterns are one level deep and positional", () => {
-  const program = clean("match y\n| MkPair(a, _) => a\n| _ => b\n");
+  const program = clean("match y\n| MkPair(a, _) -> a\n| _ -> b\n");
   const arms = program.term.kind === "Match" ? program.term.arms : [];
   expect(arms[0]?.pattern.kind).toBe("PCon");
   expect(arms[0]?.pattern.kind === "PCon" && arms[0].pattern.args.length)
     .toBe(2);
   expect(arms[1]?.pattern.kind).toBe("PWild");
+});
+
+Deno.test("`_` is an ordinary name, so it binds and resolves like one", () => {
+  // Only `pattern` reads it specially; everywhere else it is just an
+  // identifier, which is what leaves `let _ = e` and `\(_) e` working.
+  expect(bindings(clean("let _ = a\nb\n").term)).toEqual(["_"]);
+  expect(clean("\\(_) x\n").term.kind).toBe("Abs");
+  expect(clean("_\n").term.kind).toBe("Var");
 });
 
 Deno.test("braces admit a binding, parentheses do not", () => {

@@ -14,13 +14,13 @@
 
 import {
   type Diagnostic,
-  err,
+  failed,
   type FileId,
   mkFileId,
   mkPosition,
   mkSource,
-  ok,
   type Position,
+  produced,
   reportError,
   type Result,
   type Source,
@@ -85,7 +85,7 @@ export function scanIncludes(source: Source): Result<readonly Include[]> {
     includes.push({ spec: matched[1], at, width: line.length });
   }
 
-  return ok(includes, diagnostics);
+  return produced(includes, diagnostics);
 }
 
 export type Loaded = {
@@ -171,7 +171,7 @@ export function loadSources(
   const start = fileSystem.resolve(entry);
   if (start === undefined) {
     const source = register(entry, "");
-    return err([
+    return failed([
       reportError(`cannot resolve entry ${entry}`, mkPosition(source.id, 1, 1)),
     ]);
   }

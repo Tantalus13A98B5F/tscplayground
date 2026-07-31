@@ -91,29 +91,52 @@ export class Cursor {
    */
   report(expected: string): void {
     const token = this.raw;
-    const message = this.belongs(token)
-      ? `expected ${expected}, found ${show(token)}`
-      : `expected ${expected}; ${show(token)} is not part of the block that ` +
-        `began at line ${this.blockAt.line}, column ${this.blockAt.column}`;
+    this.complain(
+      this.belongs(token)
+        ? `expected ${expected}, found ${show(token)}`
+        : `expected ${expected}; ${
+          show(token)
+        } is not part of the block that ` +
+          `began at line ${this.blockAt.line}, column ${this.blockAt.column}`,
+    );
+  }
+
+  /** Report at the next token, in the caller's own words. */
+  complain(message: string): void {
+    const token = this.raw;
     this.diagnostics.push(reportError(message, token.at, widthOf(token)));
   }
 
   /**
-   * Move to the next item of the current block: an explicit `;` trailing on this
-   * line, or a token already sitting at the block's column.
+   * Begin a new line at this block's column.
+   *
+   * Arms use this rather than `tryStartNextItem`: `|` already separates them, so
+   * a `;` between two of them means nothing and must not be swallowed. Callers
+   * that ignore the result rely on the other half of the rule -- an arm on the
+   * *same* line sits right of the column and `peek` admits it anyway.
    */
   tryStartNextLine(): boolean {
+    const token = this.raw;
+    if (!isCloser(token.kind) && token.at.column === this.indent) {
+      this.lineStart = true;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Move to the next item of the current block: a `;` trailing on this line, or
+   * a new line. Nothing marks where an expression begins, so items -- unlike
+   * arms -- need a separator, and its absence is an error worth reporting.
+   */
+  tryStartNextItem(): boolean {
     const token = this.raw;
     if (token.kind === "semi" && token.at.column > this.indent) {
       this.advance();
       this.lineStart = this.raw.at.column === this.indent;
       return true;
     }
-    if (!isCloser(token.kind) && token.at.column === this.indent) {
-      this.lineStart = true;
-      return true;
-    }
-    return false;
+    return this.tryStartNextLine();
   }
 
   /**

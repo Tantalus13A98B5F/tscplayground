@@ -4,25 +4,31 @@
  * `parseProgram` is the only entry point that matters. The top level is a flat
  * *item* loop -- a declaration, a binding, or the final expression -- and the
  * bindings are folded into a `Let` chain at the end. So declarations are never
- * nested and never need lifting, and `parseExp` has no `data` case at all, which
+ * nested and never need lifting, and `parseExp` has no `datatype` case at all, which
  * is what makes "top-level only" hold by absence rather than by a check.
  *
  * Recovery returns `BadTerm`/`BadType` and carries on. Every loop either
  * consumes a token or breaks, so a malformed file cannot spin.
  */
 
-import { ok, type Position, type Result } from "../diagnostics/diagnostic.ts";
+import {
+  type Position,
+  produced,
+  type Result,
+} from "../diagnostics/diagnostic.ts";
 import type {
   Arm,
   Bind,
   ConDecl,
   DataDecl,
+  Decl,
   Field,
   Name,
   Param,
   Pattern,
   Program,
   Term,
+  TypeAlias,
   TypeBinder,
   TypeNode,
 } from "./ast.ts";
@@ -39,20 +45,20 @@ const PREFIX = 20;
 export function parseProgram(tokens: readonly Token[]): Result<Program> {
   const parser = new Parser(tokens);
   const program = parser.program();
-  return ok(program, parser.cursor.diagnostics);
+  return produced(program, parser.cursor.diagnostics);
 }
 
 /** Parse a single expression. For tests and the playground, not the pipeline. */
 export function parseTerm(tokens: readonly Token[]): Result<Term> {
   const parser = new Parser(tokens);
   const term = parser.exp(BLOCK);
-  return ok(term, parser.cursor.diagnostics);
+  return produced(term, parser.cursor.diagnostics);
 }
 
 export function parseType(tokens: readonly Token[]): Result<TypeNode> {
   const parser = new Parser(tokens);
   const type = parser.type();
-  return ok(type, parser.cursor.diagnostics);
+  return produced(type, parser.cursor.diagnostics);
 }
 
 class Parser {
@@ -64,16 +70,19 @@ class Parser {
 
   program(): Program {
     const at = this.cursor.here;
-    const decls: DataDecl[] = [];
+    const decls: Decl[] = [];
     const binds: Bind[] = [];
     let body: Term | undefined;
 
     while (!this.cursor.isEof) {
       const mark = this.cursor.mark();
 
-      if (this.cursor.at("data")) {
+      if (this.cursor.at("datatype")) {
         const decl = this.dataDecl();
         if (decl !== undefined) decls.push(decl);
+      } else if (this.cursor.at("typedef")) {
+        const alias = this.typeAlias();
+        if (alias !== undefined) decls.push(alias);
       } else if (this.cursor.at("let")) {
         const head = this.letHead();
         binds.push({ ...head, at: head.bound.at });
@@ -89,7 +98,7 @@ class Parser {
       }
 
       if (this.cursor.isEof) break;
-      if (!this.cursor.tryStartNextLine()) {
+      if (!this.cursor.tryStartNextItem()) {
         this.cursor.report("`;` or a new line, then the rest of the program");
         this.cursor.skipToBlockStart();
       }
@@ -117,25 +126,50 @@ class Parser {
     return { decls, term, at };
   }
 
-  /** `data Pair[A, B]` then its constructor arms. */
+  /** `datatype Pair[A, B] =` then its constructor arms. */
   private dataDecl(): DataDecl | undefined {
-    const keyword = this.cursor.accept("data");
+    const keyword = this.cursor.accept("datatype");
     if (keyword === undefined) return undefined;
     const name = this.name("a type name");
     if (name === undefined) return undefined;
 
-    const params: Name[] = [];
-    if (this.cursor.accept("lbracket") !== undefined) {
-      do {
-        const param = this.name("a type parameter");
-        if (param === undefined) break;
-        params.push(param);
-      } while (this.cursor.accept("comma") !== undefined);
-      this.cursor.expect("rbracket", "`]`");
-    }
+    const params = this.typeParams();
 
+    // Purely for symmetry with `let`; the arm block opens at the first `|`
+    // either way, on this line or the next.
+    this.cursor.expect("equals", "`=`");
     const constructors = this.arms("a constructor", () => this.conDecl());
-    return { name, params, constructors, at: keyword.at };
+    return { kind: "DataDecl", name, params, constructors, at: keyword.at };
+  }
+
+  /** `typedef Endo[A] = (A) -> A`. Transparent, so it has no constructors. */
+  private typeAlias(): TypeAlias | undefined {
+    const keyword = this.cursor.accept("typedef");
+    if (keyword === undefined) return undefined;
+    const name = this.name("a type name");
+    if (name === undefined) return undefined;
+    const params = this.typeParams();
+    this.cursor.expect("equals", "`=`");
+    return {
+      kind: "TypeAlias",
+      name,
+      params,
+      body: this.type(),
+      at: keyword.at,
+    };
+  }
+
+  /** `[A, B]`, the unbounded binding position shared by both declarations. */
+  private typeParams(): Name[] {
+    const params: Name[] = [];
+    if (this.cursor.accept("lbracket") === undefined) return params;
+    do {
+      const param = this.name("a type parameter");
+      if (param === undefined) break;
+      params.push(param);
+    } while (this.cursor.accept("comma") !== undefined);
+    this.cursor.expect("rbracket", "`]`");
+    return params;
   }
 
   private conDecl(): ConDecl | undefined {
@@ -183,6 +217,18 @@ class Parser {
       }
     });
     if (results.length === 0) this.cursor.report(`at least one ${what}`);
+    // Banned rather than given a meaning. `| A -> f(y); g(z)` reads as though
+    // `g(z)` were part of the arm, but the same tokens are what terminate a
+    // one-line item, so the two readings cannot be told apart -- and either
+    // choice leaves the other spelling silently wrong. Both have another way to
+    // be said: indent the arm body to sequence inside it, brace the whole form
+    // to sequence after it.
+    if (this.cursor.raw.kind === "semi") {
+      this.cursor.complain(
+        "`;` cannot follow an arm: indent the arm's body to sequence within " +
+          "it, or wrap the whole form in braces to sequence after it",
+      );
+    }
     return results;
   }
 
@@ -215,7 +261,7 @@ class Parser {
     if (prec <= BLOCK && this.cursor.at("let")) {
       const at = this.cursor.here;
       const head = this.letHead();
-      if (!this.cursor.tryStartNextLine()) {
+      if (!this.cursor.tryStartNextItem()) {
         this.cursor.report("`;` or a new line, then the body");
       }
       return { kind: "Let", ...head, body: this.exp(BLOCK), at };
@@ -228,7 +274,7 @@ class Parser {
       // `e1; e2` binds nothing, but keeps its place once effects exist.
       const at = this.cursor.here;
       const first = this.exp(EXPR);
-      if (!this.cursor.tryStartNextLine()) return first;
+      if (!this.cursor.tryStartNextItem()) return first;
       return {
         kind: "Let",
         name: wildcard(at),
@@ -279,7 +325,7 @@ class Parser {
     const bar = this.cursor.accept("bar");
     if (bar === undefined) return undefined;
     const pattern = this.pattern();
-    this.cursor.expect("fatArrow", "`=>`");
+    this.cursor.expect("arrow", "`->`");
     return { pattern, body: this.blockOrExp(EXPR), at: bar.at };
   }
 
@@ -289,21 +335,14 @@ class Parser {
    * cannot quietly become a catch-all.
    */
   private pattern(): Pattern {
-    const wild = this.cursor.accept("wild");
-    if (wild !== undefined) return { kind: "PWild", at: wild.at };
-
     const name = this.name("a constructor name or `_`");
     if (name === undefined) return { kind: "PWild", at: this.cursor.here };
+    if (name.text === WILDCARD) return { kind: "PWild", at: name.at };
 
     const args: Name[] = [];
     if (this.cursor.accept("lparen") !== undefined) {
       if (!this.cursor.at("rparen")) {
         do {
-          const arg = this.cursor.accept("wild");
-          if (arg !== undefined) {
-            args.push({ text: "_", at: arg.at });
-            continue;
-          }
           const bound = this.name("a name to bind");
           if (bound === undefined) break;
           args.push(bound);
@@ -474,6 +513,14 @@ class Parser {
   }
 }
 
+/**
+ * An ordinary identifier, not a token kind of its own. Everything that walks
+ * binders -- the duplicate check, the shadowing warning, the context -- has to
+ * exempt it by name, and `_` in expression position is an unbound variable
+ * rather than a parse error.
+ */
+export const WILDCARD = "_";
+
 function wildcard(at: Position): Name {
-  return { text: "_", at };
+  return { text: WILDCARD, at };
 }

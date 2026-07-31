@@ -1,13 +1,17 @@
 import { expect } from "@std/expect";
 import {
   comparePositions,
-  format,
-  formatWithSource,
+  failed,
+  hasErrors,
   lineAt,
   mkFileId,
   mkPosition,
   mkSource,
+  produced,
   reportError,
+  reportWarning,
+  showDiagnostic,
+  showDiagnosticWithLine,
 } from "./diagnostic.ts";
 
 const source = mkSource("let x = 1\nlet y = zz\n", "demo.tg");
@@ -30,24 +34,26 @@ Deno.test("lineAt indexes directly, no scanning", () => {
   expect(lineAt(source, mkPosition(file, 9, 1))).toBeUndefined();
 });
 
-Deno.test("format names the file, line and column", () => {
+Deno.test("showDiagnostic names the file, line and column", () => {
   expect(
-    format(reportError("unbound variable", mkPosition(file, 2, 9)), [source]),
+    showDiagnostic(reportError("unbound variable", mkPosition(file, 2, 9)), [
+      source,
+    ]),
   )
     .toBe(
       "demo.tg:2:9: error: unbound variable",
     );
 });
 
-Deno.test("formatWithSource underlines using the caret width", () => {
+Deno.test("showDiagnosticWithLine underlines using the caret width", () => {
   const diagnostic = reportError("unbound variable", mkPosition(file, 2, 9), 2);
-  expect(formatWithSource(diagnostic, [source])).toBe(
+  expect(showDiagnosticWithLine(diagnostic, [source])).toBe(
     "demo.tg:2:9: error: unbound variable\nlet y = zz\n        ^^",
   );
 });
 
 Deno.test("a caret is at least one column wide", () => {
-  const lines = formatWithSource(
+  const lines = showDiagnosticWithLine(
     reportError("boom", mkPosition(file, 1, 1), 0),
     [
       source,
@@ -59,7 +65,7 @@ Deno.test("a caret is at least one column wide", () => {
 
 Deno.test("a caret is clipped to the end of its line", () => {
   // A rendering hint, not an extent: an over-wide hint must not run off.
-  const lines = formatWithSource(
+  const lines = showDiagnosticWithLine(
     reportError("boom", mkPosition(file, 1, 8), 99),
     [source],
   )
@@ -68,10 +74,10 @@ Deno.test("a caret is clipped to the end of its line", () => {
   expect(lines[2]).toBe("       ^^");
 });
 
-Deno.test("formatWithSource falls back to one line when out of range", () => {
+Deno.test("showDiagnosticWithLine falls back to one line when out of range", () => {
   const diagnostic = reportError("boom", mkPosition(file, 99, 1));
-  expect(formatWithSource(diagnostic, [source])).toBe(
-    format(diagnostic, [source]),
+  expect(showDiagnosticWithLine(diagnostic, [source])).toBe(
+    showDiagnostic(diagnostic, [source]),
   );
 });
 
@@ -90,4 +96,22 @@ Deno.test("comparePositions orders by line, then column", () => {
   expect(comparePositions(mkPosition(file, 2, 5), mkPosition(file, 2, 5))).toBe(
     0,
   );
+});
+
+Deno.test("hasErrors ignores warnings, which must not hold a program back", () => {
+  const at = mkPosition(file, 1, 1);
+  expect(hasErrors([reportWarning("shadowed", at)])).toBe(false);
+  expect(hasErrors([reportWarning("shadowed", at), reportError("boom", at)]))
+    .toBe(true);
+  expect(hasErrors([])).toBe(false);
+});
+
+Deno.test("a value may arrive alongside errors, since phases recover", () => {
+  // `produced` claims only that something came out; diagnostics decide.
+  const recovered = produced(["a"], [
+    reportError("boom", mkPosition(file, 1, 1)),
+  ]);
+  expect(recovered.value).toEqual(["a"]);
+  expect(hasErrors(recovered.diagnostics)).toBe(true);
+  expect(failed<string[]>([]).value).toBeUndefined();
 });

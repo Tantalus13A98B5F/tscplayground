@@ -1,5 +1,9 @@
 import { expect } from "@std/expect";
-import { format, mkSource, type Sources } from "../diagnostics/diagnostic.ts";
+import {
+  mkSource,
+  showDiagnostic,
+  type Sources,
+} from "../diagnostics/diagnostic.ts";
 import { isPlainPath, memoryFileSystem } from "../io/files.ts";
 import { loadSources, scanIncludes } from "./include.ts";
 
@@ -37,7 +41,7 @@ Deno.test("a directive after other content is rejected", () => {
   const source = mkSource('let x = 1\n#include "a.tg"\n', "m.tg");
   const scanned = scanIncludes(source);
   expect(scanned.value).toEqual([]);
-  expect(format(scanned.diagnostics[0]!, [source])).toBe(
+  expect(showDiagnostic(scanned.diagnostics[0]!, [source])).toBe(
     "m.tg:2:1: error: #include must come before any other content",
   );
 });
@@ -65,7 +69,7 @@ Deno.test("a directive may carry a trailing comment", () => {
 Deno.test("a malformed directive is reported, not silently skipped", () => {
   const source = mkSource("#include a.tg\n", "m.tg");
   const scanned = scanIncludes(source);
-  expect(format(scanned.diagnostics[0]!, [source])).toBe(
+  expect(showDiagnostic(scanned.diagnostics[0]!, [source])).toBe(
     'm.tg:1:1: error: malformed directive, expected #include "path"',
   );
 });
@@ -107,7 +111,9 @@ Deno.test("a cycle is an reportError, unlike a diamond", () => {
     "b.tg": '#include "a.tg"\n',
   });
   const loaded = loadSources(files, "a.tg");
-  expect(loaded.diagnostics.map((d) => format(d, loaded.value!.sources)))
+  expect(
+    loaded.diagnostics.map((d) => showDiagnostic(d, loaded.value!.sources)),
+  )
     .toEqual(["b.tg:1:1: error: circular include of a.tg"]);
 });
 
@@ -134,14 +140,17 @@ Deno.test("a cycle still yields an order for the files it did reach", () => {
 Deno.test("an unresolvable include names the directive, not the file", () => {
   const files = memoryFileSystem({ "a.tg": '#include "gone.tg"\n' });
   const loaded = loadSources(files, "a.tg");
-  expect(loaded.diagnostics.map((d) => format(d, loaded.value!.sources)))
+  expect(
+    loaded.diagnostics.map((d) => showDiagnostic(d, loaded.value!.sources)),
+  )
     .toEqual(['a.tg:1:1: error: cannot resolve "gone.tg"']);
 });
 
 Deno.test("a missing entry resolves to a named path, not <unknown>", () => {
   const loaded = loadSources(memoryFileSystem({}), "gone.tg");
   expect(loaded.value).toBeUndefined();
-  expect(format(loaded.diagnostics[0]!, [mkSource("", "gone.tg")])).toBe(
-    "gone.tg:1:1: error: cannot resolve entry gone.tg",
-  );
+  expect(showDiagnostic(loaded.diagnostics[0]!, [mkSource("", "gone.tg")]))
+    .toBe(
+      "gone.tg:1:1: error: cannot resolve entry gone.tg",
+    );
 });

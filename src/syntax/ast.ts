@@ -17,7 +17,7 @@ export type TypeNode =
   /** `never` -- bottom. */
   | { readonly kind: "NeverType"; readonly at: Position }
   /**
-   * `A`, or `Pair[A, B]`: type variables and data applications share a node,
+   * `A`, or `Pair[A, B]`: type variables and datatype applications share a node,
    * being indistinguishable without the declaration table. Elaboration resolves
    * it to `FVar`, to `TData` after an arity check, or to `TBad`.
    */
@@ -96,7 +96,7 @@ export type Term =
     readonly body: Term;
     readonly at: Position;
   }
-  /** `match e` followed by `| pat => body` arms, at least one. */
+  /** `match e` followed by `| pat -> body` arms, at least one. */
   | {
     readonly kind: "Match";
     readonly scrutinee: Term;
@@ -138,8 +138,8 @@ export type Pattern =
   };
 
 /**
- * `data Pair[A, B] | MkPair(a: A, b: B)`, top-level only -- `parseExp` has no
- * `data` case, so that holds by absence rather than by a check.
+ * `datatype Pair[A, B] = | MkPair(a: A, b: B)`, top-level only: `parseExp` has
+ * no `datatype` case, so that holds by absence rather than by a check.
  *
  * Contributes *term bindings* -- `MkPair : [A, B](a: A, b: B) -> Pair[A, B]`,
  * `true : Bool` -- so there is no constructor term form, and saturation comes
@@ -150,6 +150,7 @@ export type Pattern =
  * recursion in v1.
  */
 export type DataDecl = {
+  readonly kind: "DataDecl";
   readonly name: Name;
   readonly params: readonly Name[];
   readonly constructors: readonly ConDecl[];
@@ -169,6 +170,28 @@ export type Field = {
   readonly at: Position;
 };
 
+/**
+ * `typedef Endo[A] = (A) -> A`, transparent and expanded during elaboration:
+ * `params` are closed over exactly as a datatype's are, and a use opens them
+ * with its arguments. Nothing downstream learns aliases exist, so the core and
+ * subtyping are untouched -- which also means an alias gets structural variance
+ * where a datatype is invariant.
+ */
+export type TypeAlias = {
+  readonly kind: "TypeAlias";
+  readonly name: Name;
+  readonly params: readonly Name[];
+  readonly body: TypeNode;
+  readonly at: Position;
+};
+
+/**
+ * Type declarations in source order. One list, not two, because they telescope
+ * together: an alias may mention a datatype declared before it and vice versa,
+ * and splitting them would lose the order that check reads.
+ */
+export type Decl = DataDecl | TypeAlias;
+
 /** One top-level `let`, before `parseProgram` folds the chain into `term`. */
 export type Bind = {
   readonly name: Name;
@@ -178,7 +201,7 @@ export type Bind = {
 };
 
 export type Program = {
-  readonly decls: readonly DataDecl[];
+  readonly decls: readonly Decl[];
   readonly term: Term;
   readonly at: Position;
 };

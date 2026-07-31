@@ -11,24 +11,23 @@
 import {
   type Diagnostic,
   mkPosition,
-  ok,
   type Position,
+  produced,
   reportError,
   type Result,
   type Source,
 } from "../diagnostics/diagnostic.ts";
 
 export type TokenKind =
-  | "identifier"
-  | "wild" // `_`
+  | "identifier" // includes `_`, which is a name like any other
   | "let"
-  | "data"
+  | "datatype"
+  | "typedef"
   | "match"
   | "unknown"
   | "never"
   | "lambda" // `\`
-  | "fatArrow" // `=>`, arms only
-  | "arrow" // `->`, function types only
+  | "arrow" // `->`, in a function type and after a pattern alike
   | "subtype" // `<:`
   | "equals"
   | "colon"
@@ -78,15 +77,15 @@ export function stripComment(line: string): string {
 
 const KEYWORDS = new Map<string, TokenKind>([
   ["let", "let"],
-  ["data", "data"],
+  ["datatype", "datatype"],
+  ["typedef", "typedef"],
   ["match", "match"],
   ["unknown", "unknown"],
   ["never", "never"],
 ]);
 
-/** Longest first, so `=>` never reads as `=` and `->` never as a stray `-`. */
+/** Longest first, so `->` never reads as a stray `-` and `<:` never as `<`. */
 const PUNCTUATION: readonly (readonly [string, TokenKind])[] = [
-  ["=>", "fatArrow"],
   ["->", "arrow"],
   ["<:", "subtype"],
   ["\\", "lambda"],
@@ -146,9 +145,7 @@ export function tokenize(source: Source): Result<readonly Token[]> {
       const matched = IDENTIFIER.exec(line);
       if (matched !== null) {
         const text = matched[0];
-        const kind: TokenKind = text === "_"
-          ? "wild"
-          : KEYWORDS.get(text) ?? "identifier";
+        const kind: TokenKind = KEYWORDS.get(text) ?? "identifier";
         tokens.push({ kind, text, at: position, first });
         at += text.length;
         first = false;
@@ -168,5 +165,5 @@ export function tokenize(source: Source): Result<readonly Token[]> {
     at: mkPosition(source.id, source.lines.length, 0),
     first: true,
   });
-  return ok(tokens, diagnostics);
+  return produced(tokens, diagnostics);
 }

@@ -24,9 +24,9 @@ Deno.test("eof sits at column 0, so it closes every open block", () => {
 });
 
 Deno.test("keywords are distinguished from identifiers", () => {
-  expect(kinds("let data match unknown never")).toEqual([
+  expect(kinds("let datatype match unknown never")).toEqual([
     "let",
-    "data",
+    "datatype",
     "match",
     "unknown",
     "never",
@@ -40,18 +40,16 @@ Deno.test("keywords are distinguished from identifiers", () => {
   ]);
 });
 
-Deno.test("`_` is its own kind, not an identifier", () => {
-  // `PWild` is a distinct pattern, so the parser must not have to compare text.
-  expect(kinds("_ _x")).toEqual(["wild", "identifier", "eof"]);
+Deno.test("`_` is an identifier, so the parser decides what it means", () => {
+  expect(kinds("_ _x")).toEqual(["identifier", "identifier", "eof"]);
 });
 
 Deno.test("two-character punctuation wins over one", () => {
-  expect(kinds("=> = -> <: :")).toEqual([
-    "fatArrow",
-    "equals",
+  expect(kinds("-> <: : =")).toEqual([
     "arrow",
     "subtype",
     "colon",
+    "equals",
     "eof",
   ]);
 });
@@ -72,14 +70,15 @@ Deno.test("tokenize covers the whole surface syntax", () => {
     "identifier",
     "eof",
   ]);
-  expect(kinds("data Pair[A, B] | MkPair(a: A)")).toEqual([
-    "data",
+  expect(kinds("datatype Pair[A, B] = | MkPair(a: A)")).toEqual([
+    "datatype",
     "identifier",
     "lbracket",
     "identifier",
     "comma",
     "identifier",
     "rbracket",
+    "equals",
     "bar",
     "identifier",
     "lparen",

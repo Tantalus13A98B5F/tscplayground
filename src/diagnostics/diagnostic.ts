@@ -110,21 +110,43 @@ export function reportWarning(
   return { severity: "warning", message, at, width };
 }
 
-/** A phase result: a value when it succeeded, plus any diagnostics either way. */
+/**
+ * What a phase hands back.
+ *
+ * `diagnostics` are the authority on success, never `value`. Every phase
+ * recovers, so a value can arrive alongside errors: the tokens that did lex, a
+ * tree holding `BadTerm`. Its presence claims only that something structurally
+ * well-formed came out, and downstream must not read it as "no errors" -- ask
+ * `hasErrors`.
+ *
+ * `value === undefined` is the narrower case of producing nothing at all, not
+ * even a recovered husk, which usually means a phase could not start.
+ *
+ * Recovery makes continuing *safe*, but a driver may still decline to: running
+ * a phase over a tree that already failed buries the real error under
+ * consequences of it. Each phase runs to completion, and the driver decides.
+ */
 export type Result<T> = {
   readonly value: T | undefined;
   readonly diagnostics: readonly Diagnostic[];
 };
 
-export function ok<T>(
+/** A value came out. Says nothing about whether it is any good. */
+export function produced<T>(
   value: T,
   diagnostics: readonly Diagnostic[] = [],
 ): Result<T> {
   return { value, diagnostics };
 }
 
-export function err<T>(diagnostics: readonly Diagnostic[]): Result<T> {
+/** Nothing came out, not even a recovered value. */
+export function failed<T>(diagnostics: readonly Diagnostic[]): Result<T> {
   return { value: undefined, diagnostics };
+}
+
+/** Whether to stop. Warnings alone must never hold a program back. */
+export function hasErrors(diagnostics: readonly Diagnostic[]): boolean {
+  return diagnostics.some((diagnostic) => diagnostic.severity === "error");
 }
 
 /**
@@ -142,7 +164,10 @@ export function sourceAt(
 }
 
 /** Render as `path:line:col: severity: message`. */
-export function format(diagnostic: Diagnostic, sources: Sources): string {
+export function showDiagnostic(
+  diagnostic: Diagnostic,
+  sources: Sources,
+): string {
   const { file, line, column } = diagnostic.at;
   const path = sourceAt(sources, file)?.path ?? "<unknown>";
   return `${path}:${line}:${column}: ${diagnostic.severity}: ${diagnostic.message}`;
@@ -154,11 +179,11 @@ export function format(diagnostic: Diagnostic, sources: Sources): string {
  * source; with tabs a column would not be a printed cell and this would need a
  * width table.
  */
-export function formatWithSource(
+export function showDiagnosticWithLine(
   diagnostic: Diagnostic,
   sources: Sources,
 ): string {
-  const head = format(diagnostic, sources);
+  const head = showDiagnostic(diagnostic, sources);
   const source = sourceAt(sources, diagnostic.at.file);
   const text = source && lineAt(source, diagnostic.at);
   if (text === undefined) return head;
