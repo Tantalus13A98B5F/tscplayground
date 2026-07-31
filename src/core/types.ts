@@ -4,11 +4,11 @@
  * `FVar` never appears under an unopened binder, and only `open*`/`close*` touch
  * index arithmetic.
  *
- * `TFun` is the only binder: quantification is fused into the arrow, so there is
- * no bare `forall`. Binders are n-ary and simultaneous -- the j-th variable is
- * `BVar j`, no telescope reversal. `params` and `result` are inside the binder;
- * the bounds are *parallel*, standing outside it, so a bound may mention an
- * enclosing binder but never one of its own group.
+ * `TFun` is the only binder: quantification fuses into the arrow, so there is no
+ * bare `forall`. Binders are n-ary and simultaneous -- the j-th variable is
+ * `BVar j`, no telescope reversal. `params` and `result` sit inside the binder;
+ * bounds are *parallel*, outside it, so a bound may name an enclosing binder but
+ * never one of its own group.
  */
 
 export type VarId = number & { readonly __brand: "VarId" };
@@ -33,14 +33,13 @@ export type Type =
   | { readonly kind: "EVar"; readonly id: EVarId; readonly hint: string }
   /**
    * `[b0 <: B0, ..] (params) -> result`, uncurried and possibly polymorphic.
-   * Arity is part of the type, so `(A, B) -> C` and `A -> B -> C` are unrelated
-   * and a mismatch is an arity diagnostic. An empty `tyParams` is the ordinary
-   * monomorphic arrow; requiring the parameter list is what keeps a quantifier
-   * off a non-function, which is the value restriction.
+   * Arity is part of the type, so `(A, B) -> C` and `A -> B -> C` are unrelated.
+   * An empty `typeParams` is the monomorphic arrow; requiring the parameter list
+   * keeps a quantifier off a non-function, which is the value restriction.
    */
   | {
     readonly kind: "TFun";
-    readonly tyParams: readonly Binder[];
+    readonly typeParams: readonly Binder[];
     readonly params: readonly Type[];
     readonly result: Type;
   }
@@ -67,13 +66,13 @@ export function EVar(id: EVarId, hint: string): Type {
   return { kind: "EVar", id, hint };
 }
 
-/** Pass an empty `tyParams` for the monomorphic arrow. */
+/** Pass an empty `typeParams` for the monomorphic arrow. */
 export function TFun(
-  tyParams: readonly Binder[],
+  typeParams: readonly Binder[],
   params: readonly Type[],
   result: Type,
 ): Type {
-  return { kind: "TFun", tyParams, params, result };
+  return { kind: "TFun", typeParams, params, result };
 }
 
 export function TData(name: DataName, args: readonly Type[] = []): Type {
@@ -85,9 +84,9 @@ export function mkBinder(hint: string, bound: Type): Binder {
 }
 
 /**
- * Replace the variables of the nearest enclosing binder. A datatype declaration
- * binds its parameters the same way, with no enclosing node, so instantiating a
- * constructor and a quantifier are one operation.
+ * Replace the variables of the nearest enclosing binder. A datatype binds its
+ * parameters the same way, so instantiating a constructor and a quantifier are
+ * one operation.
  */
 function openAt(
   type: Type,
@@ -110,9 +109,9 @@ function openAt(
     case "TFun": {
       // Bounds are parallel, so they stay at `depth`; only what the binder
       // scopes over -- the parameters and the result -- moves inward.
-      const inner = depth + type.tyParams.length;
+      const inner = depth + type.typeParams.length;
       return TFun(
-        type.tyParams.map((b) =>
+        type.typeParams.map((b) =>
           mkBinder(b.hint, openAt(b.bound, depth, replacements))
         ),
         type.params.map((param) => openAt(param, inner, replacements)),
@@ -151,9 +150,9 @@ function closeAt(type: Type, depth: number, ids: readonly VarId[]): Type {
       return at === -1 ? type : BVar(depth + at);
     }
     case "TFun": {
-      const inner = depth + type.tyParams.length;
+      const inner = depth + type.typeParams.length;
       return TFun(
-        type.tyParams.map((b) =>
+        type.typeParams.map((b) =>
           mkBinder(b.hint, closeAt(b.bound, depth, ids))
         ),
         type.params.map((param) => closeAt(param, inner, ids)),
@@ -167,9 +166,8 @@ function closeAt(type: Type, depth: number, ids: readonly VarId[]): Type {
 
 /**
  * Abstract free variables *simultaneously*: `ids[j]` becomes `BVar j`. Not
- * iterated `close` -- both calls run at depth 0 and the second leaves the
- * first's `BVar` alone, collapsing everything onto index 0. `ids` must be
- * pairwise distinct.
+ * iterated `close`, which would run every call at depth 0 and collapse
+ * everything onto index 0. `ids` must be pairwise distinct.
  */
 export function closeMany(type: Type, ids: readonly VarId[]): Type {
   return closeAt(type, 0, ids);
@@ -181,12 +179,12 @@ export function close(type: Type, id: VarId): Type {
 }
 
 /**
- * Replace free variables by identity, all at once. Simultaneous, unlike
- * iterating, which would substitute later replacements into earlier ones.
- * Touches no indices: an `FVar` is an identity, not a position.
+ * Replace free variables by identity, all at once -- iterating would substitute
+ * later replacements into earlier ones. Touches no indices, an `FVar` being an
+ * identity rather than a position.
  *
- * Precondition: `ids` pairwise distinct, every replacement locally closed -- a
- * dangling `BVar` would be captured by whatever binder it lands under.
+ * Precondition: `ids` pairwise distinct, every replacement locally closed, or a
+ * dangling `BVar` is captured by whatever binder it lands under.
  */
 export function substMany(
   type: Type,
@@ -206,7 +204,7 @@ export function substMany(
     }
     case "TFun":
       return TFun(
-        type.tyParams.map((b) =>
+        type.typeParams.map((b) =>
           mkBinder(b.hint, substMany(b.bound, ids, replacements))
         ),
         type.params.map((param) => substMany(param, ids, replacements)),
@@ -237,7 +235,7 @@ export function occurs(id: EVarId, type: Type): boolean {
     case "EVar":
       return type.id === id;
     case "TFun":
-      return type.tyParams.some((b) => occurs(id, b.bound)) ||
+      return type.typeParams.some((b) => occurs(id, b.bound)) ||
         type.params.some((param) => occurs(id, param)) ||
         occurs(id, type.result);
     case "TData":
@@ -273,8 +271,8 @@ export function alphaEq(left: Type, right: Type): boolean {
       // `hint` is for printing only, so not compared.
       return right.kind === "TFun" &&
         allPairs(
-          left.tyParams.map((b) => b.bound),
-          right.tyParams.map((b) => b.bound),
+          left.typeParams.map((b) => b.bound),
+          right.typeParams.map((b) => b.bound),
           alphaEq,
         ) &&
         allPairs(left.params, right.params, alphaEq) &&
@@ -302,9 +300,9 @@ function toStringAt(type: Type, names: readonly string[]): string {
     case "EVar":
       return `?${type.hint}`;
     case "TFun": {
-      const hints = type.tyParams.map((b) => b.hint);
+      const hints = type.typeParams.map((b) => b.hint);
       // Bounds are parallel, so they read in the *enclosing* scope.
-      const bounds = type.tyParams
+      const bounds = type.typeParams
         .map((b) =>
           b.bound.kind === "TUnknown"
             ? b.hint

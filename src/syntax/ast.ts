@@ -6,8 +6,34 @@
 
 import type { Position } from "../diagnostics/diagnostic.ts";
 
-export type Name = {
+export type Ident = {
   readonly text: string;
+  readonly at: Position;
+};
+
+/**
+ * The three binding positions, differing in what an *absent* annotation means:
+ * `TypeParam` defaults to `<: unknown`, `Param` opens an existential, and
+ * `CtorParam` has no absent case. Two of those are opposites, so the differing
+ * field names -- all that separates them under structural typing -- must stay.
+ */
+export type TypeParam = {
+  readonly name: Ident;
+  /** Parallel, not telescoping: may name an enclosing binder, never its group. */
+  readonly bound?: TypeNode;
+  readonly at: Position;
+};
+
+export type Param = {
+  readonly name: Ident;
+  readonly annotation?: TypeNode;
+  readonly at: Position;
+};
+
+/** A constructor is an ordinary function, so these are literally its parameters. */
+export type CtorParam = {
+  readonly name: Ident;
+  readonly annotation: TypeNode;
   readonly at: Position;
 };
 
@@ -17,26 +43,24 @@ export type TypeNode =
   /** `never` -- bottom. */
   | { readonly kind: "NeverType"; readonly at: Position }
   /**
-   * `A`, or `Pair[A, B]`: type variables and datatype applications share a node,
-   * being indistinguishable without the declaration table. Elaboration resolves
+   * `A`, or `Pair[A, B]`. Variables and datatype applications share a node,
+   * being indistinguishable without the declaration table; elaboration resolves
    * it to `FVar`, to `TData` after an arity check, or to `TBad`.
    */
   | {
     readonly kind: "NameType";
-    readonly name: Name;
+    readonly name: Ident;
     readonly args: readonly TypeNode[];
     readonly at: Position;
   }
   /**
-   * `(A, B) -> C`, or `[T <: A](B) -> C`.
-   *
-   * Quantifiers fuse into the arrow rather than standing alone: a bare `forall`
-   * over a non-function is the unsound case once effects exist, so requiring a
-   * parameter list *is* the value restriction. Arity is significant; see `TFun`.
+   * `(A, B) -> C`, or `[T <: A](B) -> C`. Quantifiers fuse into the arrow: a
+   * bare `forall` over a non-function is the unsound case once effects exist,
+   * so requiring a parameter list *is* the value restriction. See `TFun`.
    */
   | {
     readonly kind: "FunType";
-    readonly tyParams: readonly TypeBinder[];
+    readonly typeParams: readonly TypeParam[];
     readonly params: readonly TypeNode[];
     readonly result: TypeNode;
     readonly at: Position;
@@ -44,77 +68,55 @@ export type TypeNode =
   /** Parser recovery. Elaborates to `TBad` with no second diagnostic. */
   | { readonly kind: "BadType"; readonly at: Position };
 
-/**
- * An omitted `bound` means `<: unknown`; the core's `Binder.bound` is required.
- * Bounds telescope: binder `j` may mention binders before it, not itself or any
- * after it.
- */
-export type TypeBinder = {
-  readonly name: Name;
-  readonly bound?: TypeNode;
-  readonly at: Position;
-};
-
-export type Term =
-  | { readonly kind: "Var"; readonly name: Name; readonly at: Position }
+export type TermNode =
+  | { readonly kind: "Var"; readonly name: Ident; readonly at: Position }
   /** `\(x: A, y) e`, or `\[T <: A](x: T) e`. Binders fuse as in `FunType`. */
   | {
     readonly kind: "Abs";
-    readonly tyParams: readonly TypeBinder[];
+    readonly typeParams: readonly TypeParam[];
     readonly params: readonly Param[];
-    readonly body: Term;
+    readonly body: TermNode;
     readonly at: Position;
   }
   /** `f(a, b)`. */
   | {
     readonly kind: "App";
-    readonly callee: Term;
-    readonly args: readonly Term[];
+    readonly callee: TermNode;
+    readonly args: readonly TermNode[];
     readonly at: Position;
   }
-  /**
-   * `f[A, B]`. Separate from `App` so `f[A]` and `f[A]()` stay distinct, and
-   * must be saturated -- partial instantiation needs index arithmetic that
-   * implicit instantiation at `App` makes pointless.
-   */
+  /** `f[A, B]`. Separate from `App` so `f[A]` and `f[A]()` stay distinct. */
   | {
     readonly kind: "TypeApp";
-    readonly callee: Term;
+    readonly callee: TermNode;
     readonly args: readonly TypeNode[];
     readonly at: Position;
   }
   /**
-   * `let x = e1; e2`, or `let x : A = e1; e2`. With no ascription node the
-   * annotated form is the only way into checking mode, so checking a
-   * subexpression means naming it.
+   * `let x = e1; e2`, or `let x : A = e1; e2`. With no ascription node this is
+   * the only way into checking mode, so checking a subexpression means naming it.
    */
   | {
     readonly kind: "Let";
-    readonly name: Name;
+    readonly name: Ident;
     readonly annotation?: TypeNode;
-    readonly bound: Term;
-    readonly body: Term;
+    readonly bound: TermNode;
+    readonly body: TermNode;
     readonly at: Position;
   }
   /** `match e` followed by `| pat -> body` arms, at least one. */
   | {
     readonly kind: "Match";
-    readonly scrutinee: Term;
-    readonly arms: readonly Arm[];
+    readonly scrutinee: TermNode;
+    readonly arms: readonly MatchArm[];
     readonly at: Position;
   }
   /** Parser recovery. Synthesizes `TBad` with no second diagnostic. */
   | { readonly kind: "BadTerm"; readonly at: Position };
 
-export type Param = {
-  readonly name: Name;
-  readonly annotation?: TypeNode;
-  readonly at: Position;
-};
-
-export type Arm = {
-  readonly pattern: Pattern;
-  readonly body: Term;
+export type MatchArm = {
+  readonly pattern: MatchPat;
+  readonly body: TermNode;
   readonly at: Position;
 };
 
@@ -122,86 +124,78 @@ export type Arm = {
  * One level deep, which keeps exhaustiveness a set-membership test rather than
  * Maranget's algorithm.
  */
-export type Pattern =
+export type MatchPat =
   | { readonly kind: "PWild"; readonly at: Position }
   /**
-   * `C`, or `C(x, y)` -- always a constructor. There is no catch-all *binding*
-   * form, and that absence is what disambiguates: `C` in arm position is a
-   * constructor, `x` inside `C(x, y)` is a binder. Allowing a bare binder would
-   * collide with nullary constructors and make a misspelling swallow every case.
+   * `C`, or `C(x, y)` -- always a constructor, never a binder. There is no
+   * catch-all binding form: it would collide with nullary constructors and make
+   * a misspelling swallow every case.
    */
   | {
-    readonly kind: "PCon";
-    readonly name: Name;
-    readonly args: readonly Name[];
+    readonly kind: "PCtor";
+    readonly name: Ident;
+    readonly args: readonly Ident[];
     readonly at: Position;
-  };
+  }
+  /**
+   * Parser recovery, covering nothing. Not `PWild`: that one covers every
+   * constructor, so it would make the arm total and silence exhaustiveness.
+   */
+  | { readonly kind: "PBad"; readonly at: Position };
 
 /**
- * `datatype Pair[A, B] = | MkPair(a: A, b: B)`, top-level only: `parseExp` has
- * no `datatype` case, so that holds by absence rather than by a check.
+ * `datatype Pair[A, B] = | MkPair(a: A, b: B)`, top-level only -- `exp` has no
+ * `datatype` case, so that holds by absence rather than by a check.
  *
- * Contributes *term bindings* -- `MkPair : [A, B](a: A, b: B) -> Pair[A, B]`,
- * `true : Bool` -- so there is no constructor term form, and saturation comes
- * free from function arity. Declarations are unscoped: the table is built before
- * any term is elaborated and every constructor is seeded ahead of the first
- * `let`, so a type and its constructors share one scope. Among themselves they
- * telescope -- decl `j` sees only decls before it, which is what rules out
- * recursion in v1.
+ * Contributes *term bindings* (`MkPair : [A, B](a: A, b: B) -> Pair[A, B]`), so
+ * there is no constructor term form and saturation follows from function arity.
+ * Unscoped: every constructor is seeded before the first `let` is elaborated.
  */
-export type DataDecl = {
-  readonly kind: "DataDecl";
-  readonly name: Name;
-  readonly params: readonly Name[];
-  readonly constructors: readonly ConDecl[];
+export type DatatypeDecl = {
+  readonly kind: "DatatypeDecl";
+  readonly name: Ident;
+  readonly typeParams: readonly Ident[];
+  readonly ctors: readonly CtorDecl[];
   readonly at: Position;
 };
 
-export type ConDecl = {
-  readonly name: Name;
-  readonly fields: readonly Field[];
-  readonly at: Position;
-};
-
-/** The annotation is required: unlike `Param`, there is nothing to infer from. */
-export type Field = {
-  readonly name: Name;
-  readonly annotation: TypeNode;
+export type CtorDecl = {
+  readonly name: Ident;
+  readonly params: readonly CtorParam[];
   readonly at: Position;
 };
 
 /**
  * `typedef Endo[A] = (A) -> A`, transparent and expanded during elaboration:
- * `params` are closed over exactly as a datatype's are, and a use opens them
- * with its arguments. Nothing downstream learns aliases exist, so the core and
- * subtyping are untouched -- which also means an alias gets structural variance
- * where a datatype is invariant.
+ * `typeParams` close exactly as a datatype's do, and a use opens them. Nothing
+ * downstream learns aliases exist, which also means an alias gets structural
+ * variance where a datatype is invariant.
  */
-export type TypeAlias = {
-  readonly kind: "TypeAlias";
-  readonly name: Name;
-  readonly params: readonly Name[];
+export type AliasDecl = {
+  readonly kind: "AliasDecl";
+  readonly name: Ident;
+  readonly typeParams: readonly Ident[];
   readonly body: TypeNode;
   readonly at: Position;
 };
 
 /**
- * Type declarations in source order. One list, not two, because they telescope
- * together: an alias may mention a datatype declared before it and vice versa,
- * and splitting them would lose the order that check reads.
+ * Type declarations in source order, which is significant: a declaration may
+ * name only those before it, which is what rules out recursion in v1. One list
+ * rather than two, since aliases and datatypes order against each other.
  */
-export type Decl = DataDecl | TypeAlias;
+export type TypeDecl = DatatypeDecl | AliasDecl;
 
 /** One top-level `let`, before `parseProgram` folds the chain into `term`. */
-export type Bind = {
-  readonly name: Name;
+export type LetItem = {
+  readonly name: Ident;
   readonly annotation?: TypeNode;
-  readonly bound: Term;
+  readonly bound: TermNode;
   readonly at: Position;
 };
 
 export type Program = {
-  readonly decls: readonly Decl[];
-  readonly term: Term;
+  readonly decls: readonly TypeDecl[];
+  readonly term: TermNode;
   readonly at: Position;
 };

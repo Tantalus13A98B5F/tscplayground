@@ -201,5 +201,5 @@ Deno.test("TFun is TPoly binding nothing", () => {
 Deno.test("a quantifier survives a traversal that rebuilds it", () => {
   const type = TFun([mkBinder("A", TUnknown)], [], FVar(X, "X"));
   const closed = close(type, X);
-  expect(closed.kind === "TFun" && closed.tyParams.length).toBe(1);
+  expect(closed.kind === "TFun" && closed.typeParams.length).toBe(1);
 });

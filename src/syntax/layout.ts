@@ -1,18 +1,18 @@
 /**
  * The layout-aware cursor: the offside rule lives here and nowhere else.
  *
- * `peek` *filters*. A token that does not belong to the current block is
- * reported as absent, so a block ends through the parser's ordinary "nothing
- * here I can use" path rather than through a token the lexer had to invent. A
- * block is a column plus a flag: the first token of a line must sit at exactly
- * that column, anything after it must sit strictly right of it. Closers are
- * exempt, which is what lets `)` sit at or left of the block it ends.
+ * `peek` *filters* -- a token outside the current block is reported absent, so
+ * blocks end through the parser's ordinary "nothing usable here" path rather
+ * than through a token the lexer had to invent. A block is a column plus a
+ * flag: a line's first token sits at exactly that column, anything after it
+ * strictly right of it. Closers are exempt, so `)` may sit left of what it ends.
  */
 
 import {
   type Diagnostic,
   type Position,
   reportError,
+  reportWarning,
 } from "../diagnostics/diagnostic.ts";
 import { isCloser, type Token, type TokenKind } from "./lexer.ts";
 
@@ -85,7 +85,7 @@ export class Cursor {
   }
 
   /**
-   * Report what was wanted here. A token filtered by layout is named as such:
+   * Report what was wanted here, naming a layout-filtered token as such --
    * otherwise every offside error reads as a missing token, which is the one
    * weakness of resolving layout by filtering.
    */
@@ -107,15 +107,18 @@ export class Cursor {
     this.diagnostics.push(reportError(message, token.at, widthOf(token)));
   }
 
+  /** As `complain`, for what parses but reads wrong. */
+  warn(message: string): void {
+    const token = this.raw;
+    this.diagnostics.push(reportWarning(message, token.at, widthOf(token)));
+  }
+
   /**
-   * Begin a new line at this block's column.
-   *
-   * Arms use this rather than `tryStartNextItem`: `|` already separates them, so
-   * a `;` between two of them means nothing and must not be swallowed. Callers
-   * that ignore the result rely on the other half of the rule -- an arm on the
-   * *same* line sits right of the column and `peek` admits it anyway.
+   * Begin a new line at this block's column. Callers ignoring the result rely
+   * on the other half of the rule: what stays on the *same* line sits right of
+   * the column, so `peek` admits it unaided.
    */
-  tryStartNextLine(): boolean {
+  tryNewline(): boolean {
     const token = this.raw;
     if (!isCloser(token.kind) && token.at.column === this.indent) {
       this.lineStart = true;
@@ -125,27 +128,42 @@ export class Cursor {
   }
 
   /**
-   * Move to the next item of the current block: a `;` trailing on this line, or
-   * a new line. Nothing marks where an expression begins, so items -- unlike
-   * arms -- need a separator, and its absence is an error worth reporting.
+   * The next item of this block: a `;` anywhere within it, or a new line at its
+   * column. Nothing marks where an expression begins, so its absence is worth
+   * reporting. Paired with `tryBarNewline`, which asks the same for arms and
+   * differs only in leaving the `|` for the arm that follows.
    */
-  tryStartNextItem(): boolean {
+  trySemiNewline(): boolean {
     const token = this.raw;
-    if (token.kind === "semi" && token.at.column > this.indent) {
+    if (token.kind === "semi" && token.at.column >= this.indent) {
+      // Unambiguous, so not an error, but it reads as opening the line it
+      // starts rather than ending the one above.
+      if (token.first) {
+        this.warn(
+          "`;` here ends the previous item; put it at the end of that line, " +
+            "or drop it and rely on the new line",
+        );
+      }
       this.advance();
       this.lineStart = this.raw.at.column === this.indent;
       return true;
     }
-    return this.tryStartNextLine();
+    return this.tryNewline();
+  }
+
+  /** As `trySemiNewline`, for arms. The `|` is left for the arm parser. */
+  tryBarNewline(): boolean {
+    if (this.raw.kind !== "bar") return false;
+    this.tryNewline(); // licenses a `|` sitting exactly at the column
+    return this.at("bar");
   }
 
   /**
    * Run `parse` in a block starting at the next token's column.
    *
-   * `strict` is the difference between a body and a run of arms. A `let` body
-   * must be indented past the `let`, or the binding could not be told from what
-   * follows it. Arms may sit at the enclosing column, because `|` marks them --
-   * that marker is exactly what makes the looser rule safe.
+   * `strict` separates a body from a run of arms: a `let` body must be indented
+   * past the `let` or it could not be told from what follows, while arms may sit
+   * at the enclosing column because `|` marks them.
    */
   block<T>(strict: boolean, parse: () => T): T | undefined {
     const token = this.raw;
@@ -164,7 +182,21 @@ export class Cursor {
     this.lineStart = true;
     this.blockAt = token.at;
     try {
-      return parse();
+      const result = parse();
+      // A block holds exactly what `parse` consumed, so anything left *strictly
+      // inside* it is stray. At the column itself a token is the enclosing
+      // construct's next item; `;` is excluded because callers say better.
+      const rest = this.raw;
+      if (
+        rest.kind !== "eof" && rest.kind !== "semi" && !isCloser(rest.kind) &&
+        rest.at.column > this.indent
+      ) {
+        this.complain(
+          `${show(rest)} is left over inside the block that began at line ` +
+            `${this.blockAt.line}, column ${this.blockAt.column}`,
+        );
+      }
+      return result;
     } finally {
       this.indent = outerIndent;
       this.lineStart = outerLineStart;
