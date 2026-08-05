@@ -1,5 +1,10 @@
 /**
- * Recursive descent over the token array, with layout resolved by `Cursor`.
+ * Recursive descent over the token array, with layout already resolved.
+ *
+ * `prescan` runs first, so a block is `{ ... }` and an item ends at `;`
+ * whether the author wrote those or indented instead. Nothing here reads a
+ * column, and the two halves of block structure -- where one opens and where it
+ * ends -- are both tokens rather than one token and one arithmetic rule.
  *
  * `parseProgram` is the only entry point that matters. The top level is a flat
  * *item* loop -- a declaration, a binding, or the final expression -- whose
@@ -31,15 +36,15 @@ import type {
   TypeNode,
   TypeParam,
 } from "./ast.ts";
-import type { Token } from "./lexer.ts";
-import { Cursor } from "./layout.ts";
+import { isCloser, type Token } from "./lexer.ts";
+import { Cursor } from "./cursor.ts";
 
 /** `let` and sequencing: the forms that run to the end of their block. */
 const BLOCK = 0;
-/** An expression that stops before a `;` or a new line. */
+/** An expression that stops before a `;` or the end of its block. */
 const EXPR = 1;
 /**
- * `\` and `match`: greedy to the right, but nestable inside an argument. Infix
+ * `fn` and `match`: greedy to the right, but nestable inside an argument. Infix
  * operators belong *above* this, so a lambda swallows `+ 1` but cannot be an
  * operand.
  */
@@ -74,16 +79,47 @@ class Parser {
   program(): Program {
     const at = this.cursor.here;
     const decls: TypeDecl[] = [];
+    return { decls, term: this.stmts(decls), at };
+  }
+
+  /**
+   * A block's contents: items separated by `;`, folded into a `Let` chain. A
+   * `let` names its result and anything else sequences under `_`, so the two
+   * are one form with one separator rule -- stated here rather than once per
+   * item kind, where the top level and a nested body had drifted apart on both
+   * the message and the recovery.
+   *
+   * Only an expression may end a block, and which one does is settled by what
+   * follows rather than by the loop: the last expression read is buffered, and
+   * whatever outlives the loop is the result. A `let` cannot end one, since a
+   * binding with nothing following it binds nothing.
+   *
+   * `decls` is where declarations go. Without a sink there is nowhere to put
+   * one, which is exactly what makes them top-level -- the invariant and the
+   * condition are the same thing rather than two that must agree.
+   */
+  private stmts(decls?: TypeDecl[]): TermNode {
+    const top = decls !== undefined;
+    const rest = top ? "the rest of the program" : "the body";
     const binds: LetItem[] = [];
-    let body: TermNode | undefined;
+    /**
+     * The last expression read, held back rather than bound: it is the block's
+     * result if nothing follows it, and a `_` binding as soon as something
+     * does. Buffering is what lets the loop stay ignorant of which item is last.
+     */
+    let last: LetItem | undefined;
 
-    while (!this.cursor.isEof) {
+    while (this.moreItems()) {
+      if (last !== undefined) {
+        binds.push(last);
+        last = undefined;
+      }
+
       const mark = this.cursor.mark();
-
-      if (this.cursor.at("datatype")) {
+      if (top && this.cursor.at("datatype")) {
         const decl = this.datatypeDecl();
         if (decl !== undefined) decls.push(decl);
-      } else if (this.cursor.at("typedef")) {
+      } else if (top && this.cursor.at("typedef")) {
         const alias = this.aliasDecl();
         if (alias !== undefined) decls.push(alias);
       } else if (this.cursor.at("let")) {
@@ -91,28 +127,28 @@ class Parser {
       } else {
         const at = this.cursor.here;
         const term = this.exp(EXPR);
-        // Only the last item is the result; anything before it is sequencing.
-        if (this.cursor.isEof) {
-          body = term;
-          break;
+        // Having consumed nothing it is no result but a token nothing can use,
+        // which the progress guard below has to step over.
+        if (this.cursor.mark() !== mark) {
+          last = { name: wildcard(at), bound: term, at };
         }
-        binds.push({ name: wildcard(at), bound: term, at });
       }
 
-      if (this.cursor.isEof) break;
-      if (!this.cursor.trySemiNewline()) {
-        this.cursor.report("`;` or a new line, then the rest of the program");
-        this.cursor.skipToBlockStart();
-      }
       if (this.cursor.mark() === mark) this.cursor.advance(); // ensure progress
+      this.skipSeparator(rest);
     }
 
+    // A `let` cannot end a block -- a binding with nothing following it binds
+    // nothing -- so an unset buffer is exactly the missing-result case.
+    let body = last?.bound;
     if (body === undefined) {
-      this.cursor.report("an expression to be the program's result");
+      this.cursor.report(
+        `an expression to be ${top ? "the program's" : "the block's"} result`,
+      );
       body = { kind: "BadTerm", at: this.cursor.here };
     }
 
-    const term = binds.reduceRight<TermNode>(
+    return binds.reduceRight<TermNode>(
       (rest, bind) => ({
         kind: "Let",
         name: bind.name,
@@ -125,10 +161,31 @@ class Parser {
       }),
       body,
     );
-    return { decls, term, at };
   }
 
-  /** `datatype Pair[A, B] =` then its constructor arms. */
+  /**
+   * Whether an item can begin here. A closer ends the run: it belongs to the
+   * bracket that opened this block, which no item of it may consume.
+   */
+  private moreItems(): boolean {
+    const token = this.cursor.peek();
+    return token.kind !== "eof" && !isCloser(token.kind);
+  }
+
+  /**
+   * Step over the separator between two items. Nothing marks where an
+   * expression begins, so its absence is worth reporting -- unless the block
+   * ends here, which is how its final expression gets to have none.
+   */
+  private skipSeparator(rest: string): void {
+    if (this.cursor.accept("semi") !== undefined) return;
+    if (!this.moreItems()) return;
+    this.cursor.report(`\`;\` or a new line, then ${rest}`);
+    this.cursor.skipStray();
+    this.cursor.accept("semi");
+  }
+
+  /** `datatype Pair[A, B] where` then its constructor arms. */
   private datatypeDecl(): DatatypeDecl | undefined {
     const keyword = this.cursor.accept("datatype");
     if (keyword === undefined) return undefined;
@@ -136,11 +193,10 @@ class Parser {
     if (name === undefined) return undefined;
 
     const typeParams = this.plainTypeParams();
-
-    // Purely for symmetry with `let`; the arm block opens at the first `|`
-    // either way, on this line or the next.
-    this.cursor.expect("equals", "`=`");
-    const ctors = this.barBlock("constructor", keyword, () => this.ctorDecl());
+    // A pure delimiter: nothing but constructors may follow it, which is what
+    // lets the prescan open their block wherever it sits.
+    this.cursor.expect("where", "`where`, then the constructors");
+    const ctors = this.arms("constructor", () => this.ctorDecl());
     return { kind: "DatatypeDecl", name, typeParams, ctors, at: keyword.at };
   }
 
@@ -206,42 +262,35 @@ class Parser {
   }
 
   /**
-   * A run of `|` arms, forming a block at the first one's column.
+   * A run of `|` arms, after `with` or `where`.
    *
-   * A keyword starting its own line owns that column, so its arms may sit there
-   * too. One that does not must have its arms indented past the enclosing block,
-   * since that column is already spoken for: in `| A -> match y`, arms at the
-   * outer column would be ambiguous between the two matches. The indent is what
-   * makes nesting explicit instead of a dangling-else convention.
-   *
-   * Placement past that is free -- an indented line is a continuation, and a
-   * continuation carries an arm as the original line could. `|` is reserved and
-   * no expression consumes it, so only one parse ever exists; tidying ragged
-   * arms is a formatter's job.
+   * The braces are optional because the prescan only opens a block when the
+   * arms are indented past the enclosing one; arms sitting at their keyword's
+   * own column get none, and need none -- `|` is reserved, no expression
+   * consumes it, so it delimits its own arm either way. Placement past that is
+   * free, and tidying ragged arms is a formatter's job.
    */
-  private barBlock<T>(
-    what: string,
-    keyword: Token,
-    parse: () => T | undefined,
-  ): T[] {
+  private arms<T>(what: string, parse: () => T | undefined): T[] {
     const results: T[] = [];
-    this.cursor.block(!keyword.first, () => {
-      while (this.cursor.tryBarNewline()) {
-        const mark = this.cursor.mark();
-        const parsed = parse();
-        if (parsed !== undefined) results.push(parsed);
-        if (this.cursor.mark() === mark) break;
-      }
-    });
-    if (results.length === 0) this.cursor.report(`at least one ${what}`);
-    // Banned rather than given a meaning: in `| A -> f(y); g(z)` the two
-    // readings cannot be told apart, and both have another way to be said.
-    if (this.cursor.raw.kind === "semi") {
-      this.cursor.complain(
-        "`;` cannot follow an arm: indent the arm's body to sequence within " +
-          "it, or wrap the whole form in braces to sequence after it",
-      );
+    const braced = this.cursor.accept("lbrace") !== undefined;
+
+    while (this.cursor.at("bar")) {
+      const mark = this.cursor.mark();
+      const parsed = parse();
+      if (parsed !== undefined) results.push(parsed);
+      if (this.cursor.mark() === mark) break;
     }
+
+    if (braced) {
+      // A `;` inside the block is wreckage, not a place to resume: arms are
+      // separated by `|`, so nothing here could have wanted one.
+      if (!this.cursor.at("rbrace")) {
+        this.cursor.report(`\`}\`, or another ${what}`);
+        this.cursor.skipStray(true);
+      }
+      this.cursor.accept("rbrace");
+    }
+    if (results.length === 0) this.cursor.report(`at least one ${what}`);
     return results;
   }
 
@@ -261,48 +310,35 @@ class Parser {
   }
 
   /**
-   * A newline here opens an indented block; otherwise the expression continues
-   * on this line. One function, and the only place blocks are introduced.
+   * A block here, or the expression continuing where it is. One function, and
+   * the only place a term block is entered.
    */
   private blockOrExp(prec: number): TermNode {
-    if (!this.cursor.raw.first) return this.exp(prec);
+    return this.cursor.at("lbrace") ? this.block() : this.exp(prec);
+  }
+
+  private block(): TermNode {
     const at = this.cursor.here;
-    return this.cursor.block(true, () => this.exp(BLOCK)) ??
-      { kind: "BadTerm", at };
+    if (this.cursor.accept("lbrace") === undefined) {
+      this.cursor.report("a block");
+      return { kind: "BadTerm", at };
+    }
+    const inner = this.stmts();
+    this.cursor.expect("rbrace", "`}`");
+    return inner;
   }
 
   exp(prec: number): TermNode {
-    if (prec <= BLOCK && this.cursor.at("let")) {
-      const head = this.letBinding();
-      if (!this.cursor.trySemiNewline()) {
-        this.cursor.report("`;` or a new line, then the body");
-      }
-      return { kind: "Let", ...head, body: this.exp(BLOCK) };
-    }
+    // A block is a run of items, `let` and sequencing alike; `stmts` owns both.
+    if (prec <= BLOCK) return this.stmts();
 
-    if (prec <= BLOCK) {
-      // `e1; e2` binds nothing, but keeps its place once effects exist. Prefix
-      // forms reach this too, so they can head a sequence rather than strand
-      // what follows; `let` is above only because it takes the rest as its body.
-      const at = this.cursor.here;
-      const first = this.exp(EXPR);
-      if (!this.cursor.trySemiNewline()) return first;
-      return {
-        kind: "Let",
-        name: wildcard(at),
-        bound: first,
-        body: this.exp(BLOCK),
-        at,
-      };
-    }
-
-    if (prec <= PREFIX && this.cursor.at("lambda")) return this.abs();
+    if (prec <= PREFIX && this.cursor.at("fn")) return this.abs();
     if (prec <= PREFIX && this.cursor.at("match")) return this.match();
 
     return this.postfix();
   }
 
-  /** `\(x: A) e`, or `\[T <: A](x: T) e` -- one binder, both worlds. */
+  /** `fn (x: A) -> e`, or `fn [T <: A](x: T) -> e` -- one binder, both worlds. */
   private abs(): TermNode {
     const at = this.cursor.here;
     this.cursor.advance();
@@ -327,14 +363,16 @@ class Parser {
       }
       this.cursor.expect("rparen", "`)`");
     }
+    this.cursor.expect("arrow", "`->`, then the body");
     return { kind: "Abs", typeParams, params, body: this.blockOrExp(EXPR), at };
   }
 
   private match(): TermNode {
-    const keyword = this.cursor.raw;
+    const keyword = this.cursor.peek();
     this.cursor.advance();
     const scrutinee = this.exp(PREFIX + 1);
-    const arms = this.barBlock("arm", keyword, () => this.matchArm());
+    this.cursor.expect("with", "`with`, then the arms");
+    const arms = this.arms("arm", () => this.matchArm());
     return { kind: "Match", scrutinee, arms, at: keyword.at };
   }
 
@@ -376,7 +414,7 @@ class Parser {
     let term = this.atom();
     for (;;) {
       const open = this.cursor.peek();
-      if (open?.kind === "lparen") {
+      if (open.kind === "lparen") {
         this.cursor.advance();
         const args: TermNode[] = [];
         if (!this.cursor.at("rparen")) {
@@ -386,7 +424,7 @@ class Parser {
         }
         this.cursor.expect("rparen", "`)`");
         term = { kind: "App", callee: term, args, at: open.at };
-      } else if (open?.kind === "lbracket") {
+      } else if (open.kind === "lbracket") {
         this.cursor.advance();
         const args: TypeNode[] = [];
         do args.push(this.type()); while (
@@ -400,9 +438,9 @@ class Parser {
 
   private atom(): TermNode {
     const token = this.cursor.peek();
-    const at = this.cursor.here;
+    const at = token.at;
 
-    if (token?.kind === "identifier") {
+    if (token.kind === "identifier") {
       this.cursor.advance();
       return {
         kind: "Var",
@@ -410,25 +448,36 @@ class Parser {
         at: token.at,
       };
     }
-    if (token?.kind === "lparen") {
+    if (token.kind === "lparen") {
       this.cursor.advance();
       const inner = this.exp(EXPR);
       this.cursor.expect("rparen", "`)`");
       return inner;
     }
-    if (token?.kind === "lbrace") {
-      // Braces hold a block, so unlike parentheses they admit `let`.
-      this.cursor.advance();
-      const inner = this.cursor.block(true, () => this.exp(BLOCK));
-      this.cursor.expect("rbrace", "`}`");
-      return inner ?? { kind: "BadTerm", at };
-    }
+    // Braces hold a block, so unlike parentheses they admit `let`.
+    if (token.kind === "lbrace") return this.block();
 
     this.cursor.report("an expression");
     return { kind: "BadTerm", at };
   }
 
+  /**
+   * A type, possibly wrapped in the block a line-ending `=` or `->` opened
+   * around it. The prescan does not know a type from a term -- and needs not,
+   * since a block holding one type is just that type.
+   */
   type(): TypeNode {
+    if (this.cursor.at("lbrace")) {
+      this.cursor.advance();
+      const inner = this.type();
+      if (!this.cursor.at("rbrace")) {
+        this.cursor.report("`}`, since a block in a type holds one type");
+        this.cursor.skipStray(true);
+      }
+      this.cursor.accept("rbrace");
+      return inner;
+    }
+
     const at = this.cursor.here;
 
     if (this.cursor.at("lbracket")) {

@@ -55,8 +55,8 @@ Deno.test("two-character punctuation wins over one", () => {
 });
 
 Deno.test("tokenize covers the whole surface syntax", () => {
-  expect(kinds("\\[T <: A](x: T) e")).toEqual([
-    "lambda",
+  expect(kinds("fn [T <: A](x: T) -> e")).toEqual([
+    "fn",
     "lbracket",
     "identifier",
     "subtype",
@@ -67,10 +67,11 @@ Deno.test("tokenize covers the whole surface syntax", () => {
     "colon",
     "identifier",
     "rparen",
+    "arrow",
     "identifier",
     "eof",
   ]);
-  expect(kinds("datatype Pair[A, B] = | MkPair(a: A)")).toEqual([
+  expect(kinds("datatype Pair[A, B] where | MkPair(a: A)")).toEqual([
     "datatype",
     "identifier",
     "lbracket",
@@ -78,7 +79,7 @@ Deno.test("tokenize covers the whole surface syntax", () => {
     "comma",
     "identifier",
     "rbracket",
-    "equals",
+    "where",
     "bar",
     "identifier",
     "lparen",

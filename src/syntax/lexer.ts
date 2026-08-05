@@ -2,10 +2,9 @@
  * Tokenizer. Eager: the whole file becomes an array, so the parser can look past
  * a matching bracket -- cheap, and files are small.
  *
- * Layout is *not* tokenized. No `INDENT`/`DEDENT` is emitted, because in a
- * higher-order language block structure and expression structure do not nest
- * compatibly -- a lambda body ending corresponds to no token. Each token instead
- * carries its column, and the parser consults it; see `first`.
+ * Layout is *not* resolved here. Each token carries its column and whether it
+ * opens a line; `prescan` turns those into `{`, `}` and `;`, and the parser sees
+ * only the result. Nothing downstream of the prescan reads a column.
  */
 
 import {
@@ -24,12 +23,14 @@ export type TokenKind =
   | "datatype"
   | "typedef"
   | "match"
+  | "fn"
+  | "with" // delimits a match's scrutinee from its arms
+  | "where" // the same, for a datatype's constructors
   | "unknown"
   | "never"
-  | "lambda" // `\`
-  | "arrow" // `->`, in a function type and after a pattern alike
+  | "arrow" // `->`, in a function type, after a pattern, and before a body
   | "subtype" // `<:`
-  | "equals"
+  | "equals" // binds: `let` and `typedef`, nothing else
   | "colon"
   | "semi"
   | "comma"
@@ -46,13 +47,23 @@ export type Token = {
   readonly kind: TokenKind;
   readonly text: string;
   readonly at: Position;
-  /** First token on its line, so the layout filter demands its own column. */
+  /** First token on its line. Read by the prescan, by nothing after it. */
   readonly first: boolean;
+  /**
+   * Synthesized by the prescan, so the source holds no such token. Only
+   * diagnostics may consult it: an inserted token stands in for one the author
+   * omitted, and the omission has already been reported where it happened.
+   */
+  readonly inserted?: boolean;
 };
 
-/** Exempt from the layout filter: a closer may sit at or left of its block. */
+/** A line starting with one of these is a continuation, never a new item. */
 export function isCloser(kind: TokenKind): boolean {
   return kind === "rparen" || kind === "rbracket" || kind === "rbrace";
+}
+
+export function isOpener(kind: TokenKind): boolean {
+  return kind === "lparen" || kind === "lbracket" || kind === "lbrace";
 }
 
 /** Starts a comment, which runs to end of line. There are no block comments. */
@@ -80,6 +91,9 @@ const KEYWORDS = new Map<string, TokenKind>([
   ["datatype", "datatype"],
   ["typedef", "typedef"],
   ["match", "match"],
+  ["fn", "fn"],
+  ["with", "with"],
+  ["where", "where"],
   ["unknown", "unknown"],
   ["never", "never"],
 ]);
@@ -88,7 +102,6 @@ const KEYWORDS = new Map<string, TokenKind>([
 const PUNCTUATION: readonly (readonly [string, TokenKind])[] = [
   ["->", "arrow"],
   ["<:", "subtype"],
-  ["\\", "lambda"],
   ["=", "equals"],
   [":", "colon"],
   [";", "semi"],
