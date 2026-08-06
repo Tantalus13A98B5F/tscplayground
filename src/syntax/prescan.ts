@@ -43,7 +43,9 @@
  *   3. A line-initial token is measured against the two columns above.
  *   4. Except a closer, which belongs to whatever the author opened before the
  *      line.
- *   5. A closer ends every context opened inside its own, then matches.
+ *   5. A closer ends what layout opened above it, and matches the innermost
+ *      delimiter the author wrote -- only that one, since a closer must not
+ *      end a construct the author can see.
  */
 
 import {
@@ -83,22 +85,18 @@ type Context = {
   readonly opener?: string;
 };
 
+type TokenTable<T> = Partial<Record<TokenKind, T>>;
+
 /** The bracket pairs whose contents are laid out freely. `{` is a block. */
-const BRACKETS: Partial<
-  Record<TokenKind, Pick<Context, "closerKind" | "closer" | "opener">>
+const BRACKETS: TokenTable<
+  Pick<Context, "closerKind" | "closer" | "opener">
 > = {
   lparen: { closerKind: "rparen", closer: ")", opener: "(" },
   lbracket: { closerKind: "rbracket", closer: "]", opener: "[" },
 };
 
-/** Every block ends with `}`, whether layout opened it or the author did. */
-const BLOCK_CLOSER: Pick<Context, "closerKind" | "closer"> = {
-  closerKind: "rbrace",
-  closer: "}",
-};
-
 /** Opens a block, and whether it may do so mid-line. See rule 1. */
-const OPENERS: Partial<Record<TokenKind, "anywhere" | "lineend">> = {
+const OPENERS: TokenTable<"anywhere" | "lineend"> = {
   with: "anywhere",
   where: "anywhere",
   equals: "lineend",
@@ -125,7 +123,8 @@ export function prescan(tokens: readonly Token[]): Result<readonly Token[]> {
     floor: 0,
     // Non-empty, having an `eof`; and its position is only ever a fallback.
     at: tokens[0]!.at,
-    ...BLOCK_CLOSER,
+    closerKind: "rbrace",
+    closer: "}",
   }];
 
   const top = (): Context => stack[stack.length - 1] as Context;
@@ -176,7 +175,8 @@ export function prescan(tokens: readonly Token[]): Result<readonly Token[]> {
         alignment,
         floor,
         at: token.at,
-        ...BLOCK_CLOSER,
+        closerKind: "rbrace",
+        closer: "}",
         ...(written ? { opener: "{" } : {}),
       });
     } else {
@@ -193,18 +193,17 @@ export function prescan(tokens: readonly Token[]): Result<readonly Token[]> {
   };
 
   /**
-   * Search the stack for the context this closer matches, answering its depth
-   * or -1. Only a written opener is ever the answer: a closer may end what the
-   * author opened, never a context layout put there.
+   * The innermost context the author opened, which is the only one a closer
+   * may match. The search stops there rather than passing it: what layout put
+   * above it may be popped to reach it, but a written opener may not, or one
+   * stray closer would end a nesting the author can see is not its own.
    */
-  const findOpener = (kind: TokenKind): number => {
+  const findWrittenOpener = (): Context | undefined => {
     for (let depth = stack.length - 1; depth > 0; depth -= 1) {
       const context = stack[depth] as Context;
-      if (context.opener !== undefined && context.closerKind === kind) {
-        return depth;
-      }
+      if (context.opener !== undefined) return context;
     }
-    return -1;
+    return undefined;
   };
 
   for (const [index, token] of tokens.entries()) {
@@ -214,20 +213,25 @@ export function prescan(tokens: readonly Token[]): Result<readonly Token[]> {
     const peek = tokens[index + 1] as Token;
 
     if (isCloser(token.kind)) {
-      const depth = findOpener(token.kind);
-      if (depth > 0) {
-        // Rule 5. What is above was opened inside it, so it ends with it.
-        while (stack.length > depth + 1) closeTop(token.at);
+      const opened = findWrittenOpener();
+      if (opened !== undefined && opened.closerKind === token.kind) {
+        // Rule 5. What stands above it layout opened inside it, so it ends
+        // with it.
+        while (top() !== opened) closeTop(token.at);
         stack.pop();
         emit(token);
       } else {
-        // Nothing to close, so it is dropped: passed on it would end whatever
+        // Closing nothing, so it is dropped: passed on it would end whatever
         // item run the parser was in, losing the rest to one stray character.
         // This is also the other half of the balance contract -- every closer
         // the parser sees is one its own opener awaits.
         diagnostics.push(
           reportError(
-            `unmatched \`${token.text}\``,
+            // Named where there is one to name: an author looking at their own
+            // `(` would not believe a closer called unmatched next to it.
+            opened?.opener === undefined
+              ? `unmatched \`${token.text}\``
+              : `\`${token.text}\` cannot close \`${opened.opener}\``,
             token.at,
             token.text.length,
           ),

@@ -91,7 +91,7 @@ Deno.test("a nested one-line match binds innermost", () => {
     .toBe("match x with { | A -> match y with { | C -> p | D -> q } }");
 });
 
-Deno.test("a closer closes every block opened inside its group", () => {
+Deno.test("a closer closes every block opened inside its bracket", () => {
   // Which is how the other reading of the case above gets to be said.
   expect(stream("match x with | A -> (match y with | C -> p) | D -> q\n"))
     .toBe(
@@ -99,6 +99,40 @@ Deno.test("a closer closes every block opened inside its group", () => {
     );
   expect(stream("map (fn (x: A) ->\n  body) xs\n"))
     .toBe("map ( fn ( x : A ) -> { body } ) xs");
+});
+
+Deno.test("a closer reaches past what layout opened, and no further", () => {
+  // Reaching past a written `(` would end, on the word of one character, a
+  // nesting the author can see is not this closer's. So the `]` is dropped and
+  // named for what it ran into, and the dedent closes what was left open.
+  const crossed = scan("let x = f[g(a]\nx\n");
+  expect(crossed.stream).toBe("let x = f [ g ( a ) ] ; x");
+  expect(crossed.errors).toEqual([
+    "`]` cannot close `(`",
+    "`(` is never closed",
+    "`[` is never closed",
+  ]);
+
+  // Depth changes nothing, the search stopping at the first written opener:
+  // `)` pops none of these braces rather than all three.
+  const deep = scan("let x = f({ a { b { c )\nx\n");
+  expect(deep.stream).toBe("let x = f ( { a { b { c } } } ) ; x");
+  expect(deep.errors).toEqual([
+    "`)` cannot close `{`",
+    "`{` is never closed",
+    "`{` is never closed",
+    "`{` is never closed",
+    "`(` is never closed",
+  ]);
+
+  // A written `{` counts as written, so it stops one too.
+  const brace = scan("let x = { f(a }\nx\n");
+  expect(brace.stream).toBe("let x = { f ( a ) } ; x");
+  expect(brace.errors).toEqual([
+    "`}` cannot close `(`",
+    "`(` is never closed",
+    "`{` is never closed",
+  ]);
 });
 
 Deno.test("layout is suspended inside brackets until a block opens", () => {
