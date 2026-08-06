@@ -165,18 +165,15 @@ Deno.test("`;` and `|` accept the same placements", () => {
   clean("match x with | A -> p | B -> q\n");
   clean("match x with\n   | A -> p\n   | B -> q\n");
   clean("match x with\n  | A -> p\n  | B -> q\n");
-  // A leading `;` parses, but is warned about rather than rejected.
+  // Opening a line it reads as starting an item rather than ending the one
+  // above, but the two are the same separator and neither reading is wrong.
   for (
     const text of [
       "let x = a\n   ; let y = b\ny\n",
       "let x = a\n; let y = b\ny\n",
     ]
   ) {
-    const { program, errors } = parse(text);
-    expect(bindings(program.term)).toEqual(["x", "y"]);
-    expect(errors).toEqual([
-      "`;` here ends the previous item; put it at the end of that line, or drop it and rely on the new line",
-    ]);
+    expect(bindings(clean(text).term)).toEqual(["x", "y"]);
   }
 });
 
@@ -366,15 +363,14 @@ Deno.test("a brace block may open on its own line or after the brace", () => {
   clean("let x = {\n  a\n  {\n    b\n  }\n}\nx\n");
 });
 
-Deno.test("a braced body is still bounded by its `}`, however it is indented", () => {
-  // The braces say where the block ends, so a body that misindents is reported
-  // and then parsed where it stands -- the block is not cut short at the fault,
-  // which would strand the real `}` and reparent what it visibly encloses.
-  for (const text of ["let x = {\na\nb\n}\nx\n", "let x = { a\n  b }\nx\n"]) {
-    const { program, errors } = parse(text);
-    expect(errors.length).toBe(1);
-    expect(bindings(program.term)).toEqual(["x"]);
-  }
+Deno.test("braces buy no exemption from layout", () => {
+  // A body flush with the enclosing block is made of that block's items, so the
+  // braces cannot hold it however the author meant them to. Indenting it is the
+  // whole requirement -- past that, placement is free.
+  expect(parse("let x = {\na\nb\n}\nx\n").errors[0]).toContain(
+    "must be indented",
+  );
+  clean("let x = {\n  a\n  b\n}\nx\n");
   // A closing brace may still sit left of the block it ends.
   clean("let x = {\n    a\n    b\n  }\nx\n");
 });
@@ -451,13 +447,15 @@ Deno.test("a match with no arms is reported", () => {
 });
 
 Deno.test("a body that fails to indent is reported once, by the prescan", () => {
-  // It knows what opened the block and what column the body owed, which the
-  // parser cannot reconstruct. The `;` standing where the body should have been
-  // is marked a repair, so the parser does not report the same absence again.
-  const { errors } = parse("let x =\na\n");
+  // It knows what opened the block and what column the body owed, neither of
+  // which the parser can reconstruct. And the line is then read as the body
+  // anyway -- it takes no separator, since what the `=` promised is exactly
+  // what it is -- so the mistake costs its own diagnostic and nothing else.
+  const { program, errors } = parse("let x =\na\nb\n");
   expect(errors).toEqual([
     "the block opened by `=` must be indented past column 1",
   ]);
+  expect(bindings(program.term)).toEqual(["x"]);
 });
 
 Deno.test("recovery keeps going after a bad expression", () => {

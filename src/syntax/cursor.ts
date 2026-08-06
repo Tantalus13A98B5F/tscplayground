@@ -18,8 +18,19 @@ import {
 } from "../diagnostics/diagnostic.ts";
 import { isCloser, isOpener, type Token, type TokenKind } from "./lexer.ts";
 
+/**
+ * Name a token in a message.
+ *
+ * An inserted token is named for what it stands for, never quoted: the source
+ * holds no such character, so a reader following the caret would find something
+ * else there and doubt the rest of the message.
+ */
 function show(token: Token): string {
-  return token.kind === "eof" ? "end of input" : `\`${token.text}\``;
+  if (token.kind === "eof") return "end of input";
+  if (token.inserted !== true) return `\`${token.text}\``;
+  return token.kind === "semi"
+    ? "the end of this item"
+    : "the end of this block";
 }
 
 export class Cursor {
@@ -29,7 +40,9 @@ export class Cursor {
   readonly diagnostics: Diagnostic[] = [];
 
   constructor(private readonly tokens: readonly Token[]) {
-    if (tokens[0] === undefined) {
+    // `peek` clamps to the last token and hands it back for ever, so if that
+    // token were not `eof` every loop guarded by it would spin.
+    if (tokens[tokens.length - 1]?.kind !== "eof") {
       throw new Error("token stream must end with eof");
     }
   }
@@ -78,15 +91,12 @@ export class Cursor {
    * specific one -- where it is not, the fix is for the outer rule to say what
    * it wanted up front.
    *
-   * A token inserted as a *repair* is silent: the prescan reported the omission
-   * it stands for, at the place the author actually left something out, and
-   * complaining again here would name a position with nothing written at it.
-   * The `{`, `}` and `;` layout itself produces carry no such flag -- they are
-   * what indentation means, and an error landing on one is as real as any.
+   * An inserted token is complained about like any other. It marks a real
+   * boundary -- a block did end there -- and an error landing on one is as real
+   * as any; only its *wording* differs, which `show` handles.
    */
   complain(message: string): void {
     const token = this.peek();
-    if (token.inserted === true) return;
     if (
       this.lastError !== undefined &&
       this.lastError.line === token.at.line &&
