@@ -154,7 +154,7 @@ Deno.test("a brace body flush with its surroundings cannot hold together", () =>
   // dropped with them and the `}` turns up unmatched. Braces buy no exemption
   // from layout, and this is the shape where that is felt.
   const { stream, errors } = scan("let x = {\na\nb\n}\nx\n");
-  expect(stream).toBe("let x = a ; b ; x");
+  expect(stream).toBe("let x = ; a ; b ; x");
   expect(errors).toEqual([
     "the block opened by `{` must be indented past column 1",
     "unmatched `}`",

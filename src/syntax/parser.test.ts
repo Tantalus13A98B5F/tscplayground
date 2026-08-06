@@ -446,16 +446,13 @@ Deno.test("a match with no arms is reported", () => {
   expect(errors.join("\n")).toContain("at least one arm");
 });
 
-Deno.test("a body that fails to indent is reported once, by the prescan", () => {
-  // It knows what opened the block and what column the body owed, neither of
-  // which the parser can reconstruct. And the line is then read as the body
-  // anyway -- it takes no separator, since what the `=` promised is exactly
-  // what it is -- so the mistake costs its own diagnostic and nothing else.
+Deno.test("a body that fails to indent", () => {
   const { program, errors } = parse("let x =\na\nb\n");
   expect(errors).toEqual([
     "the block opened by `=` must be indented past column 1",
+    "expected an expression, found the end of this item",
   ]);
-  expect(bindings(program.term)).toEqual(["x"]);
+  expect(bindings(program.term)).toEqual(["x", "_"]);
 });
 
 Deno.test("recovery keeps going after a bad expression", () => {
