@@ -12,10 +12,13 @@ export type Ident = {
 };
 
 /**
- * The three binding positions, differing in what an *absent* annotation means:
- * `TypeParam` defaults to `<: unknown`, `Param` opens an existential, and
- * `CtorParam` has no absent case. Two of those are opposites, so the differing
- * field names -- all that separates them under structural typing -- must stay.
+ * The two binding positions, differing in what an *absent* annotation means:
+ * `TypeParam` defaults to `<: unknown` and `Param` opens an existential. Those
+ * are opposites, so the differing field names -- all that separates them under
+ * structural typing -- must stay.
+ *
+ * A constructor's parameters are not among them. It is an ordinary function,
+ * and a function type names nothing, so its fields are types alone.
  */
 export type TypeParam = {
   readonly name: Ident;
@@ -27,13 +30,6 @@ export type TypeParam = {
 export type Param = {
   readonly name: Ident;
   readonly annotation?: TypeNode;
-  readonly at: Position;
-};
-
-/** A constructor is an ordinary function, so these are literally its parameters. */
-export type CtorParam = {
-  readonly name: Ident;
-  readonly annotation: TypeNode;
   readonly at: Position;
 };
 
@@ -142,11 +138,11 @@ export type MatchPat =
   };
 
 /**
- * `datatype Pair[A, B] = | MkPair(a: A, b: B)`, top-level only -- `exp` has no
+ * `datatype Pair[A, B] = | MkPair(A, B)`, top-level only -- `exp` has no
  * `datatype` case, so that holds by absence rather than by a check.
  *
- * Contributes *term bindings* (`MkPair : [A, B](a: A, b: B) -> Pair[A, B]`), so
- * there is no constructor term form and saturation follows from function arity.
+ * Contributes *term bindings* (`MkPair : [A, B](A, B) -> Pair[A, B]`), so there
+ * is no constructor term form and saturation follows from function arity.
  * Unscoped: every constructor is seeded before the first `let` is elaborated.
  */
 export type DatatypeDecl = {
@@ -157,9 +153,14 @@ export type DatatypeDecl = {
   readonly at: Position;
 };
 
+/**
+ * Fields are types alone, positional as the patterns that take them apart are.
+ * Names would be dropped on the way to `TFun`, which has none -- when a domain
+ * carries names, a constructor's may come back with them.
+ */
 export type CtorDecl = {
   readonly name: Ident;
-  readonly params: readonly CtorParam[];
+  readonly params: readonly TypeNode[];
   readonly at: Position;
 };
 

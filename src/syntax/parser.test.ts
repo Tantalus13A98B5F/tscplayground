@@ -21,6 +21,13 @@ function parse(text: string): readonly string[] {
   return [...laid.diagnostics, ...result.diagnostics].map((d) => d.message);
 }
 
+/** As `parse`, for the tests that ask where the caret landed. */
+function report(text: string) {
+  const laid = scan(text);
+  const result = parseProgram(laid.value ?? []);
+  return [...laid.diagnostics, ...result.diagnostics];
+}
+
 function clean(text: string): Program {
   const laid = scan(text);
   const result = parseProgram(laid.value ?? []);
@@ -89,18 +96,49 @@ Deno.test("a bare expression before the last one binds nothing", () => {
 
 Deno.test("declarations are collected, never nested in the chain", () => {
   const program = clean(
-    "let a = x\ndatatype Pair[A, B] where\n  | MkPair(a: A, b: B)\nlet b = y\na\n",
+    "let a = x\ndatatype Pair[A, B] where\n  | MkPair(A, B)\nlet b = y\na\n",
   );
   expect(datatypes(program).map((d) => d.name.text)).toEqual(["Pair"]);
   expect(datatypes(program)[0]?.typeParams.map((p) => p.text)).toEqual([
     "A",
     "B",
   ]);
+  // Fields are types alone, positional as the patterns that take them apart.
   expect(
-    datatypes(program)[0]?.ctors[0]?.params.map((f) => f.name.text),
-  ).toEqual(["a", "b"]);
+    datatypes(program)[0]?.ctors[0]?.params.map((f) =>
+      f.kind === "NameType" ? f.name.text : f.kind
+    ),
+  ).toEqual(["A", "B"]);
   // Interleaving is erased: a `datatype` between two `let`s never entered the chain.
   expect(bindings(program.term)).toEqual(["a", "b"]);
+});
+
+Deno.test("a bound is read where none is meant, then reported on itself", () => {
+  // The bracket form is one rule, so `A <: B` parses and is refused after. The
+  // caret is the point: it goes back to the bound, not on to the `]` the parse
+  // has reached by then.
+  const [error, ...rest] = report("datatype Box[A <: B] where\n  | MkBox\nx\n");
+  expect(error?.message).toBe(
+    "a declaration's type parameters take no bound",
+  );
+  expect([error?.at.line, error?.at.column]).toEqual([1, 19]);
+  expect(rest).toEqual([]);
+});
+
+Deno.test("a named constructor field is reported, a domain holding types alone", () => {
+  const [error, ...rest] = report("datatype Box where\n  | MkBox(x: A)\nx\n");
+  expect(error?.message).toBe(
+    "expected `,` or `)`, since a parameter list holds types alone, found `:`",
+  );
+  expect([error?.at.line, error?.at.column]).toEqual([2, 12]);
+  expect(rest).toEqual([]);
+});
+
+Deno.test("a constructor's fields are the same domain a function type has", () => {
+  const program = clean("datatype Box[A] where\n  | MkBox(A)\n  | Empty\nx\n");
+  const ctors = datatypes(program)[0]?.ctors;
+  expect(ctors?.map((c) => c.name.text)).toEqual(["MkBox", "Empty"]);
+  expect(ctors?.map((c) => c.params.length)).toEqual([1, 0]);
 });
 
 Deno.test("typedef declares a transparent alias, with parameters", () => {
@@ -205,7 +243,7 @@ Deno.test("a block must be fully consumed", () => {
   // body clears the arm list's column, which is one right of the `|`.
   const nested = parse("match x with\n  | A ->\n    foo | B -> g\n");
   expect(nested).toEqual([
-    "expected `;` or a new line, then the body, found `|`",
+    "expected `;` or a new line, then the rest of the block, found `|`",
   ]);
 
   // The same message catches juxtaposition, which is not application here.
@@ -257,8 +295,8 @@ Deno.test("a nested block recovers like the item loop does", () => {
   // And a second mistake still reports itself rather than the wreckage.
   expect(parse("let x =\n  let w = a b c\n  let v = d e f\n  w\nx\n"))
     .toEqual([
-      "expected `;` or a new line, then the body, found `b`",
-      "expected `;` or a new line, then the body, found `e`",
+      "expected `;` or a new line, then the rest of the block, found `b`",
+      "expected `;` or a new line, then the rest of the block, found `e`",
     ]);
 });
 

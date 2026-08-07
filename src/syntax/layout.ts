@@ -114,7 +114,7 @@ const OPENERS: TokenTable<"anywhere" | "lineend"> = {
  * delimiter, so the item it introduces begins after it. An arm list therefore
  * aligns one right of its `|`, and an arm's body must clear *that*. See rule 3.
  */
-const itemColumn = (token: Token): number =>
+const firstColumn = (token: Token): number =>
   token.at.column + (token.kind === "bar" ? 1 : 0);
 
 export function layout(tokens: readonly Token[]): Result<readonly Token[]> {
@@ -184,7 +184,7 @@ export function layout(tokens: readonly Token[]): Result<readonly Token[]> {
    */
   const openBlock = (token: Token, peek: Token): void => {
     const floor = newFloor();
-    const alignment = itemColumn(peek);
+    const alignment = firstColumn(peek);
     if (alignment > floor) {
       const written = token.kind === "lbrace";
       if (written) emit(token);
@@ -248,7 +248,7 @@ export function layout(tokens: readonly Token[]): Result<readonly Token[]> {
     } else {
       if (token.first) {
         // Rule 3: settle what this line's first token belongs to.
-        const column = itemColumn(token);
+        const column = firstColumn(token);
         // Past here, `column > top().floor`: what the line falls out of is gone.
         while (column <= top().floor) closeTop(token.at);
         if (column <= top().alignment) {

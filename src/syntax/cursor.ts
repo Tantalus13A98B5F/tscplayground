@@ -17,7 +17,6 @@ import {
   type Diagnostic,
   type Position,
   reportError,
-  reportWarning,
 } from "../diagnostics/diagnostic.ts";
 import type { Token, TokenKind } from "./lexer.ts";
 
@@ -76,10 +75,6 @@ export class Cursor {
     return this.peek().kind === kind;
   }
 
-  get isEof(): boolean {
-    return this.at("eof");
-  }
-
   advance(): void {
     if (this.index < this.tokens.length - 1) this.index += 1;
   }
@@ -106,6 +101,19 @@ export class Cursor {
   }
 
   /**
+   * As `fail`, about something already read rather than about what is next.
+   *
+   * For what only a finished node can be asked -- whether a type parameter came
+   * with a bound the position it sits in has no use for. The caret goes back to
+   * it, since the token the parse now stands on had nothing to do with it, and
+   * the message states the rule rather than naming a token that would have done.
+   */
+  failAt(at: Position, message: string): never {
+    this.reportOnce(message, at, 1);
+    this.abandon();
+  }
+
+  /**
    * Give up silently, for a construct left unreadable by a failure already
    * reported inside it -- a block whose only item was dropped has no result,
    * which is the first error's doing and not a second one.
@@ -127,29 +135,24 @@ export class Cursor {
    */
   private complain(message: string): void {
     const token = this.peek();
+    this.reportOnce(message, token.at, Math.max(1, token.text.length));
+  }
+
+  /** The one-error-per-position rule itself, wherever the position came from. */
+  private reportOnce(message: string, at: Position, length: number): void {
     if (
       this.lastError !== undefined &&
-      this.lastError.line === token.at.line &&
-      this.lastError.column === token.at.column
+      this.lastError.line === at.line &&
+      this.lastError.column === at.column
     ) {
       return;
     }
-    this.lastError = token.at;
-    this.diagnostics.push(
-      reportError(message, token.at, Math.max(1, token.text.length)),
-    );
+    this.lastError = at;
+    this.diagnostics.push(reportError(message, at, length));
   }
 
-  /** As `complain`, for what parses but reads wrong. */
-  warn(message: string): void {
-    const token = this.peek();
-    this.diagnostics.push(
-      reportWarning(message, token.at, Math.max(1, token.text.length)),
-    );
-  }
-
-  /** Recovery: drop the rest of this item, stopping at the `;` after it. */
-  skipToItem(): void {
+  /** Recovery in a block: drop what is left, stopping at the `;` after it. */
+  skipToSemi(): void {
     this.skipTo((kind) => kind === "semi");
   }
 
@@ -157,7 +160,7 @@ export class Cursor {
    * Recovery inside an arm list, whose separator is `|`. A `;` cannot delimit
    * an arm, so one here is wreckage to skip rather than a place to resume.
    */
-  skipToArm(): void {
+  skipToBar(): void {
     this.skipTo((kind) => kind === "bar");
   }
 
