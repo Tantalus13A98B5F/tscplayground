@@ -24,13 +24,18 @@ import { isCloser, isOpener, type Token, type TokenKind } from "./lexer.ts";
  * An inserted token is named for what it stands for, never quoted: the source
  * holds no such character, so a reader following the caret would find something
  * else there and doubt the rest of the message.
+ *
+ * And named as *above*, since a boundary layout inserted takes the position of
+ * the line that follows it. The caret lands on that line's first token, which
+ * is the one thing the boundary is not -- so the message has to say which way
+ * to look, or it reads as a denial of the token under it.
  */
 function show(token: Token): string {
   if (token.kind === "eof") return "end of input";
   if (token.inserted !== true) return `\`${token.text}\``;
   return token.kind === "semi"
-    ? "the end of this item"
-    : "the end of this block";
+    ? "the end of the item above"
+    : "the end of the block above";
 }
 
 export class Cursor {

@@ -198,8 +198,9 @@ Deno.test("arm placement past the opening column is free", () => {
 
 Deno.test("a block must be fully consumed", () => {
   // `| B` sits inside the block opened for `A`'s body, so it is stray there --
-  // it reads as belonging to that body but would start an arm outside it.
-  const nested = parse("match x with\n  | A ->\n   foo | B -> g\n");
+  // it reads as belonging to that body but would start an arm outside it. The
+  // body clears the arm list's column, which is one right of the `|`.
+  const nested = parse("match x with\n  | A ->\n    foo | B -> g\n");
   expect(nested.errors).toEqual([
     "expected `;` or a new line, then the body, found `|`",
   ]);
@@ -284,9 +285,7 @@ Deno.test("sequencing after a match is said with braces, or with a new line", ()
   clean("match x with\n  | A ->\n    f(y); g(z)\n");
 });
 
-Deno.test("arms must be indented, and a dedent ends the run", () => {
-  // At the enclosing column they would read as items of the enclosing block,
-  // which is the one thing `|` marking its own arm cannot make clear.
+Deno.test("arms are a block wherever they line up, and a dedent ends the run", () => {
   const program = clean(
     "let x =\n  match y with\n    | A -> p\n    | B -> q\nlet z = w\nx\n",
   );
@@ -294,17 +293,44 @@ Deno.test("arms must be indented, and a dedent ends the run", () => {
   expect(bound?.kind === "Match" && bound.arms.length).toBe(2);
   expect(bindings(program.term)).toEqual(["x", "z"]);
 
-  // Flush, they are reported -- and then parsed anyway, since `|` does delimit
-  // them and the rest of the file should not pay for one misindented list.
-  const flush = parse("let x = match y with\n| A -> p\nx\n");
-  expect(flush.errors).toEqual([
-    "the block opened by `with` must be indented past column 1",
-  ]);
-  const inner = flush.program.term.kind === "Let"
-    ? flush.program.term.bound
-    : undefined;
+  // Flush with the line their keyword began, they are a block like any other.
+  const flush = clean("let x = match y with\n| A -> p\nx\n");
+  const inner = flush.term.kind === "Let" ? flush.term.bound : undefined;
   expect(inner?.kind === "Match" && inner.arms.length).toBe(1);
-  expect(bindings(flush.program.term)).toEqual(["x"]);
+  expect(bindings(flush.term)).toEqual(["x"]);
+});
+
+Deno.test("arms with no block of their own are reported, then dropped", () => {
+  // A `match` written inside an arm list gets no flush block, its arms sharing
+  // the column of the list around it. Reading them here would be guessing which
+  // `match` they answer to, so they are skipped whole rather than given to the
+  // one that happens to ask first.
+  const { program, errors } = parse(
+    "match x with\n| A -> match y with\n| C -> p\n| D -> q\n",
+  );
+  expect(errors).toEqual([
+    "expected the arms, indented past the start of this item, found `|`",
+  ]);
+  const outer = program.term;
+  expect(outer.kind === "Match" && outer.arms.length).toBe(1);
+  const inner = outer.kind === "Match" ? outer.arms[0]?.body : undefined;
+  expect(inner?.kind === "Match" && inner.arms.length).toBe(0);
+});
+
+Deno.test("an arm list with no block of its own leaves the enclosing `}` alone", () => {
+  // Reached without a `{`, so the next `}` is the enclosing block's. Consuming
+  // it would end that block here, and one misindented arm list would cost the
+  // construct around it -- the `let` body would run to end of file looking for
+  // the closer it had lost.
+  const { program, errors } = parse(
+    "let x =\n  match y with\n| A -> p\nlet w = b\nz\n",
+  );
+  expect(errors).toEqual([
+    "expected the arms, indented past the start of this item, found `|`",
+  ]);
+  // The `let` still owns exactly its own body, so what follows is still read as
+  // the declarations it is -- the skip cost one arm list and nothing else.
+  expect(bindings(program.term)).toEqual(["x", "w"]);
 });
 
 Deno.test("a nested match binds its arms innermost", () => {
@@ -367,9 +393,12 @@ Deno.test("braces buy no exemption from layout", () => {
   // A body flush with the enclosing block is made of that block's items, so the
   // braces cannot hold it however the author meant them to. Indenting it is the
   // whole requirement -- past that, placement is free.
-  expect(parse("let x = {\na\nb\n}\nx\n").errors[0]).toContain(
-    "must be indented",
-  );
+  // The `{` opens nothing and is dropped, so the binding is left without a
+  // value and the `}` is left with nothing to close.
+  expect(parse("let x = {\na\nb\n}\nx\n").errors).toEqual([
+    "unmatched `}`",
+    "expected the bound value, indented past the `let`, found the end of the item above",
+  ]);
   clean("let x = {\n  a\n  b\n}\nx\n");
   // A closing brace may still sit left of the block it ends.
   clean("let x = {\n    a\n    b\n  }\nx\n");
@@ -447,10 +476,12 @@ Deno.test("a match with no arms is reported", () => {
 });
 
 Deno.test("a body that fails to indent", () => {
+  // No block opened, so the `=` is left facing the boundary before `a`. The
+  // caret sits on `a`, which is why the message says *above*: the item that
+  // ended without a value is the one the reader has to look up to find.
   const { program, errors } = parse("let x =\na\nb\n");
   expect(errors).toEqual([
-    "the block opened by `=` must be indented past column 1",
-    "expected an expression, found the end of this item",
+    "expected the bound value, indented past the `let`, found the end of the item above",
   ]);
   expect(bindings(program.term)).toEqual(["x", "_"]);
 });

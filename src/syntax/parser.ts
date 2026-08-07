@@ -264,15 +264,27 @@ class Parser {
   /**
    * A run of `|` arms, after `with` or `where`.
    *
-   * The braces are optional because the prescan only opens a block when the
-   * arms are indented past the enclosing one; arms sitting at their keyword's
-   * own column get none, and need none -- `|` is reserved, no expression
-   * consumes it, so it delimits its own arm either way. Placement past that is
-   * free, and tidying ragged arms is a formatter's job.
+   * The block is required, and this is the only place its absence is reported:
+   * the prescan opens one wherever the arms clear the column their keyword set
+   * and says nothing when they do not. Arms without one bind innermost with no
+   * way to spell the other reading, so reading them would be guessing at which
+   * construct they belong to; they are dropped whole instead. Placement past
+   * that column is free, and tidying ragged arms is a formatter's job.
+   *
+   * Having consumed no `{`, consume no `}` -- which is why the wreckage goes to
+   * `skipStray` and not to `closeBrace`. Without a block of its own the next `}`
+   * belongs to whatever encloses this, and taking it would end *that* here: one
+   * misindented arm list would cost the construct it sits in.
    */
   private arms<T>(what: string, parse: () => T | undefined): T[] {
     const results: T[] = [];
     const braced = this.cursor.accept("lbrace") !== undefined;
+
+    if (!braced && this.cursor.at("bar")) {
+      this.cursor.report(`the ${what}s, indented past the start of this item`);
+      this.cursor.skipStray();
+      return results;
+    }
 
     while (this.cursor.at("bar")) {
       const mark = this.cursor.mark();
@@ -281,48 +293,57 @@ class Parser {
       if (this.cursor.mark() === mark) break;
     }
 
-    if (braced) {
-      // A `;` inside the block is wreckage, not a place to resume: arms are
-      // separated by `|`, so nothing here could have wanted one.
-      if (!this.cursor.at("rbrace")) {
-        this.cursor.report(`\`}\`, or another ${what}`);
-        this.cursor.skipStray(true);
-      }
-      this.cursor.accept("rbrace");
-    }
+    if (braced) this.closeBrace(`\`}\`, or another ${what}`);
     if (results.length === 0) this.cursor.report(`at least one ${what}`);
     return results;
   }
 
-  /** Shared by the item loop and `exp`, which differ only in what follows. */
+  /**
+   * The `}` ending a brace run that holds no items -- an arm list, a type. A
+   * `;` inside one is wreckage rather than a place to resume, so recovery
+   * skips past it; `stmts` needs none of this, a `;` there being its business.
+   */
+  private closeBrace(expected: string): void {
+    if (!this.cursor.at("rbrace")) {
+      this.cursor.report(expected);
+      this.cursor.skipStray(true);
+    }
+    this.cursor.accept("rbrace");
+  }
+
+  /** `let x = e`, without the separator or the body that follows it. */
   private letBinding(): LetItem {
-    const keyword = this.cursor.accept("let");
-    const at = keyword?.at ?? this.cursor.here;
+    const at = this.cursor.here; // the `let` the item loop saw
+    this.cursor.advance();
     const name = this.ident("a name to bind") ?? wildcard(at);
     const annotation = this.cursor.accept("colon") === undefined
       ? undefined
       : this.type();
     this.cursor.expect("equals", "`=`");
-    const bound = this.blockOrExp(EXPR);
+    const bound = this.blockOrExp("the bound value, indented past the `let`");
     return annotation === undefined
       ? { name, bound, at }
       : { name, annotation, bound, at };
   }
 
   /**
-   * A block here, or the expression continuing where it is. One function, and
-   * the only place a term block is entered.
+   * A block here, or the expression continuing where it is -- the choice every
+   * body makes, a line-ending opener being what turned the one into the other.
+   *
+   * A body short of the column its opener set is neither: layout ended the item
+   * before it, so it is gone by the time we look. Saying what was wanted names
+   * the fix, where `an expression` would land on the line the author wrote as
+   * the body and deny it was one.
    */
-  private blockOrExp(prec: number): TermNode {
-    return this.cursor.at("lbrace") ? this.block() : this.exp(prec);
+  private blockOrExp(what: string): TermNode {
+    if (this.cursor.at("lbrace")) return this.block();
+    if (this.cursor.at("semi") || !this.moreItems()) this.cursor.report(what);
+    return this.exp(EXPR);
   }
 
+  /** `{ ... }`, the only place a term block is entered. Callers see the `{`. */
   private block(): TermNode {
-    const at = this.cursor.here;
-    if (this.cursor.accept("lbrace") === undefined) {
-      this.cursor.report("a block");
-      return { kind: "BadTerm", at };
-    }
+    this.cursor.advance();
     const inner = this.stmts();
     this.cursor.expect("rbrace", "`}`");
     return inner;
@@ -364,7 +385,8 @@ class Parser {
       this.cursor.expect("rparen", "`)`");
     }
     this.cursor.expect("arrow", "`->`, then the body");
-    return { kind: "Abs", typeParams, params, body: this.blockOrExp(EXPR), at };
+    const body = this.blockOrExp("the function's body, indented past the `fn`");
+    return { kind: "Abs", typeParams, params, body, at };
   }
 
   private match(): TermNode {
@@ -381,7 +403,10 @@ class Parser {
     if (bar === undefined) return undefined;
     const pattern = this.matchPat();
     this.cursor.expect("arrow", "`->`");
-    return { pattern, body: this.blockOrExp(EXPR), at: bar.at };
+    // Past its `|`, not level with it: the arm list's items begin one column
+    // right of the bar, so a body there is the next item rather than this one's.
+    const body = this.blockOrExp("the arm's body, indented past its `|`");
+    return { pattern, body, at: bar.at };
   }
 
   /**
@@ -470,11 +495,7 @@ class Parser {
     if (this.cursor.at("lbrace")) {
       this.cursor.advance();
       const inner = this.type();
-      if (!this.cursor.at("rbrace")) {
-        this.cursor.report("`}`, since a block in a type holds one type");
-        this.cursor.skipStray(true);
-      }
-      this.cursor.accept("rbrace");
+      this.closeBrace("`}`, since a block in a type holds one type");
       return inner;
     }
 

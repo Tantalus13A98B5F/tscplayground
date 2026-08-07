@@ -40,7 +40,13 @@
  *      brings its own. Nothing else opens one.
  *   2. A block's alignment is the column of the token after its opener, and it
  *      opens only if that column clears the floor it would inherit.
- *   3. A line-initial token is measured against the two columns above.
+ *   3. A line-initial token is measured against the two columns above -- a `|`
+ *      one column to its right, since it delimits an item beginning after it.
+ *      That one column is the whole of the arm rule: arms written flush with
+ *      their `match` clear its floor by it, so they are inside it, while an
+ *      inner `match` written *on* an arm line inherits the floor they set and
+ *      gets none of its own -- which is why its arms must be indented to be
+ *      told from the outer ones.
  *   4. Except a closer, which belongs to whatever the author opened before the
  *      line.
  *   5. A closer ends what layout opened above it, and matches the innermost
@@ -103,6 +109,14 @@ const OPENERS: TokenTable<"anywhere" | "lineend"> = {
   arrow: "lineend",
 };
 
+/**
+ * The column an item beginning with this token is measured at: `|` is a
+ * delimiter, so the item it introduces begins after it. An arm list therefore
+ * aligns one right of its `|`, and an arm's body must clear *that*. See rule 3.
+ */
+const itemColumn = (token: Token): number =>
+  token.at.column + (token.kind === "bar" ? 1 : 0);
+
 export function prescan(tokens: readonly Token[]): Result<readonly Token[]> {
   // Checked, not assumed: two casts below rest on it. The loop breaks at `eof`,
   // so every token it handles has a successor; and the flush needs the last
@@ -163,10 +177,14 @@ export function prescan(tokens: readonly Token[]): Result<readonly Token[]> {
    * it and name its alignment. Invariant 2: short of the floor the block is one
    * its own first line would close, so none is pushed -- and a written `{` is
    * dropped with it, keeping the stream balanced and leaving its `}` unmatched.
+   *
+   * Declining is silent. The parser reaches the same line and says what it
+   * wanted there, with a caret on it; a column named from here would only
+   * repeat what that caret already shows.
    */
   const openBlock = (token: Token, peek: Token): void => {
     const floor = newFloor();
-    const alignment = peek.at.column;
+    const alignment = itemColumn(peek);
     if (alignment > floor) {
       const written = token.kind === "lbrace";
       if (written) emit(token);
@@ -179,16 +197,6 @@ export function prescan(tokens: readonly Token[]): Result<readonly Token[]> {
         closer: "}",
         ...(written ? { opener: "{" } : {}),
       });
-    } else {
-      diagnostics.push(
-        reportError(
-          // The floor, not the enclosing alignment: that context may be a
-          // bracket, whose alignment names no column at all.
-          `the block opened by \`${token.text}\` must be indented past ` +
-            `column ${floor}`,
-          peek.at,
-        ),
-      );
     }
   };
 
@@ -240,7 +248,7 @@ export function prescan(tokens: readonly Token[]): Result<readonly Token[]> {
     } else {
       if (token.first) {
         // Rule 3: settle what this line's first token belongs to.
-        const column = token.at.column;
+        const column = itemColumn(token);
         // Past here, `column > top().floor`: what the line falls out of is gone.
         while (column <= top().floor) closeTop(token.at);
         if (column <= top().alignment) {

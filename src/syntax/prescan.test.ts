@@ -46,18 +46,47 @@ Deno.test("`with` opens a block wherever it sits, so one-liners read", () => {
     .toBe("match x with { | A -> p | B -> q }");
 });
 
-Deno.test("arms must be indented past the enclosing alignment", () => {
+Deno.test("a `|` is measured one column right, which is the whole arm rule", () => {
   expect(stream("match x with\n  | A -> p\n  | B -> q\n"))
     .toBe("match x with { | A -> p | B -> q }");
 
-  // Flush with the enclosing block they would read as items of it, so they are
-  // reported -- and then admitted flat, since `|` still delimits them and the
-  // rest of the file should not pay for one misindented arm list.
-  const flush = scan("match x with\n| A -> p\n| B -> q\n");
-  expect(flush.stream).toBe("match x with | A -> p | B -> q");
-  expect(flush.errors).toEqual([
-    "the block opened by `with` must be indented past column 1",
-  ]);
+  // Flush with their `match` the arms still clear its floor, by the one column
+  // the `|` is worth -- so they are inside the block, where any other line at
+  // that column would be an item of the block around it.
+  expect(stream("match x with\n| A -> p\n| B -> q\n"))
+    .toBe("match x with { | A -> p | B -> q }");
+  expect(stream("let x =\n  match y with\n  | A -> p\n  | B -> q\nz\n"))
+    .toBe("let x = { match y with { | A -> p | B -> q } } ; z");
+
+  // Left of their `match` that one column no longer reaches the floor, so no
+  // block opens -- though the arms stay in the block the `match` is in, being
+  // still to the right of *its* floor.
+  expect(stream("let x =\n  match y with\n| A -> p\nz\n"))
+    .toBe("let x = { match y with | A -> p } ; z");
+
+  // The column an arm's body must clear is that one, not the `|` itself.
+  expect(stream("match x with\n| A ->\n  foo\n| B -> q\n"))
+    .toBe("match x with { | A -> { foo } | B -> q }");
+});
+
+Deno.test("which line a nested match begins on says whose arms are whose", () => {
+  // The reading flush arms could not spell while they were an error: `| D` sits
+  // left of the inner list, so it closes that and goes on with the outer one.
+  expect(stream("match x with\n| A ->\n  match y with\n  | C -> p\n| D -> q\n"))
+    .toBe("match x with { | A -> { match y with { | C -> p } } | D -> q }");
+
+  // Aligned with them, it is one of them.
+  expect(
+    stream("match x with\n| A ->\n  match y with\n  | C -> p\n  | D -> q\n"),
+  )
+    .toBe("match x with { | A -> { match y with { | C -> p | D -> q } } }");
+
+  // Which the inner `match` can only say by beginning a line of its own. From
+  // inside an arm list it lines up with that list, so a flush block there would
+  // give both the same column and a `|` on every line, and neither reading
+  // could be written. None opens, and the parser reports what it was left with.
+  expect(stream("match x with\n| A -> match y with\n| C -> p\n| D -> q\n"))
+    .toBe("match x with { | A -> match y with | C -> p | D -> q }");
 });
 
 Deno.test("indented arms do get a block, which a dedent then ends", () => {
@@ -189,22 +218,16 @@ Deno.test("a brace body flush with its surroundings cannot hold together", () =>
   // from layout, and this is the shape where that is felt.
   const { stream, errors } = scan("let x = {\na\nb\n}\nx\n");
   expect(stream).toBe("let x = ; a ; b ; x");
-  expect(errors).toEqual([
-    "the block opened by `{` must be indented past column 1",
-    "unmatched `}`",
-  ]);
+  expect(errors).toEqual(["unmatched `}`"]);
 });
 
 Deno.test("a line that dedents past its opener gives the block up", () => {
   // The opener's own context is over, so the body it promised never began. The
   // block is given up at the dedent rather than after it, which is what lets
-  // `z` be seen as the new item it is -- and what names the column the opener
-  // was written against, not the one the line fell back to.
-  const { stream, errors } = scan("let x =\n  let y =\nz\nw\n");
-  expect(stream).toBe("let x = { let y = } ; z ; w");
-  expect(errors).toEqual([
-    "the block opened by `=` must be indented past column 3",
-  ]);
+  // `z` be seen as the new item it is. Silently: the inner `=` is left facing
+  // the `}`, and the parser says what it wanted there.
+  expect(stream("let x =\n  let y =\nz\nw\n"))
+    .toBe("let x = { let y = } ; z ; w");
 });
 
 Deno.test("an unclosed bracket dies at the enclosing block, not at eof", () => {
