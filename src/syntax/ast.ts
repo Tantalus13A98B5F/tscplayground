@@ -65,7 +65,12 @@ export type TypeNode =
     readonly result: TypeNode;
     readonly at: Position;
   }
-  /** Parser recovery. Elaborates to `TBad` with no second diagnostic. */
+  /**
+   * A type nothing can be said about, for a name elaboration cannot resolve. It
+   * becomes `TBad`, which checks against anything, so one unresolved name does
+   * not fail every use of it. The parser never builds one: a type it cannot
+   * read costs the item it sits in.
+   */
   | { readonly kind: "BadType"; readonly at: Position };
 
 export type TermNode =
@@ -110,9 +115,7 @@ export type TermNode =
     readonly scrutinee: TermNode;
     readonly arms: readonly MatchArm[];
     readonly at: Position;
-  }
-  /** Parser recovery. Synthesizes `TBad` with no second diagnostic. */
-  | { readonly kind: "BadTerm"; readonly at: Position };
+  };
 
 export type MatchArm = {
   readonly pattern: MatchPat;
@@ -136,12 +139,7 @@ export type MatchPat =
     readonly name: Ident;
     readonly args: readonly Ident[];
     readonly at: Position;
-  }
-  /**
-   * Parser recovery, covering nothing. Not `PWild`: that one covers every
-   * constructor, so it would make the arm total and silence exhaustiveness.
-   */
-  | { readonly kind: "PBad"; readonly at: Position };
+  };
 
 /**
  * `datatype Pair[A, B] = | MkPair(a: A, b: B)`, top-level only -- `exp` has no

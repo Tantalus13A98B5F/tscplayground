@@ -1,13 +1,16 @@
 /**
  * A position in the token stream, and the diagnostics raised against it.
  *
- * Layout is gone by the time anything here runs -- `prescan` turned it into
- * `{`, `}` and `;` -- so this is an ordinary cursor over an array. No column is
- * read, and there is no filtered/unfiltered distinction: what `peek` shows is
- * simply what is there.
+ * Every error is fatal: `fail` reports and throws, and `expect` is `fail` on a
+ * mismatch. So a rule either returns a node it fully read or does not return,
+ * which is what lets the tree hold no recovery nodes at all.
  *
- * The stream is balanced, which is what `skipStray` rests on: a construct's end
- * is a token, so skipping to it cannot run past it into the enclosing one.
+ * Layout is gone by the time anything here runs -- `layout` turned it into `{`,
+ * `}` and `;` -- so this is an ordinary cursor over an array. No column is read,
+ * and what `peek` shows is simply what is there.
+ *
+ * The stream is balanced, which is what the skips rest on: a block's end is a
+ * token, so skipping to it cannot run past it into the enclosing one.
  */
 
 import {
@@ -16,7 +19,7 @@ import {
   reportError,
   reportWarning,
 } from "../diagnostics/diagnostic.ts";
-import { isCloser, isOpener, type Token, type TokenKind } from "./lexer.ts";
+import type { Token, TokenKind } from "./lexer.ts";
 
 /**
  * Name a token in a message.
@@ -36,6 +39,18 @@ function show(token: Token): string {
   return token.kind === "semi"
     ? "the end of the item above"
     : "the end of the block above";
+}
+
+/**
+ * Thrown by `fail`, caught only where a run of items resumes. It carries
+ * nothing: the message is in `diagnostics` before it flies, so a handler has
+ * only to decide where to pick the parse back up.
+ */
+export class ParseFailure extends Error {}
+
+/** Re-raise anything that is not a parse failure, so real bugs still surface. */
+export function rethrowUnexpected(failure: unknown): void {
+  if (!(failure instanceof ParseFailure)) throw failure;
 }
 
 export class Cursor {
@@ -76,31 +91,41 @@ export class Cursor {
     return token;
   }
 
-  expect(kind: TokenKind, what: string): Token | undefined {
-    const token = this.accept(kind);
-    if (token === undefined) this.report(what);
-    return token;
-  }
-
-  /** Report what was wanted here, in the caller's own words. */
-  report(expected: string): void {
-    this.complain(`expected ${expected}, found ${show(this.peek())}`);
+  /** The token, or no return at all. */
+  expect(kind: TokenKind, what: string): Token {
+    return this.accept(kind) ?? this.fail(what);
   }
 
   /**
-   * Report at the next token.
-   *
-   * At most one error per position. A rule that fails without consuming leaves
-   * the token for its caller, which fails on it in turn, so the second error
-   * describes the same token from further out. The first is nearly always the
-   * specific one -- where it is not, the fix is for the outer rule to say what
-   * it wanted up front.
-   *
-   * An inserted token is complained about like any other. It marks a real
-   * boundary -- a block did end there -- and an error landing on one is as real
-   * as any; only its *wording* differs, which `show` handles.
+   * Report what was wanted here, in the caller's own words, and give up on the
+   * construct being read. Recovery is the business of whoever catches this.
    */
-  complain(message: string): void {
+  fail(expected: string): never {
+    this.complain(`expected ${expected}, found ${show(this.peek())}`);
+    this.abandon();
+  }
+
+  /**
+   * Give up silently, for a construct left unreadable by a failure already
+   * reported inside it -- a block whose only item was dropped has no result,
+   * which is the first error's doing and not a second one.
+   */
+  abandon(): never {
+    throw new ParseFailure();
+  }
+
+  /**
+   * Report at the next token, at most one error per position.
+   *
+   * Recovery resumes at a token it did not consume, so the rule resuming there
+   * can fail on it again -- from further out, hence with a vaguer message. The
+   * first is the specific one.
+   *
+   * An inserted token is complained about like any other: it marks a real
+   * boundary, and an error landing on one is as real as any. Only its *wording*
+   * differs, which `show` handles.
+   */
+  private complain(message: string): void {
     const token = this.peek();
     if (
       this.lastError !== undefined &&
@@ -123,26 +148,39 @@ export class Cursor {
     );
   }
 
+  /** Recovery: drop the rest of this item, stopping at the `;` after it. */
+  skipToItem(): void {
+    this.skipTo((kind) => kind === "semi");
+  }
+
   /**
-   * Recovery: drop what is left of the current construct, stopping at its next
-   * item or its end. Bracketed runs are skipped whole, so a `;` inside one is
-   * not mistaken for this construct's separator.
-   *
-   * `pastSemi` is for a construct a `;` cannot occur in -- an arm list, a type
-   * -- where one is itself part of the wreckage rather than a place to resume.
-   * Always terminates: every opener has its closer, and eof stops it regardless.
+   * Recovery inside an arm list, whose separator is `|`. A `;` cannot delimit
+   * an arm, so one here is wreckage to skip rather than a place to resume.
    */
-  skipStray(pastSemi = false): void {
+  skipToArm(): void {
+    this.skipTo((kind) => kind === "bar");
+  }
+
+  /**
+   * Skip to the next separator of the run being recovered, or to the `}` ending
+   * it. Nested blocks are skipped whole, so a separator inside one is not
+   * mistaken for this run's. Always terminates: eof stops it regardless.
+   *
+   * Braces alone are counted, `(` and `[` being wreckage like anything else: a
+   * run of items is delimited by braces, so stopping at a `]` would leave the
+   * parse inside a construct nobody is left to finish -- `T[a b]` would resume
+   * at the `]`, which the item loop cannot use.
+   */
+  private skipTo(isSeparator: (kind: TokenKind) => boolean): void {
     let depth = 0;
     for (;;) {
       const token = this.peek();
       if (token.kind === "eof") return;
-      if (depth === 0) {
-        if (isCloser(token.kind)) return;
-        if (token.kind === "semi" && !pastSemi) return;
-      }
-      if (isOpener(token.kind)) depth += 1;
-      else if (isCloser(token.kind)) depth -= 1;
+      if (token.kind === "lbrace") depth += 1;
+      else if (token.kind === "rbrace") {
+        if (depth === 0) return; // the end of the run itself
+        depth -= 1;
+      } else if (depth === 0 && isSeparator(token.kind)) return;
       this.advance();
     }
   }

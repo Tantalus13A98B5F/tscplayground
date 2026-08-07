@@ -1,29 +1,32 @@
 import { expect } from "@std/expect";
 import { mkSource } from "../diagnostics/diagnostic.ts";
 import { tokenize } from "./lexer.ts";
-import { prescan } from "./prescan.ts";
+import { layout } from "./layout.ts";
 import { parseProgram, parseType } from "./parser.ts";
 import type { DatatypeDecl, Program, TermNode, TypeNode } from "./ast.ts";
 
 /** The pipeline as the driver runs it: layout is resolved before parsing. */
 function scan(text: string) {
   const tokens = tokenize(mkSource(text, "demo.tg")).value ?? [];
-  return prescan(tokens);
+  return layout(tokens);
 }
 
-function parse(text: string): { program: Program; errors: readonly string[] } {
+/**
+ * Errors only. A parse that reports anything hands back no tree at all, so
+ * these tests ask what it said and `clean` asks for the tree.
+ */
+function parse(text: string): readonly string[] {
   const laid = scan(text);
   const result = parseProgram(laid.value ?? []);
-  return {
-    program: result.value as Program,
-    errors: [...laid.diagnostics, ...result.diagnostics].map((d) => d.message),
-  };
+  return [...laid.diagnostics, ...result.diagnostics].map((d) => d.message);
 }
 
 function clean(text: string): Program {
-  const { program, errors } = parse(text);
-  expect(errors).toEqual([]);
-  return program;
+  const laid = scan(text);
+  const result = parseProgram(laid.value ?? []);
+  expect([...laid.diagnostics, ...result.diagnostics].map((d) => d.message))
+    .toEqual([]);
+  return result.value as Program;
 }
 
 function type(text: string): TypeNode {
@@ -59,7 +62,7 @@ Deno.test("`;` and a new line are the same separator", () => {
 });
 
 Deno.test("a new line at the block column ends the bound expression", () => {
-  // `(x)` here must not become a call; the prescan's `;` is what says so.
+  // `(x)` here must not become a call; `layout`'s `;` is what says so.
   const program = clean("let g = f\n(x)\n");
   const bound = program.term.kind === "Let" ? program.term.bound : undefined;
   expect(bound?.kind).toBe("Var");
@@ -110,7 +113,7 @@ Deno.test("typedef declares a transparent alias, with parameters", () => {
 });
 
 Deno.test("a type may span lines, wrapped in the block `->` opened", () => {
-  // The prescan does not know a type from a term, and needs not: a block
+  // Layout does not know a type from a term, and needs not: a block
   // holding one type is that type.
   const program = clean("typedef Foo[A] = (A) ->\n  (A) -> A\nx\n");
   const alias = program.decls[0];
@@ -201,45 +204,47 @@ Deno.test("a block must be fully consumed", () => {
   // it reads as belonging to that body but would start an arm outside it. The
   // body clears the arm list's column, which is one right of the `|`.
   const nested = parse("match x with\n  | A ->\n    foo | B -> g\n");
-  expect(nested.errors).toEqual([
+  expect(nested).toEqual([
     "expected `;` or a new line, then the body, found `|`",
   ]);
 
   // The same message catches juxtaposition, which is not application here.
-  expect(parse("let x =\n  f g\nx\n").errors[0]).toContain("`;` or a new line");
+  expect(parse("let x =\n  f g\nx\n")[0]).toContain("`;` or a new line");
   // Including at the top level, where no enclosing block would notice it.
-  expect(parse("f g\n").errors[0]).toContain("`;` or a new line");
+  expect(parse("f g\n")[0]).toContain("`;` or a new line");
 });
 
 Deno.test("a position carries at most one error, the most specific one", () => {
   // A rule that fails without consuming leaves the token for its caller, which
   // fails on it too -- from further out, so with a vaguer message.
-  expect(parse("datatype = | A\nlet y = b\ny\n").errors).toEqual([
+  expect(parse("datatype = | A\nlet y = b\ny\n")).toEqual([
     "expected a type name, found `=`",
   ]);
 });
 
 Deno.test("errors at distinct positions are all kept", () => {
   // The counterpart risk: deduplication must not silence a second real error.
-  expect(parse("let = a\nlet = b\nlet = c\ny\n").errors.length).toBe(3);
-  expect(parse("let = a; let = b\ny\n").errors.length).toBe(2); // one line
-  expect(parse("let x : = a\nlet y = b\ny\n").errors.length).toBe(1);
+  expect(parse("let = a\nlet = b\nlet = c\ny\n").length).toBe(3);
+  expect(parse("let = a; let = b\ny\n").length).toBe(2); // one line
+  expect(parse("let x : = a\nlet y = b\ny\n").length).toBe(1);
 });
 
 Deno.test("a block never recovers into its enclosing block", () => {
-  // A `let` with no body ends the inner block; `x` is the *program's* result and
-  // must survive, or one missing body costs every item after it.
-  const { program, errors } = parse("let x =\n  let w = a\nx\n");
-  expect(errors.length).toBe(1);
-  expect(program.term.kind === "Let" && program.term.body.kind).toBe("Var");
+  // The inner block has no result, and that is the whole of it: recovery stops
+  // at the `}` layout put before `x`, leaving the program's own result alone.
+  expect(parse("let x =\n  let w = a\nx\n")).toEqual([
+    "expected an expression to be the block's result, found the end of the block above",
+  ]);
 });
 
 Deno.test("an unmatched closer costs its own item and nothing more", () => {
-  // The prescan drops it, so the item run it appeared in is not ended by it and
-  // `let y = b` survives -- which is the whole point of balancing the stream.
-  const { program, errors } = parse("let x = )\nlet y = b\ny\n");
-  expect(bindings(program.term)).toEqual(["x", "y"]);
-  expect(errors[0]).toBe("unmatched `)`");
+  // Layout drops it, so the run it appeared in is not ended by it and `let y`
+  // is still read -- the point of balancing the stream. Were it not, the `y`
+  // after it would be reported missing too.
+  expect(parse("let x = )\nlet y = b\ny\n")).toEqual([
+    "unmatched `)`",
+    "expected the bound value, indented past the `let`, found the end of the item above",
+  ]);
 });
 
 Deno.test("a nested block recovers like the item loop does", () => {
@@ -247,37 +252,35 @@ Deno.test("a nested block recovers like the item loop does", () => {
   // sits -- and must cost one diagnostic there too, not a trail of leftovers.
   const outer = parse("let x = a b c\nlet y = q\ny\n");
   const inner = parse("let x =\n  let w = a b c\n  w\nx\n");
-  expect(outer.errors.length).toBe(1);
-  expect(inner.errors.length).toBe(1);
+  expect(outer.length).toBe(1);
+  expect(inner.length).toBe(1);
   // And a second mistake still reports itself rather than the wreckage.
-  expect(parse("let x =\n  let w = a b c\n  let v = d e f\n  w\nx\n").errors)
+  expect(parse("let x =\n  let w = a b c\n  let v = d e f\n  w\nx\n"))
     .toEqual([
       "expected `;` or a new line, then the body, found `b`",
       "expected `;` or a new line, then the body, found `e`",
     ]);
 });
 
-Deno.test("leftovers are reported once, and the items after them survive", () => {
-  const { program, errors } = parse(
-    "let x =\n  f g\nlet y = b\nlet z = c\ny\n",
-  );
-  expect(errors.length).toBe(1);
-  expect(bindings(program.term)).toEqual(["x", "y", "z"]);
+Deno.test("leftovers are reported once, and the items after them are read", () => {
+  // One diagnostic, not one per item after it: had recovery not resumed at the
+  // next item, `let y` and `let z` would each have gone wrong in turn.
+  expect(parse("let x =\n  f g\nlet y = b\nlet z = c\ny\n").length).toBe(1);
 });
 
 Deno.test("`;` separates items, never arms", () => {
   // Inside the block `with` or `where` opened, `|` is the only separator, so a
   // `;` there is wreckage rather than a place to resume.
-  expect(parse("match x with | A -> p; | B -> q\n").errors.length)
+  expect(parse("match x with | A -> p; | B -> q\n").length)
     .toBeGreaterThan(0);
-  expect(parse("datatype Foo where | A; | B\nx\n").errors.length)
+  expect(parse("datatype Foo where | A; | B\nx\n").length)
     .toBeGreaterThan(0);
 });
 
 Deno.test("sequencing after a match is said with braces, or with a new line", () => {
   // On one line the arm block runs to the end of it, so `;` falls inside and is
   // rejected; braces end the block explicitly, and a new line ends it by dedent.
-  expect(parse("let r = match x with | A -> f(y); g(z)\nr\n").errors.length)
+  expect(parse("let r = match x with | A -> f(y); g(z)\nr\n").length)
     .toBeGreaterThan(0);
   clean("let r = { match x with | A -> f(y) }; g(z)\nr\n");
   clean("match x with\n  | A -> f(y)\ng(z)\n");
@@ -305,16 +308,10 @@ Deno.test("arms with no block of their own are reported, then dropped", () => {
   // the column of the list around it. Reading them here would be guessing which
   // `match` they answer to, so they are skipped whole rather than given to the
   // one that happens to ask first.
-  const { program, errors } = parse(
-    "match x with\n| A -> match y with\n| C -> p\n| D -> q\n",
-  );
-  expect(errors).toEqual([
-    "expected the arms, indented past the start of this item, found `|`",
-  ]);
-  const outer = program.term;
-  expect(outer.kind === "Match" && outer.arms.length).toBe(1);
-  const inner = outer.kind === "Match" ? outer.arms[0]?.body : undefined;
-  expect(inner?.kind === "Match" && inner.arms.length).toBe(0);
+  expect(parse("match x with\n| A -> match y with\n| C -> p\n| D -> q\n"))
+    .toEqual([
+      "expected the arms, indented past the start of this item, found `|`",
+    ]);
 });
 
 Deno.test("an arm list with no block of its own leaves the enclosing `}` alone", () => {
@@ -322,15 +319,11 @@ Deno.test("an arm list with no block of its own leaves the enclosing `}` alone",
   // it would end that block here, and one misindented arm list would cost the
   // construct around it -- the `let` body would run to end of file looking for
   // the closer it had lost.
-  const { program, errors } = parse(
-    "let x =\n  match y with\n| A -> p\nlet w = b\nz\n",
-  );
-  expect(errors).toEqual([
+  // The item loop resumes at the `;` before `let w`, so what follows is read as
+  // the bindings they are: one more mistake there would be reported too.
+  expect(parse("let x =\n  match y with\n| A -> p\nlet w = b\nz\n")).toEqual([
     "expected the arms, indented past the start of this item, found `|`",
   ]);
-  // The `let` still owns exactly its own body, so what follows is still read as
-  // the declarations it is -- the skip cost one arm list and nothing else.
-  expect(bindings(program.term)).toEqual(["x", "w"]);
 });
 
 Deno.test("a nested match binds its arms innermost", () => {
@@ -364,14 +357,12 @@ Deno.test("patterns are one level deep and positional", () => {
   expect(arms[1]?.pattern.kind).toBe("PWild");
 });
 
-Deno.test("a pattern that fails to parse is not a wildcard", () => {
-  // `PWild` would cover every constructor, making the arm total.
-  const { program, errors } = parse(
-    "match y with\n  | -> a\n  | MkPair(p, q) -> p\n",
-  );
-  expect(errors.length).toBe(1);
-  const arms = program.term.kind === "Match" ? program.term.arms : [];
-  expect(arms.map((arm) => arm.pattern.kind)).toEqual(["PBad", "PCtor"]);
+Deno.test("an arm whose pattern fails is dropped, and the next one still read", () => {
+  // Dropped rather than stood in for: a pattern nothing could be read from must
+  // not end up covering anything, least of all everything.
+  expect(parse("match y with\n  | -> a\n  | MkPair(p, q) -> p\n")).toEqual([
+    "expected a constructor name or `_`, found `->`",
+  ]);
 });
 
 Deno.test("`_` is an ordinary name, so it binds and resolves like one", () => {
@@ -395,7 +386,7 @@ Deno.test("braces buy no exemption from layout", () => {
   // whole requirement -- past that, placement is free.
   // The `{` opens nothing and is dropped, so the binding is left without a
   // value and the `}` is left with nothing to close.
-  expect(parse("let x = {\na\nb\n}\nx\n").errors).toEqual([
+  expect(parse("let x = {\na\nb\n}\nx\n")).toEqual([
     "unmatched `}`",
     "expected the bound value, indented past the `let`, found the end of the item above",
   ]);
@@ -405,8 +396,8 @@ Deno.test("braces buy no exemption from layout", () => {
 });
 
 Deno.test("braces admit a binding, parentheses do not", () => {
-  expect(parse("let x = { let y = a; y }\nx\n").errors).toEqual([]);
-  expect(parse("let x = ( let y = a; y )\nx\n").errors.length)
+  expect(parse("let x = { let y = a; y }\nx\n")).toEqual([]);
+  expect(parse("let x = ( let y = a; y )\nx\n").length)
     .toBeGreaterThan(0);
 });
 
@@ -421,7 +412,7 @@ Deno.test("a lambda binds types and values in one node", () => {
 });
 
 Deno.test("a lambda's `->` is required, so its body is never guessed", () => {
-  expect(parse("let f = fn (x) x\nf\n").errors[0]).toContain("`->`");
+  expect(parse("let f = fn (x) x\nf\n")[0]).toContain("`->`");
 });
 
 Deno.test("an omitted bound stays absent, not invented by the parser", () => {
@@ -466,28 +457,48 @@ Deno.test("a type name may be applied", () => {
 });
 
 Deno.test("a program with no result expression is reported", () => {
-  const { errors } = parse("let x = a\n");
-  expect(errors.join("\n")).toContain("result");
+  expect(parse("let x = a\n").join("\n")).toContain("result");
 });
 
 Deno.test("a match with no arms is reported", () => {
-  const { errors } = parse("match y with\n");
-  expect(errors.join("\n")).toContain("at least one arm");
+  expect(parse("match y with\n").join("\n")).toContain("at least one arm");
 });
 
 Deno.test("a body that fails to indent", () => {
   // No block opened, so the `=` is left facing the boundary before `a`. The
   // caret sits on `a`, which is why the message says *above*: the item that
   // ended without a value is the one the reader has to look up to find.
-  const { program, errors } = parse("let x =\na\nb\n");
-  expect(errors).toEqual([
+  expect(parse("let x =\na\nb\n")).toEqual([
     "expected the bound value, indented past the `let`, found the end of the item above",
   ]);
-  expect(bindings(program.term)).toEqual(["x", "_"]);
 });
 
-Deno.test("recovery keeps going after a bad expression", () => {
-  const { program, errors } = parse("let x = a b\nlet y = q\ny\n");
-  expect(errors.length).toBe(1);
-  expect(bindings(program.term)).toContain("y");
+Deno.test("a failed item costs itself alone, and never the ones after it", () => {
+  // Which is the whole of what recovery buys: the errors in the rest of the
+  // file are found in the same run.
+  expect(parse("let x = a b\nlet y = q c\ny\n")).toEqual([
+    "expected `;` or a new line, then the rest of the program, found `b`",
+    "expected `;` or a new line, then the rest of the program, found `c`",
+  ]);
+});
+
+Deno.test("recovery from inside a bracket resumes at the next item", () => {
+  // Not at the `]`: the rules that wanted it are gone by the time recovery
+  // runs, so resuming there would strand the parse mid-construct. Only a block
+  // ends a run of items, which is why only braces are counted in the skip.
+  expect(parse("let x = f[A B](c)\nlet y = q d\ny\n")).toEqual([
+    "expected `]`, found `B`",
+    "expected `;` or a new line, then the rest of the program, found `d`",
+  ]);
+  expect(parse("typedef F = T[a b]\nlet y = q d\ny\n")).toEqual([
+    "expected `]`, found `b`",
+    "expected `;` or a new line, then the rest of the program, found `d`",
+  ]);
+});
+
+Deno.test("nothing comes out of a parse that reported an error", () => {
+  // A dropped item leaves a hole no node stands in, so the tree is withheld
+  // whole rather than handed on with a lie in it.
+  const laid = scan("let x = a b\ny\n");
+  expect(parseProgram(laid.value ?? []).value).toBeUndefined();
 });

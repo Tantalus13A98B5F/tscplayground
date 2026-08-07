@@ -3,8 +3,8 @@
  * a matching bracket -- cheap, and files are small.
  *
  * Layout is *not* resolved here. Each token carries its column and whether it
- * opens a line; `prescan` turns those into `{`, `}` and `;`, and the parser sees
- * only the result. Nothing downstream of the prescan reads a column.
+ * opens a line; `layout` turns those into `{`, `}` and `;`, and the parser sees
+ * only the result. Nothing downstream of layout reads a column.
  */
 
 import {
@@ -47,10 +47,10 @@ export type Token = {
   readonly kind: TokenKind;
   readonly text: string;
   readonly at: Position;
-  /** First token on its line. Read by the prescan, by nothing after it. */
+  /** First token on its line. Read by `layout`, by nothing after it. */
   readonly first: boolean;
   /**
-   * Synthesized by the prescan, so the source holds no such token. Only
+   * Synthesized by `layout`, so the source holds no such token. Only
    * diagnostics may consult it: an inserted token stands in for one the author
    * omitted, and the omission has already been reported where it happened.
    */
@@ -64,6 +64,14 @@ export function isCloser(kind: TokenKind): boolean {
 
 export function isOpener(kind: TokenKind): boolean {
   return kind === "lparen" || kind === "lbracket" || kind === "lbrace";
+}
+
+/** Render a stream compactly, for tests and for debugging the layout rules. */
+export function showTokens(tokens: readonly Token[]): string {
+  return tokens
+    .filter((token) => token.kind !== "eof")
+    .map((token) => token.text)
+    .join(" ");
 }
 
 /** Starts a comment, which runs to end of line. There are no block comments. */

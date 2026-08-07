@@ -8,7 +8,7 @@
  *
  * The contract the parser may rely on: **the stream is balanced**, every closer
  * inserted here if the author omitted one. That is what makes its own recovery
- * safe -- skipping to the end of a construct cannot run past it.
+ * safe -- skipping to the end of a block cannot run past it.
  *
  * ## Contexts
  *
@@ -117,7 +117,7 @@ const OPENERS: TokenTable<"anywhere" | "lineend"> = {
 const itemColumn = (token: Token): number =>
   token.at.column + (token.kind === "bar" ? 1 : 0);
 
-export function prescan(tokens: readonly Token[]): Result<readonly Token[]> {
+export function layout(tokens: readonly Token[]): Result<readonly Token[]> {
   // Checked, not assumed: two casts below rest on it. The loop breaks at `eof`,
   // so every token it handles has a successor; and the flush needs the last
   // token to be the `eof` it passes on, or the parser's cursor runs off.
@@ -295,12 +295,4 @@ export function prescan(tokens: readonly Token[]): Result<readonly Token[]> {
   while (stack.length > 1) closeTop(eof.at);
   emit(eof);
   return produced(out, diagnostics);
-}
-
-/** Render a stream compactly, for tests and for debugging the rules. */
-export function showTokens(tokens: readonly Token[]): string {
-  return tokens
-    .filter((token) => token.kind !== "eof")
-    .map((token) => token.text)
-    .join(" ");
 }

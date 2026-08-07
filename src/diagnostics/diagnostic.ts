@@ -113,11 +113,12 @@ export function reportWarning(
 /**
  * What a phase hands back.
  *
- * `diagnostics` are the authority on success, never `value`. Every phase
- * recovers, so a value can arrive alongside errors: the tokens that did lex, a
- * tree holding `BadTerm`. Its presence claims only that something structurally
- * well-formed came out, and downstream must not read it as "no errors" -- ask
- * `hasErrors`.
+ * `diagnostics` are the authority on success, never `value`. A phase that
+ * recovers in place hands back a value alongside errors -- the tokens that did
+ * lex, the stream `layout` balanced -- so its presence claims only that
+ * something structurally well-formed came out. Downstream must ask `hasErrors`
+ * rather than read it as "no errors". The parser is stricter still, withholding
+ * its tree the moment it reports anything.
  *
  * `value === undefined` is the narrower case of producing nothing at all, not
  * even a recovered husk, which usually means a phase could not start.

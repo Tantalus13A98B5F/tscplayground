@@ -1,12 +1,12 @@
 import { expect } from "@std/expect";
 import { mkSource } from "../diagnostics/diagnostic.ts";
-import { tokenize } from "./lexer.ts";
-import { prescan, showTokens } from "./prescan.ts";
+import { showTokens, tokenize } from "./lexer.ts";
+import { layout } from "./layout.ts";
 
 /** The whole contract is the emitted stream, so every case asserts one. */
 function scan(text: string): { stream: string; errors: readonly string[] } {
   const tokens = tokenize(mkSource(text, "demo.tg")).value ?? [];
-  const result = prescan(tokens);
+  const result = layout(tokens);
   return {
     stream: showTokens(result.value ?? []),
     errors: result.diagnostics.map((d) => d.message),
