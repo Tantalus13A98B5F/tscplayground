@@ -2,14 +2,13 @@ import { expect } from "@std/expect";
 import {
   alphaEq,
   BVar,
-  close,
-  closeMany,
+  closeFrom,
   EVar,
   FVar,
+  isClosed,
   mkBinder,
   mkDataName,
-  mkEVarId,
-  mkVarId,
+  mkLevel,
   occurs,
   open,
   openMany,
@@ -22,8 +21,11 @@ import {
   typeToString,
 } from "./types.ts";
 
-const X = mkVarId(0);
-const Y = mkVarId(1);
+// Levels 0 and 1 stand for the two outermost context entries.
+const X = mkLevel(0);
+const Y = mkLevel(1);
+/** Close a scope of `count` levels starting at X. */
+const closeXY = (type: typeof TUnknown) => closeFrom(type, X, 2);
 const Pair = mkDataName("Pair");
 const Bool = mkDataName("Bool");
 
@@ -71,20 +73,16 @@ Deno.test("openMany instantiates a binder's variables simultaneously", () => {
   expect(alphaEq(opened, expected)).toBe(true);
 });
 
-Deno.test("closeMany abstracts variables simultaneously", () => {
+Deno.test("closeFrom abstracts a whole scope simultaneously", () => {
   const body = TFun([], [FVar(X, "X")], FVar(Y, "Y"));
-  expect(alphaEq(closeMany(body, [X, Y]), TFun([], [BVar(0)], BVar(1)))).toBe(
-    true,
-  );
+  expect(alphaEq(closeXY(body), TFun([], [BVar(0)], BVar(1)))).toBe(true);
 });
 
-Deno.test("iterating close collapses variables onto one index", () => {
-  // Both calls run at depth 0 and the second leaves the first's BVar alone, so
-  // X and Y collapse onto index 0. Why closeMany is not a loop over close.
+Deno.test("closeFrom leaves levels outside its range alone", () => {
+  // Only the scope being ended is abstracted; anything enclosing it stays free.
   const body = TFun([], [FVar(X, "X")], FVar(Y, "Y"));
-  const iterated = close(close(body, X), Y);
-  expect(alphaEq(iterated, TFun([], [BVar(0)], BVar(0)))).toBe(true);
-  expect(alphaEq(iterated, closeMany(body, [X, Y]))).toBe(false);
+  const closed = closeFrom(body, Y, 1);
+  expect(alphaEq(closed, TFun([], [FVar(X, "X")], BVar(0)))).toBe(true);
 });
 
 Deno.test("close then open is the identity on a free variable", () => {
@@ -93,13 +91,15 @@ Deno.test("close then open is the identity on a free variable", () => {
     [FVar(X, "X")],
     TData(Pair, [FVar(X, "X"), FVar(Y, "Y")]),
   );
-  expect(alphaEq(open(close(original, X), FVar(X, "X")), original)).toBe(true);
+  const roundTrip = open(closeFrom(original, X, 1), FVar(X, "X"));
+  expect(alphaEq(roundTrip, original)).toBe(true);
 });
 
 Deno.test("close shifts by the arity of each enclosing quantifier", () => {
-  const closed = close(
+  const closed = closeFrom(
     TFun([mkBinder("A", TUnknown), mkBinder("B", TUnknown)], [], FVar(X, "X")),
     X,
+    1,
   );
   const expected = TFun(
     [mkBinder("A", TUnknown), mkBinder("B", TUnknown)],
@@ -120,7 +120,7 @@ Deno.test("substFVar is open after close", () => {
   expect(
     alphaEq(
       substFVar(type, X, replacement),
-      open(close(type, X), replacement),
+      open(closeFrom(type, X, 1), replacement),
     ),
   ).toBe(true);
 });
@@ -149,12 +149,37 @@ Deno.test("substFVar does not shift when landing under a binder", () => {
   expect(alphaEq(substituted, expected)).toBe(true);
 });
 
-Deno.test("occurs finds an existential nested in TData arguments", () => {
-  const a = mkEVarId(0);
-  expect(occurs(a, TData(Pair, [TUnknown, EVar(a, "a")]))).toBe(true);
-  expect(occurs(a, TData(Pair, [TUnknown, EVar(mkEVarId(1), "b")]))).toBe(
-    false,
-  );
+Deno.test("occurs finds an EVar nested in TData arguments", () => {
+  expect(occurs(X, TData(Pair, [TUnknown, EVar(X, "a")]))).toBe(true);
+  expect(occurs(X, TData(Pair, [TUnknown, EVar(Y, "b")]))).toBe(false);
+});
+
+Deno.test("isClosed bounds free levels and bound indices at once", () => {
+  const type = TFun([], [FVar(Y, "Y")], BVar(0));
+  // `Y` is level 1, so it needs two levels in scope; `BVar 0` needs one binder.
+  expect(isClosed(type, 2, 1)).toBe(true);
+  expect(isClosed(type, 1, 1)).toBe(false);
+  expect(isClosed(type, 2, 0)).toBe(false);
+});
+
+Deno.test("isClosed counts a quantifier's own group as binders", () => {
+  // What a stored constructor field looks like: no free levels, `BVar j` for
+  // each of the datatype's parameters. A depth-zero check could not say this.
+  const field = TData(Pair, [BVar(0), BVar(1)]);
+  expect(isClosed(field, 0, 2)).toBe(true);
+  expect(isClosed(field, 0, 1)).toBe(false);
+
+  const inside = TFun([mkBinder("A", TUnknown)], [BVar(0)], BVar(1));
+  expect(isClosed(inside, 0, 1)).toBe(true);
+  expect(isClosed(inside, 0, 0)).toBe(false);
+});
+
+Deno.test("isClosed reads a bound in the enclosing scope, being parallel", () => {
+  // The bound sits outside its own binder, so `BVar 0` there is the *enclosing*
+  // group -- it needs a depth the parameters do not.
+  const type = TFun([mkBinder("A", BVar(0))], [BVar(0)], TUnknown);
+  expect(isClosed(type, 0, 1)).toBe(true);
+  expect(isClosed(type, 0, 0)).toBe(false);
 });
 
 Deno.test("alphaEq ignores printing hints but not arity", () => {
@@ -200,6 +225,6 @@ Deno.test("TFun is TPoly binding nothing", () => {
 
 Deno.test("a quantifier survives a traversal that rebuilds it", () => {
   const type = TFun([mkBinder("A", TUnknown)], [], FVar(X, "X"));
-  const closed = close(type, X);
+  const closed = closeFrom(type, X, 1);
   expect(closed.kind === "TFun" && closed.typeParams.length).toBe(1);
 });
