@@ -13,9 +13,11 @@ export type Ident = {
 
 /**
  * The two binding positions, differing in what an *absent* annotation means:
- * `TypeParam` defaults to `<: unknown` and `Param` opens an existential. Those
- * are opposites, so the differing field names -- all that separates them under
- * structural typing -- must stay.
+ * `TypeParam` defaults to `<: unknown`, while a `Param` takes its type from the
+ * checking context -- never from an EVar, so a `fn` with no annotation and no
+ * expected type is an error rather than a guess. Those are different enough
+ * that the differing field names -- all that separates them under structural
+ * typing -- must stay.
  *
  * A constructor's parameters are not among them. It is an ordinary function,
  * and a function type names nothing, so its fields are types alone.

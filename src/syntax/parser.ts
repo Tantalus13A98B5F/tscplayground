@@ -596,9 +596,9 @@ class Parser {
 
   /**
    * `(x: A, y)` -- the binding form, where an annotation is allowed and not
-   * required. Its absence is not an omission to report: it opens an
-   * existential, which is what makes local inference local. Required of a `fn`,
-   * which has no form taking none.
+   * required. Its absence is not an omission to report here: the checker takes
+   * the type from the expected type instead, and complains only if there is
+   * none. Required of a `fn`, which has no form taking none.
    */
   private funBinders(what: string): Param[] {
     this.cursor.expect("lparen", "`(`, a parameter list");

@@ -152,7 +152,7 @@ export function hasErrors(diagnostics: readonly Diagnostic[]): boolean {
 
 /**
  * Every file under consideration, indexed by `FileId`. Diagnostics carry a file
- * rather than a source because once includes are involved one run reports
+ * rather than a source because once requires are involved one run reports
  * against several files -- a redeclaration names two of them.
  */
 export type Sources = readonly Source[];

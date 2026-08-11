@@ -140,6 +140,10 @@ export function tokenize(source: Source): Result<readonly Token[]> {
   for (const [index, raw] of source.lines.entries()) {
     const line = stripComment(raw);
     const lineNumber = index + 1;
+    // A `#` in column 1 is a directive, read and checked by the require walker
+    // before this ever runs. Skipping the line rather than deleting it keeps
+    // every later line number honest.
+    if (line.startsWith("#")) continue;
     let at = 0;
     let first = true;
 
