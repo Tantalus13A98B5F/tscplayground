@@ -1,9 +1,9 @@
 /**
- * The include walker: entry file in, splice order out.
+ * The require walker: entry file in, splice order out.
  *
- * Inclusion is textual and flat. With no separate compilation a module is a run
- * of `let` bindings with no body, and including it splices those ahead of the
- * including file's own -- so a walk yields just an *order*.
+ * Requiring is textual and flat. With no separate compilation a module is a run
+ * of `let` bindings with no body, and requiring it splices those ahead of the
+ * requiring file's own -- so a walk yields just an *order*.
  *
  * Bindings are sequential, so order is significant, so cycles are an error while
  * diamonds are not: post-order DFS gives an order exactly when the graph is
@@ -14,7 +14,6 @@
 
 import {
   type Diagnostic,
-  failed,
   type FileId,
   mkFileId,
   mkPosition,
@@ -29,10 +28,10 @@ import {
 import type { FileSystem } from "../io/files.ts";
 import { stripComment } from "./lexer.ts";
 
-/** `#include "path"` -- the whole directive must be its own line. */
-const DIRECTIVE = /^#include[ ]+"([^"]*)"[ ]*$/;
+/** `#require "path"` -- the whole directive must be its own line. */
+const DIRECTIVE = /^#require[ ]+"([^"]*)"[ ]*$/;
 
-export type Include = {
+export type Require = {
   readonly spec: string;
   readonly at: Position;
   readonly width: number;
@@ -41,13 +40,13 @@ export type Include = {
 /**
  * Read the directives at the top of a file. They must precede all other content:
  * C allows them anywhere, but with sequential bindings that would make a file's
- * meaning depend on where its includes sit.
+ * meaning depend on where its requires sit.
  *
  * A `#` in column 1 is always a directive -- leading whitespace is significant
  * here, so no expression can start there.
  */
-export function scanIncludes(source: Source): Result<readonly Include[]> {
-  const includes: Include[] = [];
+export function scanRequires(source: Source): Result<readonly Require[]> {
+  const requires: Require[] = [];
   const diagnostics: Diagnostic[] = [];
   let open = true;
 
@@ -65,7 +64,7 @@ export function scanIncludes(source: Source): Result<readonly Include[]> {
     if (matched === null || matched[1] === undefined) {
       diagnostics.push(
         reportError(
-          'malformed directive, expected #include "path"',
+          'malformed directive, expected #require "path"',
           at,
           line.length,
         ),
@@ -75,17 +74,17 @@ export function scanIncludes(source: Source): Result<readonly Include[]> {
     if (!open) {
       diagnostics.push(
         reportError(
-          "#include must come before any other content",
+          "#require must come before any other content",
           at,
           line.length,
         ),
       );
       continue;
     }
-    includes.push({ spec: matched[1], at, width: line.length });
+    requires.push({ spec: matched[1], at, width: line.length });
   }
 
-  return produced(includes, diagnostics);
+  return produced(requires, diagnostics);
 }
 
 export type Loaded = {
@@ -98,7 +97,7 @@ export type Loaded = {
 type Mark = "grey" | "black";
 
 /**
- * Walk the include graph from `entry`, depth first. An unreadable file is still
+ * Walk the require graph from `entry`, depth first. An unreadable file is still
  * registered, empty, so its `FileId` resolves and diagnostics can name a path.
  */
 export function loadSources(
@@ -134,17 +133,17 @@ export function loadSources(
       return;
     }
 
-    const scanned = scanIncludes(source);
+    const scanned = scanRequires(source);
     diagnostics.push(...scanned.diagnostics);
 
-    for (const include of scanned.value ?? []) {
-      const resolved = fileSystem.resolve(include.spec);
+    for (const directive of scanned.value ?? []) {
+      const resolved = fileSystem.resolve(directive.spec);
       if (resolved === undefined) {
         diagnostics.push(
           reportError(
-            `cannot resolve "${include.spec}"`,
-            include.at,
-            include.width,
+            `cannot resolve "${directive.spec}"`,
+            directive.at,
+            directive.width,
           ),
         );
         continue;
@@ -153,9 +152,9 @@ export function loadSources(
       if (marks.get(resolved) === "grey") {
         diagnostics.push(
           reportError(
-            `circular include of ${resolved}`,
-            include.at,
-            include.width,
+            `circular require of ${resolved}`,
+            directive.at,
+            directive.width,
           ),
         );
         continue;
@@ -170,10 +169,19 @@ export function loadSources(
 
   const start = fileSystem.resolve(entry);
   if (start === undefined) {
+    // Registered so its `FileId` resolves and the diagnostic can name a path.
+    // Handed back with an empty order rather than withheld: the sources are
+    // the only way a caller can render the message it was just given.
     const source = register(entry, "");
-    return failed([
-      reportError(`cannot resolve entry ${entry}`, mkPosition(source.id, 1, 1)),
-    ]);
+    return {
+      value: { sources, order: [] },
+      diagnostics: [
+        reportError(
+          `cannot resolve entry ${entry}`,
+          mkPosition(source.id, 1, 1),
+        ),
+      ],
+    };
   }
   walk(start);
 

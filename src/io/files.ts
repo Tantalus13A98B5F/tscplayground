@@ -1,7 +1,7 @@
 /**
  * A read-only virtual filesystem.
  *
- * The include walker resolves and reads through this and nothing else, so the
+ * The require walker resolves and reads through this and nothing else, so the
  * same walker runs against a real directory under the CLI and against an
  * in-memory map in the browser, where there is no filesystem at all. That is why
  * this is the one contract in the project expressed as an `interface` rather
@@ -30,7 +30,7 @@ export interface FileSystem {
    * names nothing or is not a plain path.
    *
    * There is no `from` argument by design: paths are root-relative, so an
-   * include spec does not depend on where it was written.
+   * require spec does not depend on where it was written.
    */
   resolve(spec: string): string | undefined;
 
