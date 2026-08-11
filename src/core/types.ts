@@ -11,12 +11,16 @@
  * never one of its own group.
  */
 
-export type VarId = number & { readonly __brand: "VarId" };
-export type EVarId = number & { readonly __brand: "EVarId" };
+/**
+ * A free variable's identity *is* its position in the context, so a level needs
+ * no allocator: the next one is the context's size. Universals and EVars
+ * share the space -- one level names one entry, and the entry's kind says which
+ * it is, an invariant the scope assertions check rather than the types enforce.
+ */
+export type Level = number & { readonly __brand: "Level" };
 export type DataName = string & { readonly __brand: "DataName" };
 
-export const mkVarId = (n: number): VarId => n as VarId;
-export const mkEVarId = (n: number): EVarId => n as EVarId;
+export const mkLevel = (n: number): Level => n as Level;
 export const mkDataName = (s: string): DataName => s as DataName;
 
 export type Binder = {
@@ -29,8 +33,8 @@ export type Type =
   | { readonly kind: "TNever" } // Bottom
   | { readonly kind: "TBad" } // failure to resolve, can be used arbitrarily
   | { readonly kind: "BVar"; readonly index: number }
-  | { readonly kind: "FVar"; readonly id: VarId; readonly hint: string }
-  | { readonly kind: "EVar"; readonly id: EVarId; readonly hint: string }
+  | { readonly kind: "FVar"; readonly level: Level; readonly hint: string }
+  | { readonly kind: "EVar"; readonly level: Level; readonly hint: string }
   /**
    * `[b0 <: B0, ..] (params) -> result`, uncurried and possibly polymorphic.
    * Arity is part of the type, so `(A, B) -> C` and `A -> B -> C` are unrelated.
@@ -58,12 +62,12 @@ export function BVar(index: number): Type {
   return { kind: "BVar", index };
 }
 
-export function FVar(id: VarId, hint: string): Type {
-  return { kind: "FVar", id, hint };
+export function FVar(level: Level, hint: string): Type {
+  return { kind: "FVar", level, hint };
 }
 
-export function EVar(id: EVarId, hint: string): Type {
-  return { kind: "EVar", id, hint };
+export function EVar(level: Level, hint: string): Type {
+  return { kind: "EVar", level, hint };
 }
 
 /** Pass an empty `typeParams` for the monomorphic arrow. */
@@ -137,7 +141,12 @@ export function open(type: Type, replacement: Type): Type {
   return openAt(type, 0, [replacement]);
 }
 
-function closeAt(type: Type, depth: number, ids: readonly VarId[]): Type {
+function closeAt(
+  type: Type,
+  depth: number,
+  mark: number,
+  count: number,
+): Type {
   switch (type.kind) {
     case "TUnknown":
     case "TNever":
@@ -146,36 +155,36 @@ function closeAt(type: Type, depth: number, ids: readonly VarId[]): Type {
     case "EVar":
       return type;
     case "FVar": {
-      const at = ids.indexOf(type.id);
-      return at === -1 ? type : BVar(depth + at);
+      const at = type.level - mark;
+      return at >= 0 && at < count ? BVar(depth + at) : type;
     }
     case "TFun": {
       const inner = depth + type.typeParams.length;
       return TFun(
         type.typeParams.map((b) =>
-          mkBinder(b.hint, closeAt(b.bound, depth, ids))
+          mkBinder(b.hint, closeAt(b.bound, depth, mark, count))
         ),
-        type.params.map((param) => closeAt(param, inner, ids)),
-        closeAt(type.result, inner, ids),
+        type.params.map((param) => closeAt(param, inner, mark, count)),
+        closeAt(type.result, inner, mark, count),
       );
     }
     case "TData":
-      return TData(type.name, type.args.map((arg) => closeAt(arg, depth, ids)));
+      return TData(
+        type.name,
+        type.args.map((arg) => closeAt(arg, depth, mark, count)),
+      );
   }
 }
 
 /**
- * Abstract free variables *simultaneously*: `ids[j]` becomes `BVar j`. Not
- * iterated `close`, which would run every call at depth 0 and collapse
- * everything onto index 0. `ids` must be pairwise distinct.
+ * Abstract the `count` levels starting at `mark` into a binder, `mark + j`
+ * becoming `BVar j`. A scope is always a contiguous run of context entries, so
+ * this needs no set of identities and no membership test -- and being one call
+ * over the whole group, it cannot collapse the group onto a single index the
+ * way an iterated single-variable close would.
  */
-export function closeMany(type: Type, ids: readonly VarId[]): Type {
-  return closeAt(type, 0, ids);
-}
-
-/** Sugar for a single-variable binder. */
-export function close(type: Type, id: VarId): Type {
-  return closeAt(type, 0, [id]);
+export function closeFrom(type: Type, mark: number, count: number): Type {
+  return closeAt(type, 0, mark, count);
 }
 
 /**
@@ -188,7 +197,7 @@ export function close(type: Type, id: VarId): Type {
  */
 export function substMany(
   type: Type,
-  ids: readonly VarId[],
+  levels: readonly Level[],
   replacements: readonly Type[],
 ): Type {
   switch (type.kind) {
@@ -199,32 +208,71 @@ export function substMany(
     case "EVar":
       return type;
     case "FVar": {
-      const at = ids.indexOf(type.id);
+      const at = levels.indexOf(type.level);
       return at === -1 ? type : replacements[at] ?? type;
     }
     case "TFun":
       return TFun(
         type.typeParams.map((b) =>
-          mkBinder(b.hint, substMany(b.bound, ids, replacements))
+          mkBinder(b.hint, substMany(b.bound, levels, replacements))
         ),
-        type.params.map((param) => substMany(param, ids, replacements)),
-        substMany(type.result, ids, replacements),
+        type.params.map((param) => substMany(param, levels, replacements)),
+        substMany(type.result, levels, replacements),
       );
     case "TData":
       return TData(
         type.name,
-        type.args.map((arg) => substMany(arg, ids, replacements)),
+        type.args.map((arg) => substMany(arg, levels, replacements)),
       );
   }
 }
 
 /** Sugar for substituting a single free variable. */
-export function substFVar(type: Type, id: VarId, replacement: Type): Type {
-  return substMany(type, [id], [replacement]);
+export function substFVar(type: Type, level: Level, replacement: Type): Type {
+  return substMany(type, [level], [replacement]);
+}
+
+/**
+ * Well-formedness, both bounds at once: is `type` closed under `levels` free
+ * variables and `depth` enclosing binders? Every free level must be `< levels`
+ * and every `BVar` index `< depth`, counting inward as binders are entered.
+ *
+ * One predicate rather than two because the two bounds are never independent.
+ * The interesting uses need a non-zero `depth`: a constructor's fields are
+ * stored closed over its datatype's parameters, so checking one means asking
+ * for `levels = 0, depth = arity`, which a bare "locally closed" check -- fixed
+ * at depth zero -- cannot express.
+ *
+ * At `depth = 0` this is the scope-exit assertion: nothing surviving a
+ * `truncate` to `mark` may mention a level `>= mark`. It is also exactly the
+ * escape check `solve` needs, so both rest on one traversal.
+ */
+export function isClosed(type: Type, levels: number, depth = 0): boolean {
+  switch (type.kind) {
+    case "TUnknown":
+    case "TNever":
+    case "TBad":
+      return true;
+    case "BVar":
+      return type.index < depth;
+    case "FVar":
+    case "EVar":
+      return type.level < levels;
+    case "TFun": {
+      // Bounds are parallel, so they stay at `depth`; only what the binder
+      // scopes over moves inward.
+      const inner = depth + type.typeParams.length;
+      return type.typeParams.every((b) => isClosed(b.bound, levels, depth)) &&
+        type.params.every((param) => isClosed(param, levels, inner)) &&
+        isClosed(type.result, levels, inner);
+    }
+    case "TData":
+      return type.args.every((arg) => isClosed(arg, levels, depth));
+  }
 }
 
 /** The occurs check. */
-export function occurs(id: EVarId, type: Type): boolean {
+export function occurs(level: Level, type: Type): boolean {
   switch (type.kind) {
     case "TUnknown":
     case "TNever":
@@ -233,13 +281,13 @@ export function occurs(id: EVarId, type: Type): boolean {
     case "FVar":
       return false;
     case "EVar":
-      return type.id === id;
+      return type.level === level;
     case "TFun":
-      return type.typeParams.some((b) => occurs(id, b.bound)) ||
-        type.params.some((param) => occurs(id, param)) ||
-        occurs(id, type.result);
+      return type.typeParams.some((b) => occurs(level, b.bound)) ||
+        type.params.some((param) => occurs(level, param)) ||
+        occurs(level, type.result);
     case "TData":
-      return type.args.some((arg) => occurs(id, arg));
+      return type.args.some((arg) => occurs(level, arg));
   }
 }
 
@@ -264,9 +312,9 @@ export function alphaEq(left: Type, right: Type): boolean {
     case "BVar":
       return right.kind === "BVar" && left.index === right.index;
     case "FVar":
-      return right.kind === "FVar" && left.id === right.id;
+      return right.kind === "FVar" && left.level === right.level;
     case "EVar":
-      return right.kind === "EVar" && left.id === right.id;
+      return right.kind === "EVar" && left.level === right.level;
     case "TFun":
       // `hint` is for printing only, so not compared.
       return right.kind === "TFun" &&
