@@ -61,7 +61,7 @@ export class Subtyper {
   expose(type: Type): Type {
     let current = this.#head(type);
     while (current.kind === "FVar") {
-      const bound = this.context.boundOf(current.level);
+      const bound = this.context.upperBoundOf(current.level);
       if (bound === undefined) return current;
       current = this.#head(bound);
     }
@@ -94,7 +94,7 @@ export class Subtyper {
   #head(type: Type): Type {
     let current = type;
     while (current.kind === "EVar") {
-      const solution = this.context.solutionOf(current.level);
+      const solution = this.context.evarAt(current.level)?.solution;
       if (solution === undefined) return current;
       current = solution;
     }
@@ -135,7 +135,7 @@ export class Subtyper {
     // Only the left is promoted. Promoting the right would relate `X <: Y`
     // whenever their bounds happened to meet, which is unsound.
     if (s.kind === "FVar") {
-      const bound = this.context.boundOf(s.level);
+      const bound = this.context.upperBoundOf(s.level);
       return bound === undefined ? "no" : this.#relate(bound, t);
     }
 
@@ -183,11 +183,10 @@ export class Subtyper {
     // them holds under the left's too.
     // Bounds are parallel -- already in the enclosing scope -- so they are
     // pushed as they stand, with no opening of their own.
-    const mark = this.context.size;
-    const opened = t.typeParams.map((binder) =>
-      FVar(this.context.pushUniversal(binder.hint, binder.bound), binder.hint)
-    );
-    try {
+    return this.context.inScope(() => {
+      const opened = t.typeParams.map((binder) =>
+        FVar(this.context.pushTypeVar(binder.hint, binder.bound), binder.hint)
+      );
       for (const [j, param] of t.params.entries()) {
         const mine = s.params[j];
         if (mine === undefined) return "no";
@@ -202,9 +201,7 @@ export class Subtyper {
         openMany(s.result, opened),
         openMany(t.result, opened),
       );
-    } finally {
-      this.context.truncate(mark);
-    }
+    });
   }
 
   /**
@@ -227,7 +224,7 @@ export class Subtyper {
       ? this.#promote(resolved, level)
       : this.#demote(resolved, level);
     if (avoided === undefined) return "interdependent";
-    this.context.addBound(level, side, avoided);
+    this.context.addConstraint(level, side, avoided);
     return "yes";
   }
 
@@ -287,7 +284,7 @@ export class Subtyper {
         // known to sit under; downward there is no lower bound to appeal to,
         // so bottom is all that is left.
         if (!up) return TNever;
-        const bound = this.context.boundOf(type.level);
+        const bound = this.context.upperBoundOf(type.level);
         return bound === undefined
           ? TUnknown
           : this.#avoid(bound, levels, true);

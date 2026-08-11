@@ -27,6 +27,7 @@ import type {
   TermNode,
   TypeParam,
 } from "../syntax/ast.ts";
+import { WILDCARD } from "../syntax/parser.ts";
 import { Context } from "./context.ts";
 import { type CtorInfo, Declarations } from "./declarations.ts";
 import { ctorFieldsAt, Elaborator } from "./elaborate.ts";
@@ -146,29 +147,28 @@ export class Checker {
       return expected;
     }
 
-    const mark = this.context.size;
-    // The expected type's bounds are what the body may assume.
-    const opened = wanted.typeParams.map((binder, j) => {
-      const declared = term.typeParams[j];
-      const name = declared?.name.text ?? binder.hint;
-      if (declared?.bound !== undefined) {
-        // Contravariant: a lambda may promise less of its type parameter than
-        // the expected type does, never more.
-        const written = this.elaborator.elaborateType(declared.bound);
-        this.#subsume(binder.bound, written, declared.at);
+    this.context.inScope(() => {
+      // The expected type's bounds are what the body may assume.
+      const opened = wanted.typeParams.map((binder, j) => {
+        const declared = term.typeParams[j];
+        const name = declared?.name.text ?? binder.hint;
+        if (declared?.bound !== undefined) {
+          // Contravariant: a lambda may promise less of its type parameter
+          // than the expected type does, never more.
+          const written = this.elaborator.elaborateType(declared.bound);
+          this.#subsume(binder.bound, written, declared.at);
+        }
+        return FVar(this.context.pushTypeVar(name, binder.bound), name);
+      });
+
+      const params = wanted.params.map((param) => openMany(param, opened));
+      const result = openMany(wanted.result, opened);
+
+      for (const [j, param] of term.params.entries()) {
+        this.#bindParam(param, params[j] ?? TBad);
       }
-      return FVar(this.context.pushUniversal(name, binder.bound), name);
+      this.check(term.body, result);
     });
-
-    const params = wanted.params.map((param) => openMany(param, opened));
-    const result = openMany(wanted.result, opened);
-
-    for (const [j, param] of term.params.entries()) {
-      this.#bindParam(param, params[j] ?? TBad);
-    }
-    this.check(term.body, result);
-
-    this.context.truncate(mark);
     return expected;
   }
 
@@ -185,10 +185,10 @@ export class Checker {
   }
 
   #checkLet(term: Extract<TermNode, { kind: "Let" }>, expected: Type): Type {
-    const mark = this.context.size;
-    this.context.pushTermVar(term.name.text, this.#letBinding(term));
-    this.check(term.body, expected);
-    this.context.truncate(mark);
+    this.context.inScope(() => {
+      this.context.pushTermVar(term.name.text, this.#letBinding(term));
+      this.check(term.body, expected);
+    });
     return expected;
   }
 
@@ -223,39 +223,38 @@ export class Checker {
   }
 
   #inferAbs(term: Extract<TermNode, { kind: "Abs" }>): Type {
-    const mark = this.context.size;
-    const count = term.typeParams.length;
-    const binders = this.#bindTypeParams(term.typeParams);
+    const type = this.context.inScope((mark) => {
+      const binders = this.#bindTypeParams(term.typeParams);
 
-    const params = term.params.map((param) => {
-      if (param.annotation !== undefined) {
-        return this.elaborator.elaborateType(param.annotation);
+      const params = term.params.map((param) => {
+        if (param.annotation !== undefined) {
+          return this.elaborator.elaborateType(param.annotation);
+        }
+        // Inference has nothing to draw on -- and never invents an EVar for it,
+        // since a parameter's type is not something local inference guesses.
+        this.#report(
+          `cannot infer a type for ${param.name.text}: annotate it, or use ` +
+            `this function where its parameter types are known`,
+          param.name.at,
+          param.name.text.length,
+        );
+        return TBad;
+      });
+      for (const [j, param] of term.params.entries()) {
+        this.context.pushTermVar(param.name.text, params[j] ?? TBad);
       }
-      // Inference has nothing to draw on -- and never invents an EVar for it,
-      // since a parameter's type is not something local inference guesses.
-      this.#report(
-        `cannot infer a type for ${param.name.text}: annotate it, or use ` +
-          `this function where its parameter types are known`,
-        param.name.at,
-        param.name.text.length,
+
+      // Applied before closing: an EVar solved inside the body must be gone
+      // before the entry holding its solution is truncated away.
+      const result = this.context.apply(this.infer(term.body));
+
+      return TFun(
+        binders,
+        params.map((param) => closeFrom(param, mark)),
+        closeFrom(result, mark),
       );
-      return TBad;
     });
-    for (const [j, param] of term.params.entries()) {
-      this.context.pushTermVar(param.name.text, params[j] ?? TBad);
-    }
-
-    // Applied before closing: an EVar solved inside the body must be gone
-    // before the entry holding its solution is truncated away.
-    const result = this.context.apply(this.infer(term.body));
-    this.context.truncate(mark);
-
-    const type = TFun(
-      binders,
-      params.map((param) => closeFrom(param, mark, count)),
-      closeFrom(result, mark, count),
-    );
-    this.context.assertClosed("function", [type], mark);
+    this.context.assertClosed("function", [type]);
     return type;
   }
 
@@ -268,7 +267,7 @@ export class Checker {
         : this.elaborator.elaborateType(param.bound)
     );
     for (const [j, param] of params.entries()) {
-      this.context.pushUniversal(param.name.text, bounds[j] ?? TUnknown);
+      this.context.pushTypeVar(param.name.text, bounds[j] ?? TUnknown);
     }
     return params.map((param, j) =>
       mkBinder(param.name.text, bounds[j] ?? TUnknown)
@@ -289,40 +288,40 @@ export class Checker {
       return TBad;
     }
 
-    const mark = this.context.size;
-    // One EVar per type parameter. This is the only place they are created.
-    const evars = callee.typeParams.map((binder) => {
-      const level = this.context.pushEVar(binder.hint);
-      // The declared bound is an upper bound like any other. Bounds being
-      // parallel, it stands in the enclosing scope and needs no opening.
-      if (binder.bound.kind !== "TUnknown") {
-        this.context.addBound(level, "upper", binder.bound);
+    const result = this.context.inScope((mark) => {
+      // One EVar per type parameter. This is the only place they are created.
+      const evars = callee.typeParams.map((binder) => {
+        const level = this.context.pushEVar(binder.hint);
+        // The declared bound is an upper bound like any other. Bounds being
+        // parallel, it stands in the enclosing scope and needs no opening.
+        if (binder.bound.kind !== "TUnknown") {
+          this.context.addConstraint(level, "upper", binder.bound);
+        }
+        return EVar(level, binder.hint);
+      });
+
+      const params = callee.params.map((param) => openMany(param, evars));
+      if (term.args.length !== params.length) {
+        this.#report(
+          `expected ${params.length} argument${
+            params.length === 1 ? "" : "s"
+          }, found ${term.args.length}`,
+          term.at,
+        );
       }
-      return EVar(level, binder.hint);
+
+      // Left to right, each contributing constraints; nothing is decided until
+      // the whole list is in, so the solution is a join and not a race.
+      for (const [i, arg] of term.args.entries()) {
+        const param = params[i];
+        if (param === undefined) this.infer(arg);
+        else this.check(arg, param);
+      }
+
+      this.#solveEVars(mark, term.at);
+      return this.context.apply(openMany(callee.result, evars));
     });
-
-    const params = callee.params.map((param) => openMany(param, evars));
-    if (term.args.length !== params.length) {
-      this.#report(
-        `expected ${params.length} argument${
-          params.length === 1 ? "" : "s"
-        }, found ${term.args.length}`,
-        term.at,
-      );
-    }
-
-    // Left to right, each contributing constraints; nothing is decided until
-    // the whole list is in, so the solution is a join and not a race.
-    for (const [i, arg] of term.args.entries()) {
-      const param = params[i];
-      if (param === undefined) this.infer(arg);
-      else this.check(arg, param);
-    }
-
-    this.#solveEVars(mark, term.at);
-    const result = this.context.apply(openMany(callee.result, evars));
-    this.context.truncate(mark);
-    this.context.assertClosed("application", [result], mark);
+    this.context.assertClosed("application", [result]);
     return result;
   }
 
@@ -342,7 +341,7 @@ export class Checker {
             `nothing constrains it, so give it explicitly`,
           at,
         );
-        this.context.solve(level, TBad);
+        this.context.setSolution(level, TBad);
         continue;
       }
 
@@ -358,11 +357,11 @@ export class Checker {
         const verdict = this.subtyper.isSubtype(solution, upper);
         if (verdict !== "yes") {
           this.#reportVerdict(verdict, solution, upper, at);
-          this.context.solve(level, TBad);
+          this.context.setSolution(level, TBad);
           continue;
         }
       }
-      this.context.solve(level, this.context.apply(solution));
+      this.context.setSolution(level, this.context.apply(solution));
     }
   }
 
@@ -416,13 +415,13 @@ export class Checker {
   }
 
   #inferLet(term: Extract<TermNode, { kind: "Let" }>): Type {
-    const mark = this.context.size;
-    this.context.pushTermVar(term.name.text, this.#letBinding(term));
-    const result = this.context.apply(this.infer(term.body));
-    this.context.truncate(mark);
+    const result = this.context.inScope(() => {
+      this.context.pushTermVar(term.name.text, this.#letBinding(term));
+      return this.context.apply(this.infer(term.body));
+    });
     // With no dependent types a term variable cannot appear in a type, so a
     // `let` body's type never mentions the binding -- but say so out loud.
-    this.context.assertClosed("let", [result], mark);
+    this.context.assertClosed("let", [result]);
     return result;
   }
 
@@ -507,15 +506,15 @@ export class Checker {
     args: readonly Type[],
     expected: Type | undefined,
   ): Type {
-    const mark = this.context.size;
-    if (arm.pattern.kind === "PCtor") {
-      this.#bindPattern(arm.pattern, owner, args);
-    }
-    const type = expected === undefined
-      ? this.context.apply(this.infer(arm.body))
-      : (this.check(arm.body, expected), expected);
-    this.context.truncate(mark);
-    this.context.assertClosed("match arm", [type], mark);
+    const type = this.context.inScope(() => {
+      if (arm.pattern.kind === "PCtor") {
+        this.#bindPattern(arm.pattern, owner, args);
+      }
+      return expected === undefined
+        ? this.context.apply(this.infer(arm.body))
+        : (this.check(arm.body, expected), expected);
+    });
+    this.context.assertClosed("match arm", [type]);
     return type;
   }
 
@@ -567,7 +566,7 @@ export class Checker {
     }
     const seen = new Set<string>();
     for (const [j, binder] of pattern.args.entries()) {
-      if (seen.has(binder.text) && binder.text !== "_") {
+      if (seen.has(binder.text) && binder.text !== WILDCARD) {
         this.#report(
           `${binder.text} is bound twice in one pattern`,
           binder.at,

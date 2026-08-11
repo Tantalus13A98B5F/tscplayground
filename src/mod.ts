@@ -44,32 +44,32 @@ import { type Type, typeToString } from "./core/types.ts";
 /**
  * Run the whole pipeline over one source file: tokenize, lay out, parse, check.
  *
- * Each phase runs to completion, and the driver decides whether to go on --
- * checking a tree that failed to parse buries the real error under
- * consequences of it.
+ * Every phase runs to completion and every one reports, but only one of them
+ * can end the run. The lexer skips a character it cannot read and layout closes
+ * whatever the author left open, so neither has a failing path to branch on;
+ * the parse is the first that can come back with nothing, and checking a tree
+ * that failed to parse would bury the real error under consequences of it.
+ *
+ * Their `value` is asserted rather than handled. If either grows a way to fail,
+ * that is a contract change we want to hear about, where handling it quietly
+ * would pass an empty stream on and blame the program for the silence.
  */
 export function checkSource(source: Source): Result<Type> {
+  const diagnostics: Diagnostic[] = [];
+
   const tokens = tokenize(source);
-  if (tokens.value === undefined) return failed(tokens.diagnostics);
+  diagnostics.push(...tokens.diagnostics);
 
-  const laid = layout(tokens.value);
-  if (laid.value === undefined) {
-    return failed([...tokens.diagnostics, ...laid.diagnostics]);
-  }
+  const laid = layout(tokens.value!);
+  diagnostics.push(...laid.diagnostics);
 
-  const program = parseProgram(laid.value);
-  const earlier = [
-    ...tokens.diagnostics,
-    ...laid.diagnostics,
-    ...program.diagnostics,
-  ];
-  if (program.value === undefined) return failed(earlier);
+  const program = parseProgram(laid.value!);
+  diagnostics.push(...program.diagnostics);
+  if (program.value === undefined) return failed(diagnostics);
 
   const checked = checkProgram(program.value);
-  return {
-    value: checked.type,
-    diagnostics: [...earlier, ...checked.diagnostics],
-  };
+  diagnostics.push(...checked.diagnostics);
+  return { value: checked.type, diagnostics };
 }
 
 /**
@@ -130,18 +130,14 @@ export function checkFiles(fileSystem: FileSystem, entry: string): Checked {
 
     const lexed = tokenize(source);
     diagnostics.push(...lexed.diagnostics);
-    if (lexed.value === undefined) {
-      return { ...failed<Type>(diagnostics), sources };
-    }
 
-    const laid = layout(lexed.value);
+    // Asserted as in `checkSource`: every file contributes its tokens whatever
+    // it reported, and the one parse below is where a multi-file run can stop.
+    const laid = layout(lexed.value!);
     diagnostics.push(...laid.diagnostics);
-    if (laid.value === undefined) {
-      return { ...failed<Type>(diagnostics), sources };
-    }
 
-    appendPart(tokens, laid.value);
-    end = laid.value.at(-1);
+    appendPart(tokens, laid.value!);
+    end = laid.value!.at(-1);
   }
 
   // Nothing was read -- an unresolvable entry, already reported. Parsing an

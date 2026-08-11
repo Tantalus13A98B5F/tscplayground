@@ -12,8 +12,6 @@ import {
   occurs,
   open,
   openMany,
-  substFVar,
-  substMany,
   TData,
   TFun,
   TNever,
@@ -24,8 +22,8 @@ import {
 // Levels 0 and 1 stand for the two outermost context entries.
 const X = mkLevel(0);
 const Y = mkLevel(1);
-/** Close a scope of `count` levels starting at X. */
-const closeXY = (type: typeof TUnknown) => closeFrom(type, X, 2);
+/** Close the scope starting at X, taking both levels with it. */
+const closeXY = (type: typeof TUnknown) => closeFrom(type, X);
 const Pair = mkDataName("Pair");
 const Bool = mkDataName("Bool");
 
@@ -81,17 +79,19 @@ Deno.test("closeFrom abstracts a whole scope simultaneously", () => {
 Deno.test("closeFrom leaves levels outside its range alone", () => {
   // Only the scope being ended is abstracted; anything enclosing it stays free.
   const body = TFun([], [FVar(X, "X")], FVar(Y, "Y"));
-  const closed = closeFrom(body, Y, 1);
+  const closed = closeFrom(body, Y);
   expect(alphaEq(closed, TFun([], [FVar(X, "X")], BVar(0)))).toBe(true);
 });
 
 Deno.test("close then open is the identity on a free variable", () => {
+  // Closing from Y takes the innermost scope only, so X stays free and one
+  // replacement is exactly what reopening it needs.
   const original = TFun(
     [],
     [FVar(X, "X")],
     TData(Pair, [FVar(X, "X"), FVar(Y, "Y")]),
   );
-  const roundTrip = open(closeFrom(original, X, 1), FVar(X, "X"));
+  const roundTrip = open(closeFrom(original, Y), FVar(Y, "Y"));
   expect(alphaEq(roundTrip, original)).toBe(true);
 });
 
@@ -99,7 +99,6 @@ Deno.test("close shifts by the arity of each enclosing quantifier", () => {
   const closed = closeFrom(
     TFun([mkBinder("A", TUnknown), mkBinder("B", TUnknown)], [], FVar(X, "X")),
     X,
-    1,
   );
   const expected = TFun(
     [mkBinder("A", TUnknown), mkBinder("B", TUnknown)],
@@ -107,46 +106,6 @@ Deno.test("close shifts by the arity of each enclosing quantifier", () => {
     BVar(2),
   );
   expect(alphaEq(closed, expected)).toBe(true);
-});
-
-Deno.test("substFVar is open after close", () => {
-  // The classic identity, and a check that both implementations agree.
-  const type = TFun(
-    [],
-    [FVar(X, "X")],
-    TData(Pair, [FVar(X, "X"), FVar(Y, "Y")]),
-  );
-  const replacement = TData(Bool);
-  expect(
-    alphaEq(
-      substFVar(type, X, replacement),
-      open(closeFrom(type, X, 1), replacement),
-    ),
-  ).toBe(true);
-});
-
-Deno.test("substMany is simultaneous, unlike iterated substFVar", () => {
-  // At once this is a swap; in sequence the second rewrites the first's output.
-  const type = TFun([], [FVar(X, "X")], FVar(Y, "Y"));
-  const swapped = substMany(type, [X, Y], [FVar(Y, "Y"), FVar(X, "X")]);
-  expect(alphaEq(swapped, TFun([], [FVar(Y, "Y")], FVar(X, "X")))).toBe(true);
-
-  const sequential = substFVar(
-    substFVar(type, X, FVar(Y, "Y")),
-    Y,
-    FVar(X, "X"),
-  );
-  expect(alphaEq(sequential, TFun([], [FVar(X, "X")], FVar(X, "X")))).toBe(
-    true,
-  );
-});
-
-Deno.test("substFVar does not shift when landing under a binder", () => {
-  // An FVar is an identity, not a position, so depth changes nothing.
-  const type = TFun([mkBinder("A", TUnknown)], [BVar(0)], FVar(X, "X"));
-  const substituted = substFVar(type, X, TData(Bool));
-  const expected = TFun([mkBinder("A", TUnknown)], [BVar(0)], TData(Bool));
-  expect(alphaEq(substituted, expected)).toBe(true);
 });
 
 Deno.test("occurs finds an EVar nested in TData arguments", () => {
@@ -225,6 +184,6 @@ Deno.test("TFun is TPoly binding nothing", () => {
 
 Deno.test("a quantifier survives a traversal that rebuilds it", () => {
   const type = TFun([mkBinder("A", TUnknown)], [], FVar(X, "X"));
-  const closed = closeFrom(type, X, 1);
+  const closed = closeFrom(type, X);
   expect(closed.kind === "TFun" && closed.typeParams.length).toBe(1);
 });

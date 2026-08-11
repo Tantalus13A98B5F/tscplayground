@@ -74,15 +74,15 @@ Deno.test("arity is part of the type", () => {
 
 Deno.test("a type variable is promoted to its bound, but only on the left", () => {
   const { context, sub } = fixture();
-  const X = context.pushUniversal("X", Bool);
+  const X = context.pushTypeVar("X", Bool);
   expect(sub.isSubtype(FVar(X, "X"), Bool)).toBe("yes");
   expect(sub.isSubtype(Bool, FVar(X, "X"))).toBe("no");
 });
 
 Deno.test("promotion follows a chain of bounds", () => {
   const { context, sub } = fixture();
-  const X = context.pushUniversal("X", Bool);
-  const Y = context.pushUniversal("Y", FVar(X, "X"));
+  const X = context.pushTypeVar("X", Bool);
+  const Y = context.pushTypeVar("Y", FVar(X, "X"));
   expect(sub.isSubtype(FVar(Y, "Y"), Bool)).toBe("yes");
   expect(typeToString(sub.expose(FVar(Y, "Y")))).toBe("Bool");
 });
@@ -157,7 +157,7 @@ Deno.test("avoidance widens an out-of-scope variable to its bound", () => {
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
   // X is introduced *after* ?a, so ?a's solution may not mention it.
-  const X = context.pushUniversal("X", Bool);
+  const X = context.pushTypeVar("X", Bool);
 
   expect(sub.isSubtype(FVar(X, "X"), EVar(a, "a"))).toBe("yes");
   expect(context.evarAt(a)?.lower.map(typeToString)).toEqual(["Bool"]);
@@ -166,7 +166,7 @@ Deno.test("avoidance widens an out-of-scope variable to its bound", () => {
 Deno.test("avoidance falls back to top when a variable has no useful bound", () => {
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
-  const X = context.pushUniversal("X", TUnknown);
+  const X = context.pushTypeVar("X", TUnknown);
   expect(sub.isSubtype(FVar(X, "X"), EVar(a, "a"))).toBe("yes");
   expect(context.evarAt(a)?.lower.map(typeToString)).toEqual(["unknown"]);
 });
@@ -174,7 +174,7 @@ Deno.test("avoidance falls back to top when a variable has no useful bound", () 
 Deno.test("avoidance swaps direction at a contravariant position", () => {
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
-  const X = context.pushUniversal("X", Bool);
+  const X = context.pushTypeVar("X", Bool);
 
   // Widening `(X) -> X` means *narrowing* the parameter: `(never) -> Bool`
   // accepts more arguments, so it is the supertype.
@@ -188,7 +188,7 @@ Deno.test("avoidance swaps direction at a contravariant position", () => {
 Deno.test("avoidance cannot touch an invariant argument, so it collapses", () => {
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
-  const X = context.pushUniversal("X", Bool);
+  const X = context.pushTypeVar("X", Bool);
 
   // `List[X]` has no in-scope supertype but top: widening the argument would
   // change the type, invariance being the whole point.
@@ -211,7 +211,7 @@ Deno.test("an out-of-scope EVar is interdependent, and is rejected", () => {
 Deno.test("a solved EVar is substituted before anything else looks at it", () => {
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
-  context.solve(a, Bool);
+  context.setSolution(a, Bool);
   expect(sub.isSubtype(EVar(a, "a"), Bool)).toBe("yes");
   expect(sub.isSubtype(EVar(a, "a"), Int)).toBe("no");
   expect(context.evarAt(a)?.upper.length).toBe(0);

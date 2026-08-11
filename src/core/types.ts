@@ -107,8 +107,17 @@ function openAt(
     case "BVar": {
       // Bound by a binder inside the one being opened: leave it alone.
       if (type.index < depth) return type;
-      // `TBad` only on an arity disagreement, which earlier passes reject.
-      return replacements[type.index - depth] ?? TBad;
+      const replacement = replacements[type.index - depth];
+      // Every caller opens a binder at its own arity, so a miss is a checker
+      // bug rather than a program error -- and answering `TBad` would hide it,
+      // that being the one type checking against anything.
+      if (replacement === undefined) {
+        throw new Error(
+          `open: BVar ${type.index} under ${depth} binders, ` +
+            `but only ${replacements.length} replacements`,
+        );
+      }
+      return replacement;
     }
     case "TFun": {
       // Bounds are parallel, so they stay at `depth`; only what the binder
@@ -145,7 +154,6 @@ function closeAt(
   type: Type,
   depth: number,
   mark: number,
-  count: number,
 ): Type {
   switch (type.kind) {
     case "TUnknown":
@@ -156,80 +164,39 @@ function closeAt(
       return type;
     case "FVar": {
       const at = type.level - mark;
-      return at >= 0 && at < count ? BVar(depth + at) : type;
+      return at >= 0 ? BVar(depth + at) : type;
     }
     case "TFun": {
       const inner = depth + type.typeParams.length;
       return TFun(
         type.typeParams.map((b) =>
-          mkBinder(b.hint, closeAt(b.bound, depth, mark, count))
+          mkBinder(b.hint, closeAt(b.bound, depth, mark))
         ),
-        type.params.map((param) => closeAt(param, inner, mark, count)),
-        closeAt(type.result, inner, mark, count),
+        type.params.map((param) => closeAt(param, inner, mark)),
+        closeAt(type.result, inner, mark),
       );
     }
     case "TData":
       return TData(
         type.name,
-        type.args.map((arg) => closeAt(arg, depth, mark, count)),
+        type.args.map((arg) => closeAt(arg, depth, mark)),
       );
   }
 }
 
 /**
- * Abstract the `count` levels starting at `mark` into a binder, `mark + j`
- * becoming `BVar j`. A scope is always a contiguous run of context entries, so
- * this needs no set of identities and no membership test -- and being one call
- * over the whole group, it cannot collapse the group onto a single index the
- * way an iterated single-variable close would.
- */
-export function closeFrom(type: Type, mark: number, count: number): Type {
-  return closeAt(type, 0, mark, count);
-}
-
-/**
- * Replace free variables by identity, all at once -- iterating would substitute
- * later replacements into earlier ones. Touches no indices, an `FVar` being an
- * identity rather than a position.
+ * Abstract every level at or above `mark` into a binder, `mark + j` becoming
+ * `BVar j`. A scope is always a contiguous run of context entries, so this
+ * needs no set of identities and no membership test -- and being one call over
+ * the whole group, it cannot collapse the group onto a single index the way an
+ * iterated single-variable close would.
  *
- * Precondition: `ids` pairwise distinct, every replacement locally closed, or a
- * dangling `BVar` is captured by whatever binder it lands under.
+ * No count, because there is nothing above the group to spare: a caller closes
+ * exactly what it pushed at `mark`, and an `FVar` names a type variable, never
+ * one of the term variables a caller may have pushed on top of the group.
  */
-export function substMany(
-  type: Type,
-  levels: readonly Level[],
-  replacements: readonly Type[],
-): Type {
-  switch (type.kind) {
-    case "TUnknown":
-    case "TNever":
-    case "TBad":
-    case "BVar":
-    case "EVar":
-      return type;
-    case "FVar": {
-      const at = levels.indexOf(type.level);
-      return at === -1 ? type : replacements[at] ?? type;
-    }
-    case "TFun":
-      return TFun(
-        type.typeParams.map((b) =>
-          mkBinder(b.hint, substMany(b.bound, levels, replacements))
-        ),
-        type.params.map((param) => substMany(param, levels, replacements)),
-        substMany(type.result, levels, replacements),
-      );
-    case "TData":
-      return TData(
-        type.name,
-        type.args.map((arg) => substMany(arg, levels, replacements)),
-      );
-  }
-}
-
-/** Sugar for substituting a single free variable. */
-export function substFVar(type: Type, level: Level, replacement: Type): Type {
-  return substMany(type, [level], [replacement]);
+export function closeFrom(type: Type, mark: number): Type {
+  return closeAt(type, 0, mark);
 }
 
 /**
