@@ -280,6 +280,16 @@ Deno.test("a type parameter used twice in one group is reported", () => {
   expect(fixture.messages()).toEqual(["duplicate type parameter A"]);
 });
 
+Deno.test("the wildcard may fill a binder group twice over", () => {
+  // `_` names nothing, so a second one collides with nothing. It still holds
+  // its position: the result is `BVar 1`, the second of two binders.
+  const fixture = elaborated("typedef Unit = unknown" + END);
+  expect(fixture.show("[_, _](unknown) -> unknown")).toBe(
+    "[_, _](unknown) -> unknown",
+  );
+  expect(fixture.messages()).toEqual([]);
+});
+
 Deno.test("elaborating a binder leaves the context as it found it", () => {
   const fixture = elaborated("typedef Unit = unknown" + END);
   const before = fixture.context.size;

@@ -54,6 +54,21 @@ Deno.test("application instantiates a polymorphic callee", () => {
   );
 });
 
+Deno.test("a solution may name an EVar of an enclosing argument list", () => {
+  // The inner list solves while `?A` is still open, and the bare lambda's `x`
+  // has exactly `?A` for its type -- so `?B := ?A` is stored unsolved, and only
+  // the outer `?A := Bool` finishes it. This is what `Context.apply` recurses
+  // for; resolving one level deep would leave `?B` standing here.
+  expect(
+    typeOf(
+      ...BOOL,
+      "let id = fn [B](y: B) -> y",
+      "let f = fn [A](g: (A) -> A, a: A) -> g(a)",
+      "f(fn (x) -> id(x), True())",
+    ),
+  ).toBe("Bool");
+});
+
 Deno.test("a type argument is inferred from an invariant position", () => {
   // `List[?A] <: List[Bool]` only constrains ?A because invariance relates
   // arguments both ways rather than testing them for equality.

@@ -6,7 +6,7 @@
  * A type variable wins because it is the innermost binding; alias before
  * datatype never matters, since `Declarations` refuses to hold one name twice.
  *
- * The context is the scope. Elaborating a binder pushes universals, elaborates
+ * The context is the scope. Elaborating a binder pushes type variables, elaborates
  * underneath them, and truncates -- so `lookupTypeVar` handles shadowing for
  * free, and nothing here keeps a second name table.
  */
@@ -17,6 +17,7 @@ import {
   reportError,
 } from "../diagnostics/diagnostic.ts";
 import type { Ident, TypeDecl, TypeNode, TypeParam } from "../syntax/ast.ts";
+import { WILDCARD } from "../syntax/parser.ts";
 import type { Context } from "./context.ts";
 import type {
   AliasInfo,
@@ -131,24 +132,23 @@ export class Elaborator {
       param.bound === undefined ? TUnknown : this.elaborateType(param.bound)
     );
 
-    const mark = this.context.size;
+    const closed = this.context.inScope((mark) => {
     this.#bindTypeParams(node.typeParams, bounds);
     const params = node.params.map((param) => this.elaborateType(param));
     const result = this.elaborateType(node.result);
-    this.context.truncate(mark);
 
-    // Closing at depth 0 is what makes level `mark + j` into `BVar j`. Closing
-    // the assembled `TFun` instead would be wrong: that abstracts an
+      // Closing at depth 0 is what makes level `mark + j` into `BVar j`.
+      // Closing the assembled `TFun` instead would be wrong: that abstracts an
     // *enclosing* binder, and would push these indices past their own group.
-    const count = node.typeParams.length;
-    const closed = TFun(
+      return TFun(
       node.typeParams.map((param, j) =>
         mkBinder(param.name.text, bounds[j] ?? TUnknown)
       ),
-      params.map((param) => closeFrom(param, mark, count)),
-      closeFrom(result, mark, count),
+        params.map((param) => closeFrom(param, mark)),
+        closeFrom(result, mark),
     );
-    this.context.assertClosed("function type", [closed], mark);
+    });
+    this.context.assertClosed("function type", [closed]);
     return closed;
   }
 
@@ -160,7 +160,10 @@ export class Elaborator {
     const seen = new Set<string>();
     return params.map((param, j) => {
       const { text, at } = param.name;
-      if (seen.has(text)) {
+      // The wildcard is exempt: it names nothing, so repeating it is not a
+      // collision. It is still pushed, holding the position its `BVar j`
+      // depends on -- unnameable, not absent.
+      if (text !== WILDCARD && seen.has(text)) {
         this.#report(
           `duplicate type parameter ${text}`,
           at,
@@ -168,7 +171,7 @@ export class Elaborator {
         );
       }
       seen.add(text);
-      return this.context.pushUniversal(text, bounds[j] ?? TUnknown);
+      return this.context.pushTypeVar(text, bounds[j] ?? TUnknown);
     });
   }
 
@@ -200,10 +203,9 @@ export class Elaborator {
       });
     }
 
-    const ctorNames = new Map<string, Position>();
     for (const decl of decls) {
       if (decl.kind === "DatatypeDecl") {
-        this.#elaborateDatatype(decl, ctorNames);
+        this.#elaborateDatatype(decl);
       } else {
         this.#elaborateAlias(decl);
       }
@@ -223,20 +225,46 @@ export class Elaborator {
 
   #elaborateDatatype(
     decl: Extract<TypeDecl, { kind: "DatatypeDecl" }>,
-    ctorNames: Map<string, Position>,
   ): void {
     const signature = this.declarations.datatypeOf(decl.name.text);
     // Absent only if the name was a redeclaration, already reported.
     if (signature === undefined || signature.at !== decl.at) return;
 
-    const mark = this.context.size;
     const count = decl.typeParams.length;
+    const ctors = this.context.inScope((mark) => {
     this.#bindPlainParams(decl.typeParams);
+      return this.#elaborateCtors(decl, mark);
+    });
 
+    // The arity here is a *binder depth*, and outlives the count `closeFrom`
+    // shed: a field is stored under a binder no type node materialises, so
+    // `BVar j` is parameter j with nothing on hand to say so, and a depth-zero
+    // check would call every field ill-formed. Asked here, on the way out --
+    // what is asserted is what is handed to `Declarations`.
+    this.context.assertClosed(
+      `datatype ${decl.name.text}`,
+      ctors.flatMap((ctor) => ctor.fields),
+      count,
+    );
+    this.declarations.addDatatype({ ...signature, ctors });
+  }
+
+  /** Elaborate a datatype's constructors, its parameters already bound. */
+  #elaborateCtors(
+    decl: Extract<TypeDecl, { kind: "DatatypeDecl" }>,
+    mark: number,
+  ): CtorInfo[] {
     const ctors: CtorInfo[] = [];
     for (const ctor of decl.ctors) {
-      const previous = ctorNames.get(ctor.name.text);
-      if (previous !== undefined) {
+      // Non-fatal, like every other redeclaration: the name keeps pointing at
+      // the first constructor to claim it, this one is left out of the
+      // datatype, and elaboration carries on to the fields below. Dropping the
+      // *duplicate* rather than the name is what keeps a later `| Nil ->` from
+      // becoming a second, quieter error.
+      if (
+        this.declarations.claimCtorName(ctor.name.text, ctor.name.at) !==
+          undefined
+      ) {
         this.#report(
           `constructor ${ctor.name.text} is already declared`,
           ctor.name.at,
@@ -244,44 +272,28 @@ export class Elaborator {
         );
         continue;
       }
-      ctorNames.set(ctor.name.text, ctor.name.at);
       ctors.push({
         name: ctor.name.text,
         // Closed over the datatype's parameters, so a use opens them.
         fields: ctor.params.map((field) =>
-          closeFrom(this.elaborateType(field), mark, count)
+          closeFrom(this.elaborateType(field), mark)
         ),
         at: ctor.at,
       });
     }
-
-    this.context.truncate(mark);
-    // Fields are closed over the datatype's parameters, so they are checked at
-    // `depth = arity` rather than zero.
-    this.context.assertClosed(
-      `datatype ${decl.name.text}`,
-      ctors.flatMap((ctor) => ctor.fields),
-      mark,
-      count,
-    );
-    this.declarations.addDatatype({ ...signature, ctors });
+    return ctors;
   }
 
   #elaborateAlias(decl: Extract<TypeDecl, { kind: "AliasDecl" }>): void {
     if (this.#reportRedeclaration(decl.name)) return;
 
-    const mark = this.context.size;
+    const body = this.context.inScope((mark) => {
     this.#bindPlainParams(decl.typeParams);
-    const body = closeFrom(
-      this.elaborateType(decl.body),
-      mark,
-      decl.typeParams.length,
-    );
-    this.context.truncate(mark);
+      return closeFrom(this.elaborateType(decl.body), mark);
+    });
     this.context.assertClosed(
       `type alias ${decl.name.text}`,
       [body],
-      mark,
       decl.typeParams.length,
     );
 

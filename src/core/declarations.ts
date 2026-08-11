@@ -48,6 +48,7 @@ export type AliasInfo = {
 export class Declarations {
   readonly #datatypes = new Map<string, DatatypeInfo>();
   readonly #aliases = new Map<string, AliasInfo>();
+  readonly #ctorOwners = new Map<string, Position>();
 
   datatypeOf(name: string): DatatypeInfo | undefined {
     return this.#datatypes.get(name);
@@ -81,6 +82,24 @@ export class Declarations {
 
   addAlias(info: AliasInfo): void {
     this.#aliases.set(info.name, info);
+  }
+
+  /**
+   * Claim `name` in the constructor namespace, answering where it was already
+   * claimed if it was.
+   *
+   * That namespace is flat, spanning every datatype: a pattern names a
+   * constructor and nothing else, so two datatypes cannot both own `Nil` and
+   * still let `| Nil ->` mean one thing. Owned here, beside the type namespace,
+   * because it is global for the same reason and over the same run -- passed
+   * around as a table instead, it would be one caller's bookkeeping and the
+   * next caller's oversight.
+   */
+  claimCtorName(name: string, at: Position): Position | undefined {
+    const previous = this.#ctorOwners.get(name);
+    if (previous !== undefined) return previous;
+    this.#ctorOwners.set(name, at);
+    return undefined;
   }
 
   /** The constructor `name` of datatype `owner`, or `undefined`. */

@@ -1,5 +1,5 @@
 /**
- * The typing context: a single *ordered* list holding universals, EVars,
+ * The typing context: a single *ordered* list holding type variables, EVars,
  * and term bindings.
  *
  * Order is the point twice over. An EVar's solution may only mention
@@ -18,7 +18,7 @@
  * empty.
  *
  * Truncation reuses levels, so anything outliving a scope must have been closed
- * or substituted first. That is a checker invariant, not a hope: `assertLeft`
+ * or substituted first. That is a checker invariant, not a hope: `assertClosed`
  * checks it at every exit, and turns what would be a silent alias into a loud
  * failure.
  *
@@ -39,11 +39,17 @@ import {
 
 export type Entry =
   /**
-   * `X <: bound` -- rigid, never solved. `name` is what elaboration resolves a
-   * source type name against, so unlike `Binder.hint` it is load-bearing
-   * rather than decoration.
+   * `X <: bound` -- rigid, never solved.
+   *
+   * `name` is load-bearing where `Binder.hint` is decoration, and it is not
+   * spent by the time an entry gets here: elaboration is not a pass that runs
+   * to completion first. A type written inside a term -- a parameter's
+   * annotation, a bound on a `fn`'s own type parameter -- is elaborated when
+   * checking reaches it, against this context, because the binder it sits
+   * under is only in scope then. So `lookupTypeVar` resolves against these
+   * names for as long as checking runs.
    */
-  | { readonly kind: "Universal"; readonly name: string; readonly bound: Type }
+  | { readonly kind: "TypeVar"; readonly name: string; readonly bound: Type }
   /**
    * `?a`, or `?a = solution` once solved.
    *
@@ -114,8 +120,8 @@ export class Context {
     return mkLevel(this.#entries.length - 1);
   }
 
-  pushUniversal(name: string, bound: Type): Level {
-    return this.push({ kind: "Universal", name, bound });
+  pushTypeVar(name: string, bound: Type): Level {
+    return this.push({ kind: "TypeVar", name, bound });
   }
 
   pushEVar(name: string): Level {
@@ -132,11 +138,26 @@ export class Context {
    * Record `T <: ?a` or `?a <: T`. The bound must already be avoided -- closed
    * by `level` -- since an EVar's constraints may only mention what stands to
    * its left, exactly as its eventual solution must.
+   *
+   * `level` and not the mark the whole batch was inserted at, which would be
+   * the stronger bar: no constraint mentioning *any* EVar of its own batch.
+   * That is deliberate. Leftward is not the interdependent case -- it is a
+   * dependency order the solver already follows, solving ascending and
+   * applying each solution before storing it, so `?a` is concrete by the time
+   * `?b` is decided. What is genuinely circular always points rightward too,
+   * and `#constrain` refuses it there. Tightening to the batch mark would cost
+   * `?a <: ?b` and buy nothing.
    */
-  addBound(level: Level, side: "lower" | "upper", type: Type): void {
+  addConstraint(level: Level, side: "lower" | "upper", type: Type): void {
     const entry = this.evarAt(level);
     if (entry === undefined) return;
-    this.assertClosed(`bound on ?${entry.name}`, [type], level);
+    // Not `assertClosed`: the bar is this EVar's level, not the context's
+    // watermark, and everything to its right is legitimately still standing.
+    if (!isClosed(type, level)) {
+      throw new Error(
+        `bound on ?${entry.name}: mentions something at or past level ${level}`,
+      );
+    }
     entry[side].push(type);
   }
 
@@ -152,15 +173,39 @@ export class Context {
     this.#entries.length = Math.min(size, this.#entries.length);
   }
 
-  /** The entries pushed since `size`, innermost last. */
-  since(size: number): readonly Entry[] {
-    return this.#entries.slice(size);
+  /**
+   * Run `body` in a scope of its own, handing it the mark and truncating to it
+   * however the body leaves -- returning or throwing.
+   *
+   * The `finally` is not there to make a throw recoverable. Everything thrown
+   * in this checker is a bug, and the run is over. It is there so that the bug
+   * reported is the first one: a scope abandoned mid-flight leaves entries
+   * standing that the next `assertClosed` would trip over, and *that* failure
+   * is what would surface, naming a scope with nothing wrong with it.
+   *
+   * Being one form also makes the pairing visible. A mark taken and truncated
+   * fifty lines apart is a pairing only a reader keeps track of.
+   *
+   * Close inside, assert outside. `mark` is the scope's own business, so what
+   * the body hands back is already abstracted over it and nothing downstream
+   * needs the number; the assertion then reads against the context as it
+   * stands, which is what `assertClosed` asks about.
+   */
+  inScope<T>(body: (mark: number) => T): T {
+    const mark = this.size;
+    try {
+      return body(mark);
+    } finally {
+      this.truncate(mark);
+    }
   }
 
   /**
-   * Assert that `types` may outlive a scope ending at `levels` -- none may
-   * mention a level the truncation is about to drop, nor carry a `BVar` beyond
-   * `depth` enclosing binders.
+   * Assert that `types` are closed under the context *as it now stands* -- the
+   * scope-exit check, to be asked once a scope has ended. No mark to pass: the
+   * watermark a survivor must sit under is `size`, and the context is the one
+   * that knows it. A caller repeating its own `mark` here could only repeat it
+   * wrongly.
    *
    * `depth` is not decoration. What outlives a scope is usually something the
    * scope was just abstracted *into*, so a constructor's fields legitimately
@@ -170,26 +215,30 @@ export class Context {
    * A failure is a checker bug, not a program error, so it throws rather than
    * joining the diagnostics.
    */
-  assertClosed(
-    what: string,
-    types: readonly Type[],
-    levels: number,
-    depth = 0,
-  ): void {
+  assertClosed(what: string, types: readonly Type[], depth = 0): void {
     for (const type of types) {
-      if (!isClosed(type, levels, depth)) {
+      if (!isClosed(type, this.size, depth)) {
         throw new Error(
           `${what}: a type escaped a scope closed by ` +
-            `${levels} levels and ${depth} binders`,
+            `${this.size} levels and ${depth} binders`,
         );
       }
     }
   }
 
-  /** Upper bound of the universal at `level`, or `undefined` if it is not one. */
-  boundOf(level: Level): Type | undefined {
+  /**
+   * The *declared* upper bound of the type variable at `level`, or `undefined`
+   * if that is not what lives there. Named for the side it takes because a
+   * bounded-below type variable would want the other, and `boundOf` would then
+   * name neither.
+   *
+   * Not to be confused with `Subtyper.upperBoundOf`, which is the same words
+   * about a different thing: the meet of an EVar's collected upper constraints.
+   * This one reads a binder, that one solves.
+   */
+  upperBoundOf(level: Level): Type | undefined {
     const entry = this.#entries[level];
-    return entry?.kind === "Universal" ? entry.bound : undefined;
+    return entry?.kind === "TypeVar" ? entry.bound : undefined;
   }
 
   /**
@@ -214,17 +263,11 @@ export class Context {
   lookupTypeVar(name: string): TypeBinding | undefined {
     for (let i = this.#entries.length - 1; i >= 0; i--) {
       const entry = this.#entries[i];
-      if (entry?.kind === "Universal" && entry.name === name) {
+      if (entry?.kind === "TypeVar" && entry.name === name) {
         return { level: mkLevel(i), bound: entry.bound };
       }
     }
     return undefined;
-  }
-
-  /** Solution of the EVar at `level`, or `undefined` if unsolved. */
-  solutionOf(level: Level): Type | undefined {
-    const entry = this.#entries[level];
-    return entry?.kind === "EVar" ? entry.solution : undefined;
   }
 
   /**
@@ -232,7 +275,7 @@ export class Context {
    * took. The escape check is what the ordering buys: a solution may only
    * mention entries strictly to the left, which is `isClosed(type, level)`.
    */
-  solve(level: Level, type: Type): SolveFailure | undefined {
+  setSolution(level: Level, type: Type): SolveFailure | undefined {
     const entry = this.#entries[level];
     if (entry?.kind !== "EVar") return { kind: "unbound" };
     if (entry.solution !== undefined) {
@@ -261,7 +304,10 @@ export class Context {
       case "FVar":
         return type;
       case "EVar": {
-        const solution = this.solutionOf(type.level);
+        // Two questions, so two `undefined`s, and they must not be conflated:
+        // no EVar at that level is a checker bug, an unsolved one is the
+        // ordinary case. Asking through `evarAt` keeps them apart.
+        const solution = this.evarAt(type.level)?.solution;
         return solution === undefined ? type : this.apply(solution);
       }
       case "TFun":
