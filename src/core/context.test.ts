@@ -60,8 +60,9 @@ Deno.test("solve records a solution in place", () => {
 Deno.test("solve rejects a solution mentioning the variable itself", () => {
   const { context, a } = withEVar();
 
+  // `?a` is not to the left of itself, so this is the escape check doing it.
   const failure = context.setSolution(a, TFun([], [EVar(a, "a")], TUnknown));
-  expect(failure?.kind).toBe("occurs");
+  expect(failure?.kind).toBe("escapes");
   expect(context.evarAt(a)?.solution).toBeUndefined();
 });
 

@@ -32,7 +32,18 @@ export type DatatypeInfo = {
   readonly name: DataName;
   /** Parameter names, in order. Its length is the arity. */
   readonly params: readonly string[];
-  readonly ctors: readonly CtorInfo[];
+  /**
+   * Filled by the second pass, so these two are assignable where the rest of
+   * the entry is fixed at declaration. The array itself stays immutable -- the
+   * field is replaced, never pushed to.
+   */
+  ctors: readonly CtorInfo[];
+  /**
+   * Whether `initCtors` has run. Not the same question as `ctors` being empty:
+   * the two passes leave a signature standing with no constructors yet, and
+   * this is what tells that apart from a datatype that turned out to have none.
+   */
+  initialized: boolean;
   readonly at: Position;
 };
 
@@ -48,7 +59,6 @@ export type AliasInfo = {
 export class Declarations {
   readonly #datatypes = new Map<string, DatatypeInfo>();
   readonly #aliases = new Map<string, AliasInfo>();
-  readonly #ctorOwners = new Map<string, Position>();
 
   datatypeOf(name: string): DatatypeInfo | undefined {
     return this.#datatypes.get(name);
@@ -64,42 +74,46 @@ export class Declarations {
   }
 
   /**
-   * Is `name` taken in the type namespace? Datatypes and aliases share it --
-   * a use site cannot tell them apart, so neither may shadow the other.
+   * Where `name` was declared, and so whether it is taken at all. Datatypes and
+   * aliases share the one namespace -- a use site cannot tell them apart, so
+   * neither may shadow the other.
    */
-  declares(name: string): boolean {
-    return this.#datatypes.has(name) || this.#aliases.has(name);
-  }
-
-  /** Where `name` was declared, for a redeclaration diagnostic. */
   declaredAt(name: string): Position | undefined {
     return this.#datatypes.get(name)?.at ?? this.#aliases.get(name)?.at;
   }
 
-  addDatatype(info: DatatypeInfo): void {
+  /**
+   * Claim a name for a datatype signature, answering where it was already
+   * declared if it was. Refusing here rather than trusting the caller to ask
+   * first is what makes "the first declaration keeps the name" a property of
+   * the table instead of a convention.
+   */
+  addDatatype(info: DatatypeInfo): Position | undefined {
+    const previous = this.declaredAt(info.name);
+    if (previous !== undefined) return previous;
     this.#datatypes.set(info.name, info);
+    return undefined;
   }
 
-  addAlias(info: AliasInfo): void {
+  addAlias(info: AliasInfo): Position | undefined {
+    const previous = this.declaredAt(info.name);
+    if (previous !== undefined) return previous;
     this.#aliases.set(info.name, info);
+    return undefined;
   }
 
   /**
-   * Claim `name` in the constructor namespace, answering where it was already
-   * claimed if it was.
-   *
-   * That namespace is flat, spanning every datatype: a pattern names a
-   * constructor and nothing else, so two datatypes cannot both own `Nil` and
-   * still let `| Nil ->` mean one thing. Owned here, beside the type namespace,
-   * because it is global for the same reason and over the same run -- passed
-   * around as a table instead, it would be one caller's bookkeeping and the
-   * next caller's oversight.
+   * Fill in a datatype's constructors, once. A second attempt is a second
+   * declaration of the same name, whose signature was refused above; its
+   * constructors are refused here for the same reason, so the datatype that
+   * owns the name owns the constructors that came with it.
    */
-  claimCtorName(name: string, at: Position): Position | undefined {
-    const previous = this.#ctorOwners.get(name);
-    if (previous !== undefined) return previous;
-    this.#ctorOwners.set(name, at);
-    return undefined;
+  initCtors(name: string, ctors: readonly CtorInfo[]): boolean {
+    const info = this.#datatypes.get(name);
+    if (info === undefined || info.initialized) return false;
+    info.ctors = ctors;
+    info.initialized = true;
+    return true;
   }
 
   /** The constructor `name` of datatype `owner`, or `undefined`. */

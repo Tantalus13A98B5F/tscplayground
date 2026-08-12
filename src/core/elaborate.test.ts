@@ -261,7 +261,37 @@ Deno.test("a redeclared type name is reported once", () => {
   expect(fixture.messages()).toEqual(["type Flag is already declared"]);
 });
 
-Deno.test("two datatypes may not share a constructor name", () => {
+Deno.test("a redeclaration is blamed on the later declaration, either way", () => {
+  // The two kinds are registered in one pass, in source order, so which one is
+  // reported follows the source and not which kind sweeps first.
+  const alias = elaborated(
+    ["typedef Flag = unknown", "datatype Flag where", "  | On"].join("\n") +
+      END,
+  );
+  expect(alias.messages()).toEqual(["type Flag is already declared"]);
+  expect(alias.declarations.datatypeOf("Flag")).toBeUndefined();
+  expect(alias.declarations.aliasOf("Flag")).toBeDefined();
+});
+
+Deno.test("a redeclared datatype does not take the first one's constructors", () => {
+  const fixture = elaborated(
+    [
+      "datatype Flag where",
+      "  | On",
+      "datatype Flag where",
+      "  | Off",
+    ].join("\n") + END,
+  );
+  expect(fixture.messages()).toEqual(["type Flag is already declared"]);
+  expect(fixture.declarations.ctorOf("Flag", "On")).toBeDefined();
+  // The losing declaration is elaborated, so errors inside it are still
+  // reported, but `initCtors` refuses to hand its constructors to the name.
+  expect(fixture.declarations.ctorOf("Flag", "Off")).toBeUndefined();
+});
+
+Deno.test("two datatypes may share a constructor name", () => {
+  // A pattern is resolved against the scrutinee's datatype, so each `On` is
+  // reachable and neither shadows the other.
   const fixture = elaborated(
     [
       "datatype Flag where",
@@ -270,8 +300,19 @@ Deno.test("two datatypes may not share a constructor name", () => {
       "  | On",
     ].join("\n") + END,
   );
-  expect(fixture.messages()).toEqual(["constructor On is already declared"]);
-  expect(fixture.declarations.ctorOf("Switch", "On")).toBeUndefined();
+  expect(fixture.messages()).toEqual([]);
+  expect(fixture.declarations.ctorOf("Flag", "On")).toBeDefined();
+  expect(fixture.declarations.ctorOf("Switch", "On")).toBeDefined();
+});
+
+Deno.test("one datatype may not have two constructors of a name", () => {
+  const fixture = elaborated(
+    ["datatype Flag where", "  | On", "  | On"].join("\n") + END,
+  );
+  expect(fixture.messages()).toEqual([
+    "datatype Flag already has a constructor On",
+  ]);
+  expect(fixture.declarations.datatypeOf("Flag")?.ctors.length).toBe(1);
 });
 
 Deno.test("a type parameter used twice in one group is reported", () => {
