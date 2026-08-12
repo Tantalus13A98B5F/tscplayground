@@ -238,26 +238,6 @@ export function isClosed(type: Type, levels: number, depth = 0): boolean {
   }
 }
 
-/** The occurs check. */
-export function occurs(level: Level, type: Type): boolean {
-  switch (type.kind) {
-    case "TUnknown":
-    case "TNever":
-    case "TBad":
-    case "BVar":
-    case "FVar":
-      return false;
-    case "EVar":
-      return type.level === level;
-    case "TFun":
-      return type.typeParams.some((b) => occurs(level, b.bound)) ||
-        type.params.some((param) => occurs(level, param)) ||
-        occurs(level, type.result);
-    case "TData":
-      return type.args.some((arg) => occurs(level, arg));
-  }
-}
-
 function allPairs(
   left: readonly Type[],
   right: readonly Type[],

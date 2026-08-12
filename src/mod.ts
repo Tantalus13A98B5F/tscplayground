@@ -29,13 +29,14 @@ export { Context } from "./core/context.ts";
 import {
   type Diagnostic,
   failed,
+  reportError,
   type Result,
   type Source,
   type Sources,
 } from "./diagnostics/diagnostic.ts";
 import { type Token, tokenize } from "./syntax/lexer.ts";
 import { layout } from "./syntax/layout.ts";
-import { loadSources } from "./syntax/require.ts";
+import { loadSources, scanRequires } from "./syntax/require.ts";
 import type { FileSystem } from "./io/files.ts";
 import { parseProgram } from "./syntax/parser.ts";
 import { checkProgram } from "./core/check.ts";
@@ -53,9 +54,25 @@ import { type Type, typeToString } from "./core/types.ts";
  * Their `value` is asserted rather than handled. If either grows a way to fail,
  * that is a contract change we want to hear about, where handling it quietly
  * would pass an empty stream on and blame the program for the silence.
+ *
+ * There is no file system here, so a `#require` cannot be followed. The scan
+ * still runs: the lexer skips directive lines on the assumption the walker read
+ * them, and without this a required file would vanish without a word.
  */
 export function checkSource(source: Source): Result<Type> {
   const diagnostics: Diagnostic[] = [];
+
+  const required = scanRequires(source);
+  diagnostics.push(...required.diagnostics);
+  for (const directive of required.value ?? []) {
+    diagnostics.push(
+      reportError(
+        `cannot require "${directive.spec}": this run has a single source`,
+        directive.at,
+        directive.width,
+      ),
+    );
+  }
 
   const tokens = tokenize(source);
   diagnostics.push(...tokens.diagnostics);
@@ -114,18 +131,18 @@ function appendPart(into: Token[], part: readonly Token[]): void {
  * a program on its own, having no final expression.
  */
 export function checkFiles(fileSystem: FileSystem, entry: string): Checked {
+  // Asserted: the walk always hands back what it read, even for an entry it
+  // could not resolve, because its diagnostics name files the caller can only
+  // render through `sources`. An empty `order` is how it says it read nothing.
   const loaded = loadSources(fileSystem, entry);
-  const sources = loaded.value?.sources ?? [];
-  if (loaded.value === undefined) {
-    return { ...failed<Type>(loaded.diagnostics), sources };
-  }
+  const { sources, order } = loaded.value!;
 
   const diagnostics: Diagnostic[] = [...loaded.diagnostics];
   const tokens: Token[] = [];
   let end: Token | undefined;
 
-  for (const id of loaded.value.order) {
-    const source = loaded.value.sources[id];
+  for (const id of order) {
+    const source = sources[id];
     if (source === undefined) continue;
 
     const lexed = tokenize(source);

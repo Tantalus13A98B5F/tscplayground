@@ -348,6 +348,11 @@ export class Checker {
       // A lower bound is a *demand* -- something really flows in -- so it wins
       // when there is one. Falling back to the upper bound covers the case
       // where only a declared bound is known.
+      //
+      // A fixed policy, where Pierce & Turner choose by *counting* the EVar's
+      // occurrences in the result type by polarity: covariant only takes the
+      // lower bound, contravariant only the upper, and invariant or both
+      // demands the two agree. That signed count would go here.
       const solution = entry.lower.length > 0
         ? this.subtyper.lowerBoundOf(level)
         : this.subtyper.upperBoundOf(level);

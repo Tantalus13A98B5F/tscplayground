@@ -31,7 +31,6 @@ import {
   type Level,
   mkBinder,
   mkLevel,
-  occurs,
   TData,
   TFun,
   type Type,
@@ -86,11 +85,10 @@ export type SolveFailure =
   | { readonly kind: "unbound" }
   /** It already has a solution. */
   | { readonly kind: "alreadySolved"; readonly existing: Type }
-  /** `type` mentions the variable itself; solving would build an infinite type. */
-  | { readonly kind: "occurs" }
   /**
    * `type` mentions something bound at or after it, so the solution would
-   * escape its scope.
+   * escape its scope. That covers `type` mentioning the variable itself, which
+   * sits at its own level and so is not to the left of it either.
    */
   | { readonly kind: "escapes" };
 
@@ -108,10 +106,6 @@ export class Context {
   /** Read-only view, for tests and diagnostics. Nothing should mutate it. */
   get entries(): readonly Entry[] {
     return this.#entries;
-  }
-
-  entryAt(level: Level): Entry | undefined {
-    return this.#entries[level];
   }
 
   /** Append at the right -- the innermost position -- and hand back its level. */
@@ -274,6 +268,7 @@ export class Context {
    * Solve `level := type` in place, or explain why not -- `undefined` means it
    * took. The escape check is what the ordering buys: a solution may only
    * mention entries strictly to the left, which is `isClosed(type, level)`.
+   * No separate occurs check, that being the same question about one level.
    */
   setSolution(level: Level, type: Type): SolveFailure | undefined {
     const entry = this.#entries[level];
@@ -281,7 +276,6 @@ export class Context {
     if (entry.solution !== undefined) {
       return { kind: "alreadySolved", existing: entry.solution };
     }
-    if (occurs(level, type)) return { kind: "occurs" };
     if (!isClosed(type, level)) return { kind: "escapes" };
 
     this.#entries[level] = { ...entry, solution: type };

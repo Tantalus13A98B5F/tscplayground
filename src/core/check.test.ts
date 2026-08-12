@@ -362,6 +362,11 @@ Deno.test("checking runs to the end, so one program reports every error", () => 
 
 Deno.test("a require directive is skipped by the lexer, not lexed", () => {
   // The walker reads directives off the raw source; the lexer must step over
-  // them without meeting `#` or `"`, which it has no tokens for.
-  expect(typeOf('#require "other.tg"', ...BOOL, "True()")).toBe("Bool");
+  // them without meeting `#` or `"`, which it has no tokens for. A single-source
+  // run has nowhere to resolve one, so it says so rather than dropping it.
+  const [type, ...messages] = run('#require "other.tg"', ...BOOL, "True()");
+  expect(type).toBe("Bool");
+  expect(messages).toEqual([
+    'cannot require "other.tg": this run has a single source',
+  ]);
 });

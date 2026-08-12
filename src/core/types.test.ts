@@ -3,13 +3,11 @@ import {
   alphaEq,
   BVar,
   closeFrom,
-  EVar,
   FVar,
   isClosed,
   mkBinder,
   mkDataName,
   mkLevel,
-  occurs,
   open,
   openMany,
   TData,
@@ -106,11 +104,6 @@ Deno.test("close shifts by the arity of each enclosing quantifier", () => {
     BVar(2),
   );
   expect(alphaEq(closed, expected)).toBe(true);
-});
-
-Deno.test("occurs finds an EVar nested in TData arguments", () => {
-  expect(occurs(X, TData(Pair, [TUnknown, EVar(X, "a")]))).toBe(true);
-  expect(occurs(X, TData(Pair, [TUnknown, EVar(Y, "b")]))).toBe(false);
 });
 
 Deno.test("isClosed bounds free levels and bound indices at once", () => {

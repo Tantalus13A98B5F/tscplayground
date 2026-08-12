@@ -2,13 +2,13 @@
  * Surface types to internal types: names become identities, aliases disappear,
  * and binders become de Bruijn.
  *
- * Resolution walks three namespaces in order -- type variable, alias, datatype.
- * A type variable wins because it is the innermost binding; alias before
- * datatype never matters, since `Declarations` refuses to hold one name twice.
+ * A name resolves against the type variables in scope, then the declarations.
+ * Only the first step is a choice; aliases and datatypes share one namespace,
+ * so the order they are asked in decides nothing.
  *
- * The context is the scope. Elaborating a binder pushes type variables, elaborates
- * underneath them, and truncates -- so `lookupTypeVar` handles shadowing for
- * free, and nothing here keeps a second name table.
+ * The context is the scope: a binder pushes its type variables, elaborates
+ * under them, and closes before `inScope` pops. So `lookupTypeVar` handles
+ * shadowing for free and nothing here keeps a second name table.
  */
 
 import {
@@ -133,20 +133,20 @@ export class Elaborator {
     );
 
     const closed = this.context.inScope((mark) => {
-    this.#bindTypeParams(node.typeParams, bounds);
-    const params = node.params.map((param) => this.elaborateType(param));
-    const result = this.elaborateType(node.result);
+      this.#bindTypeParams(node.typeParams, bounds);
+      const params = node.params.map((param) => this.elaborateType(param));
+      const result = this.elaborateType(node.result);
 
-      // Closing at depth 0 is what makes level `mark + j` into `BVar j`.
-      // Closing the assembled `TFun` instead would be wrong: that abstracts an
-    // *enclosing* binder, and would push these indices past their own group.
+      // Closing the parts at depth 0 is what turns level `mark + j` into
+      // `BVar j`. Closing the assembled `TFun` would abstract an *enclosing*
+      // binder instead, pushing these indices past their own group.
       return TFun(
-      node.typeParams.map((param, j) =>
-        mkBinder(param.name.text, bounds[j] ?? TUnknown)
-      ),
+        node.typeParams.map((param, j) =>
+          mkBinder(param.name.text, bounds[j] ?? TUnknown)
+        ),
         params.map((param) => closeFrom(param, mark)),
         closeFrom(result, mark),
-    );
+      );
     });
     this.context.assertClosed("function type", [closed]);
     return closed;
@@ -160,9 +160,9 @@ export class Elaborator {
     const seen = new Set<string>();
     return params.map((param, j) => {
       const { text, at } = param.name;
-      // The wildcard is exempt: it names nothing, so repeating it is not a
-      // collision. It is still pushed, holding the position its `BVar j`
-      // depends on -- unnameable, not absent.
+      // The wildcard names nothing, so repeating it is no collision. Still
+      // pushed, holding the position its `BVar j` counts on -- unnameable,
+      // not absent.
       if (text !== WILDCARD && seen.has(text)) {
         this.#report(
           `duplicate type parameter ${text}`,
@@ -186,109 +186,108 @@ export class Elaborator {
   /**
    * Build the declaration table in two passes.
    *
-   * Datatype signatures are collected first, so a constructor field may name
-   * its own datatype -- `Cons(A, List[A])` -- or one declared further down.
-   * Aliases are added as they are reached, so an alias can only name earlier
-   * ones, which rules out recursion among them by construction.
+   * The first takes a datatype's name and arity, an alias whole, *in source
+   * order* -- so the first declaration of a name keeps it whichever kind it
+   * was. Sweeping the kinds separately would blame every clash on the alias.
+   * The price: an alias sees only what precedes it, which is the rule that
+   * already ruled out recursion among aliases.
+   *
+   * The second elaborates constructor fields against the complete signature
+   * table, so a field may name its own datatype or one declared below. No
+   * shortlist of winners is needed: `initCtors` refuses a name the first pass
+   * gave an alias, and one whose constructors are already in. A loser is still
+   * elaborated -- bad types inside it are reported -- but has nowhere to land.
    */
   elaborateDeclarations(decls: readonly TypeDecl[]): void {
     for (const decl of decls) {
-      if (decl.kind !== "DatatypeDecl") continue;
-      if (this.#reportRedeclaration(decl.name)) continue;
-      this.declarations.addDatatype({
-        name: mkDataName(decl.name.text),
-        params: decl.typeParams.map((param) => param.text),
-        ctors: [],
-        at: decl.at,
-      });
+      this.#reportRedeclaration(
+        decl.name,
+        decl.kind === "DatatypeDecl"
+          ? this.declarations.addDatatype(this.#elaborateSignature(decl))
+          : this.declarations.addAlias(this.#elaborateAlias(decl)),
+      );
     }
 
     for (const decl of decls) {
-      if (decl.kind === "DatatypeDecl") {
-        this.#elaborateDatatype(decl);
-      } else {
-        this.#elaborateAlias(decl);
-      }
+      if (decl.kind !== "DatatypeDecl") continue;
+      this.declarations.initCtors(decl.name.text, this.#elaborateCtors(decl));
     }
   }
 
-  /** True if `name` is already taken, having reported it. */
-  #reportRedeclaration(name: Ident): boolean {
-    if (!this.declarations.declares(name.text)) return false;
+  /** Report `name` if the table refused it in favour of `previous`. */
+  #reportRedeclaration(name: Ident, previous: Position | undefined): void {
+    if (previous === undefined) return;
     this.#report(
       `type ${name.text} is already declared`,
       name.at,
       name.text.length,
     );
-    return true;
   }
 
-  #elaborateDatatype(
+  /** Name and arity, all a constructor field needs to name this datatype. */
+  #elaborateSignature(
     decl: Extract<TypeDecl, { kind: "DatatypeDecl" }>,
-  ): void {
-    const signature = this.declarations.datatypeOf(decl.name.text);
-    // Absent only if the name was a redeclaration, already reported.
-    if (signature === undefined || signature.at !== decl.at) return;
+  ): DatatypeInfo {
+    return {
+      name: mkDataName(decl.name.text),
+      params: decl.typeParams.map((param) => param.text),
+      ctors: [],
+      initialized: false,
+      at: decl.at,
+    };
+  }
 
-    const count = decl.typeParams.length;
+  /** Elaborate a datatype's constructors under its type parameters. */
+  #elaborateCtors(
+    decl: Extract<TypeDecl, { kind: "DatatypeDecl" }>,
+  ): CtorInfo[] {
     const ctors = this.context.inScope((mark) => {
-    this.#bindPlainParams(decl.typeParams);
-      return this.#elaborateCtors(decl, mark);
+      this.#bindPlainParams(decl.typeParams);
+
+      // Uniqueness is *within* one datatype: `ctorOf` asks the scrutinee's own
+      // datatype for its `Nil`, so two may each have one. `flatMap` so a
+      // duplicate drops out rather than leaving a hole -- and dropping it, not
+      // the name, keeps a later `| Nil ->` from being a second, quieter error.
+      const seen = new Set<string>();
+      return decl.ctors.flatMap((ctor): CtorInfo[] => {
+        if (seen.has(ctor.name.text)) {
+          this.#report(
+            `datatype ${decl.name.text} already has a constructor ` +
+              ctor.name.text,
+            ctor.name.at,
+            ctor.name.text.length,
+          );
+          return [];
+        }
+        seen.add(ctor.name.text);
+        return [{
+          name: ctor.name.text,
+          // Closed over the datatype's parameters, so a use opens them.
+          fields: ctor.params.map((field) =>
+            closeFrom(this.elaborateType(field), mark)
+          ),
+          at: ctor.at,
+        }];
+      });
     });
 
-    // The arity here is a *binder depth*, and outlives the count `closeFrom`
-    // shed: a field is stored under a binder no type node materialises, so
-    // `BVar j` is parameter j with nothing on hand to say so, and a depth-zero
-    // check would call every field ill-formed. Asked here, on the way out --
-    // what is asserted is what is handed to `Declarations`.
+    // The arity is a *binder depth*: a field sits under a binder no type node
+    // materialises, so a depth-zero check would call every field ill-formed.
+    // Asked on the way out, so what is asserted is what `Declarations` gets.
     this.context.assertClosed(
       `datatype ${decl.name.text}`,
       ctors.flatMap((ctor) => ctor.fields),
-      count,
+      decl.typeParams.length,
     );
-    this.declarations.addDatatype({ ...signature, ctors });
-  }
-
-  /** Elaborate a datatype's constructors, its parameters already bound. */
-  #elaborateCtors(
-    decl: Extract<TypeDecl, { kind: "DatatypeDecl" }>,
-    mark: number,
-  ): CtorInfo[] {
-    const ctors: CtorInfo[] = [];
-    for (const ctor of decl.ctors) {
-      // Non-fatal, like every other redeclaration: the name keeps pointing at
-      // the first constructor to claim it, this one is left out of the
-      // datatype, and elaboration carries on to the fields below. Dropping the
-      // *duplicate* rather than the name is what keeps a later `| Nil ->` from
-      // becoming a second, quieter error.
-      if (
-        this.declarations.claimCtorName(ctor.name.text, ctor.name.at) !==
-          undefined
-      ) {
-        this.#report(
-          `constructor ${ctor.name.text} is already declared`,
-          ctor.name.at,
-          ctor.name.text.length,
-        );
-        continue;
-      }
-      ctors.push({
-        name: ctor.name.text,
-        // Closed over the datatype's parameters, so a use opens them.
-        fields: ctor.params.map((field) =>
-          closeFrom(this.elaborateType(field), mark)
-        ),
-        at: ctor.at,
-      });
-    }
     return ctors;
   }
 
-  #elaborateAlias(decl: Extract<TypeDecl, { kind: "AliasDecl" }>): void {
-    if (this.#reportRedeclaration(decl.name)) return;
-
+  /** An alias whole -- there is no second pass for it to be finished in. */
+  #elaborateAlias(decl: Extract<TypeDecl, { kind: "AliasDecl" }>): AliasInfo {
+    // Elaborated before the name is claimed, which is what makes an alias
+    // naming itself an `unknown type` rather than an infinite expansion.
     const body = this.context.inScope((mark) => {
-    this.#bindPlainParams(decl.typeParams);
+      this.#bindPlainParams(decl.typeParams);
       return closeFrom(this.elaborateType(decl.body), mark);
     });
     this.context.assertClosed(
@@ -297,12 +296,12 @@ export class Elaborator {
       decl.typeParams.length,
     );
 
-    this.declarations.addAlias({
+    return {
       name: decl.name.text,
       params: decl.typeParams.map((param) => param.text),
       body,
       at: decl.at,
-    });
+    };
   }
 
   /**
@@ -310,6 +309,11 @@ export class Elaborator {
    * of its fields, so saturation follows from arity and there is no constructor
    * term form -- including the nullary case, which is why `True` is written
    * `True()`. See `constructorType`.
+   *
+   * Being ordinary, they sit outermost and anything of the same name shadows
+   * them silently -- a later `let`, or another datatype's constructor, this
+   * being the one place two datatypes' names meet. Patterns are unaffected,
+   * resolving against the scrutinee's own datatype.
    */
   seedConstructors(): void {
     for (const datatype of this.declarations.datatypes()) {

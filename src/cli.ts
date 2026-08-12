@@ -54,14 +54,15 @@ function splitEntry(path: string): { root: string; entry: string } {
 }
 
 async function readStdin(): Promise<string> {
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of Deno.stdin.readable) chunks.push(chunk);
-  return new TextDecoder().decode(
-    chunks.reduce(
-      (all, chunk) => new Uint8Array([...all, ...chunk]),
-      new Uint8Array(),
-    ),
-  );
+  // Decoded as it arrives: joining the chunks first would copy the whole input
+  // once per chunk, and `stream` is what keeps a character split across a chunk
+  // boundary intact.
+  const decoder = new TextDecoder();
+  let text = "";
+  for await (const chunk of Deno.stdin.readable) {
+    text += decoder.decode(chunk, { stream: true });
+  }
+  return text + decoder.decode();
 }
 
 /** Piped input cannot require anything -- there is no directory to resolve in. */
