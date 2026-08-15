@@ -23,27 +23,55 @@ function withEVar(): { context: Context; a: Level } {
 
 Deno.test("lookupTerm finds the innermost binding", () => {
   const context = new Context();
-  context.pushTermVar("x", TUnknown);
-  const inner = context.pushTermVar("x", TData(Bool));
+  context.pushTermVar(TUnknown, "x");
+  const inner = context.pushTermVar(TData(Bool), "x");
 
   const found = context.lookupTerm("x");
-  expect(alphaEq(found?.type ?? TUnknown, TData(Bool))).toBe(true);
+  expect(alphaEq(found?.entry.type ?? TUnknown, TData(Bool))).toBe(true);
   // The level, not the name, is what tells two shadowing bindings apart.
   expect(found?.level).toBe(inner);
   expect(context.lookupTerm("y")).toBeUndefined();
 });
 
-Deno.test("a type variable and a term variable may share a name", () => {
+Deno.test("a term variable shadows a type variable of the same name", () => {
+  // One namespace: the innermost binding answers, and being the wrong kind
+  // makes the name unusable rather than sending the lookup further out.
   const context = new Context();
-  const type = context.pushTypeVar("x", TUnknown);
-  const term = context.pushTermVar("x", TData(Bool));
+  const type = context.pushTypeVar(TUnknown, "x");
   expect(context.lookupTypeVar("x")?.level).toBe(type);
+
+  const term = context.pushTermVar(TData(Bool), "x");
   expect(context.lookupTerm("x")?.level).toBe(term);
+  expect(context.lookupTypeVar("x")).toBeUndefined();
+});
+
+Deno.test("ending a scope reveals the binding it shadowed", () => {
+  const context = new Context();
+  const outer = context.pushTermVar(TUnknown, "x");
+
+  const mark = context.size;
+  context.pushTypeVar(TUnknown, "x");
+  expect(context.lookupTerm("x")).toBeUndefined();
+
+  context.truncate(mark);
+  expect(context.lookupTerm("x")?.level).toBe(outer);
+});
+
+Deno.test("a nameless binding holds a position but answers to no name", () => {
+  // What subtyping opens a quantifier under, and what `_` becomes.
+  const context = new Context();
+  const outer = context.pushTypeVar(TUnknown, "X");
+  const nameless = context.pushTypeVar(TData(Bool));
+
+  expect(nameless).toBe(mkLevel(1));
+  expect(context.upperBoundOf(nameless)).toBeDefined();
+  // Still reachable by level, so its bound is not lost -- only its name is.
+  expect(context.lookupTypeVar("X")?.level).toBe(outer);
 });
 
 Deno.test("push hands back the level it allocated", () => {
   const context = new Context();
-  expect(context.pushTypeVar("X", TUnknown)).toBe(mkLevel(0));
+  expect(context.pushTypeVar(TUnknown, "X")).toBe(mkLevel(0));
   expect(context.pushEVar("a")).toBe(mkLevel(1));
   expect(context.size).toBe(2);
 });
@@ -69,14 +97,14 @@ Deno.test("solve rejects a solution mentioning the variable itself", () => {
 Deno.test("solve rejects a solution that escapes its scope", () => {
   // `?a` is bound to the left of `X`, so `?a := X` would let X escape.
   const { context, a } = withEVar();
-  const X = context.pushTypeVar("X", TUnknown);
+  const X = context.pushTypeVar(TUnknown, "X");
 
   expect(context.setSolution(a, FVar(X, "X"))?.kind).toBe("escapes");
 });
 
 Deno.test("solve accepts a solution mentioning something to its left", () => {
   const context = new Context();
-  const X = context.pushTypeVar("X", TUnknown);
+  const X = context.pushTypeVar(TUnknown, "X");
   const a = context.pushEVar("a");
 
   expect(context.setSolution(a, FVar(X, "X"))).toBeUndefined();
@@ -97,7 +125,7 @@ Deno.test("solve refuses to overwrite an existing solution", () => {
 
 Deno.test("solve reports a level that is not an EVar", () => {
   const context = new Context();
-  const X = context.pushTypeVar("X", TUnknown);
+  const X = context.pushTypeVar(TUnknown, "X");
   expect(context.setSolution(X, TUnknown)?.kind).toBe("unbound");
   expect(context.setSolution(mkLevel(9), TUnknown)?.kind).toBe("unbound");
 });
@@ -121,11 +149,11 @@ Deno.test("apply leaves unsolved EVars alone", () => {
 
 Deno.test("truncate ends a scope, keeping what came before it", () => {
   const context = new Context();
-  context.pushTermVar("x", TUnknown);
+  context.pushTermVar(TUnknown, "x");
 
   const mark = context.size;
   context.pushEVar("a");
-  context.pushTermVar("y", TUnknown);
+  context.pushTermVar(TUnknown, "y");
   expect(context.size).toBe(mark + 2);
 
   context.truncate(mark);
@@ -136,25 +164,25 @@ Deno.test("truncate ends a scope, keeping what came before it", () => {
 
 Deno.test("truncate past the end leaves the context alone", () => {
   const context = new Context();
-  context.pushTermVar("x", TUnknown);
+  context.pushTermVar(TUnknown, "x");
   context.truncate(99);
   expect(context.size).toBe(1);
 });
 
 Deno.test("truncate reuses the levels it dropped", () => {
-  // Why `assertLeft` exists: without closing first, a stale FVar would now
+  // Why `assertClosed` exists: without closing first, a stale FVar would now
   // name `Y` rather than fail to resolve.
   const context = new Context();
   const mark = context.size;
-  const X = context.pushTypeVar("X", TUnknown);
+  const X = context.pushTypeVar(TUnknown, "X");
   context.truncate(mark);
-  expect(context.pushTypeVar("Y", TUnknown)).toBe(X);
+  expect(context.pushTypeVar(TUnknown, "Y")).toBe(X);
 });
 
 Deno.test("assertClosed throws on a type that outlives its scope", () => {
   const context = new Context();
   const mark = context.size;
-  const X = context.pushTypeVar("X", TUnknown);
+  const X = context.pushTypeVar(TUnknown, "X");
   context.truncate(mark);
   // The bar is the context as it now stands, so the truncation above is what
   // makes `X` an escapee -- no mark is passed, and none could disagree.

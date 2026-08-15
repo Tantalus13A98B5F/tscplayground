@@ -3,8 +3,9 @@
  * and binders become de Bruijn.
  *
  * A name resolves against the type variables in scope, then the declarations.
- * Only the first step is a choice; aliases and datatypes share one namespace,
- * so the order they are asked in decides nothing.
+ * Neither step is really a choice: aliases and datatypes share one namespace,
+ * and a binder taking a declared name is reported where it is bound, so no
+ * well-formed program can tell the order apart.
  *
  * The context is the scope: a binder pushes its type variables, elaborates
  * under them, and closes before `inScope` pops. So `lookupTypeVar` handles
@@ -16,8 +17,16 @@ import {
   type Position,
   reportError,
 } from "../diagnostics/diagnostic.ts";
-import type { Ident, TypeDecl, TypeNode, TypeParam } from "../syntax/ast.ts";
-import { WILDCARD } from "../syntax/parser.ts";
+import {
+  type AliasDecl,
+  bindingHint,
+  type BindingIdent,
+  type DatatypeDecl,
+  type Ident,
+  type TypeDecl,
+  type TypeNode,
+  type TypeParam,
+} from "../syntax/ast.ts";
 import type { Context } from "./context.ts";
 import type {
   AliasInfo,
@@ -29,9 +38,8 @@ import {
   BVar,
   closeFrom,
   FVar,
-  type Level,
-  mkBinder,
   mkDataName,
+  mkTypeParamInfo,
   openMany,
   TBad,
   TData,
@@ -39,6 +47,7 @@ import {
   TNever,
   TUnknown,
   type Type,
+  type TypeParamInfo,
 } from "./types.ts";
 
 export class Elaborator {
@@ -126,14 +135,8 @@ export class Elaborator {
   }
 
   #elaborateFun(node: Extract<TypeNode, { kind: "FunType" }>): Type {
-    // Bounds are *parallel*: elaborated before the group is in scope, so one
-    // may name an enclosing binder but never a member of its own group.
-    const bounds = node.typeParams.map((param) =>
-      param.bound === undefined ? TUnknown : this.elaborateType(param.bound)
-    );
-
     const closed = this.context.inScope((mark) => {
-      this.#bindTypeParams(node.typeParams, bounds);
+      const typeParams = this.bindTypeParams(node.typeParams);
       const params = node.params.map((param) => this.elaborateType(param));
       const result = this.elaborateType(node.result);
 
@@ -141,9 +144,7 @@ export class Elaborator {
       // `BVar j`. Closing the assembled `TFun` would abstract an *enclosing*
       // binder instead, pushing these indices past their own group.
       return TFun(
-        node.typeParams.map((param, j) =>
-          mkBinder(param.name.text, bounds[j] ?? TUnknown)
-        ),
+        typeParams,
         params.map((param) => closeFrom(param, mark)),
         closeFrom(result, mark),
       );
@@ -152,35 +153,62 @@ export class Elaborator {
     return closed;
   }
 
-  /** Push a binder group, reporting a name used twice within it. */
-  #bindTypeParams(
-    params: readonly TypeParam[],
-    bounds: readonly Type[],
-  ): readonly Level[] {
+  /**
+   * Bring a binder group into scope and hand back the core binders it becomes.
+   *
+   * Bounds are *parallel*: every one is elaborated before any variable of the
+   * group is in scope, so a bound may name an enclosing binder but never a
+   * member of its own group.
+   *
+   * The three steps are one call because a lambda's type parameters and a
+   * function type's are the same group under the same rules. Split, each side
+   * elaborated the bounds and built the binders for itself, and only the
+   * middle step -- the one with the reporting in it -- was ever shared.
+   *
+   * Reported here: a name used twice within the group, and one a declaration
+   * already holds. The second is not a courtesy -- declarations are the other
+   * namespace and nothing shadows them, so such a parameter would be
+   * unreachable, and silently, `#elaborateName` asking the context first.
+   */
+  bindTypeParams(params: readonly TypeParam[]): TypeParamInfo[] {
+    const bounds = params.map((param) =>
+      param.bound === undefined ? TUnknown : this.elaborateType(param.bound)
+    );
+
     const seen = new Set<string>();
     return params.map((param, j) => {
-      const { text, at } = param.name;
-      // The wildcard names nothing, so repeating it is no collision. Still
-      // pushed, holding the position its `BVar j` counts on -- unnameable,
-      // not absent.
-      if (text !== WILDCARD && seen.has(text)) {
-        this.#report(
-          `duplicate type parameter ${text}`,
-          at,
-          text.length,
-        );
+      const bound = bounds[j] ?? TUnknown;
+      const name = param.name.text;
+      // A wildcard collides with nothing and is reached by nothing, so it is
+      // pushed for its position alone.
+      if (name === undefined) {
+        this.context.pushTypeVar(bound);
+      } else {
+        if (seen.has(name)) {
+          this.#report(
+            `duplicate type parameter ${name}`,
+            param.name.at,
+            name.length,
+          );
+        } else this.reportDeclaredName(param.name);
+        seen.add(name);
+        this.context.pushTypeVar(bound, name);
       }
-      seen.add(text);
-      return this.context.pushTypeVar(text, bounds[j] ?? TUnknown);
+      return mkTypeParamInfo(bindingHint(param.name), bound);
     });
   }
 
+  /** Report a binder whose name a datatype or alias already holds. */
+  reportDeclaredName(binder: BindingIdent): void {
+    const name = binder.text;
+    if (name === undefined) return;
+    if (this.declarations.declaredAt(name) === undefined) return;
+    this.#report(`type ${name} is already declared`, binder.at, name.length);
+  }
+
   /** The same, for the unbounded parameters a declaration carries. */
-  #bindPlainParams(names: readonly Ident[]): readonly Level[] {
-    return this.#bindTypeParams(
-      names.map((name) => ({ name, at: name.at })),
-      names.map(() => TUnknown),
-    );
+  #bindPlainParams(names: readonly BindingIdent[]): void {
+    this.bindTypeParams(names.map((name) => ({ name, at: name.at })));
   }
 
   /**
@@ -226,11 +254,11 @@ export class Elaborator {
 
   /** Name and arity, all a constructor field needs to name this datatype. */
   #elaborateSignature(
-    decl: Extract<TypeDecl, { kind: "DatatypeDecl" }>,
+    decl: DatatypeDecl,
   ): DatatypeInfo {
     return {
       name: mkDataName(decl.name.text),
-      params: decl.typeParams.map((param) => param.text),
+      params: decl.typeParams.map(bindingHint),
       ctors: [],
       initialized: false,
       at: decl.at,
@@ -239,7 +267,7 @@ export class Elaborator {
 
   /** Elaborate a datatype's constructors under its type parameters. */
   #elaborateCtors(
-    decl: Extract<TypeDecl, { kind: "DatatypeDecl" }>,
+    decl: DatatypeDecl,
   ): CtorInfo[] {
     const ctors = this.context.inScope((mark) => {
       this.#bindPlainParams(decl.typeParams);
@@ -283,7 +311,7 @@ export class Elaborator {
   }
 
   /** An alias whole -- there is no second pass for it to be finished in. */
-  #elaborateAlias(decl: Extract<TypeDecl, { kind: "AliasDecl" }>): AliasInfo {
+  #elaborateAlias(decl: AliasDecl): AliasInfo {
     // Elaborated before the name is claimed, which is what makes an alias
     // naming itself an `unknown type` rather than an infinite expansion.
     const body = this.context.inScope((mark) => {
@@ -298,7 +326,7 @@ export class Elaborator {
 
     return {
       name: decl.name.text,
-      params: decl.typeParams.map((param) => param.text),
+      params: decl.typeParams.map(bindingHint),
       body,
       at: decl.at,
     };
@@ -307,8 +335,8 @@ export class Elaborator {
   /**
    * Bind every constructor as an ordinary term. A constructor is a *function*
    * of its fields, so saturation follows from arity and there is no constructor
-   * term form -- including the nullary case, which is why `True` is written
-   * `True()`. See `constructorType`.
+   * term form -- except where there is nothing to saturate, and `True` is a
+   * plain value of type `Bool`. See `constructorType`.
    *
    * Being ordinary, they sit outermost and anything of the same name shadows
    * them silently -- a later `let`, or another datatype's constructor, this
@@ -318,28 +346,37 @@ export class Elaborator {
   seedConstructors(): void {
     for (const datatype of this.declarations.datatypes()) {
       for (const ctor of datatype.ctors) {
-        this.context.pushTermVar(ctor.name, constructorType(datatype, ctor));
+        this.context.pushTermVar(constructorType(datatype, ctor), ctor.name);
       }
     }
   }
 }
 
 /**
- * `MkPair : [A, B](A, B) -> Pair[A, B]`.
+ * `MkPair : [A, B](A, B) -> Pair[A, B]`, and `True : Bool`.
  *
  * Derived rather than stored, so a constructor's function type and the field
  * types its patterns take apart cannot drift. `fields` are already closed over
  * the datatype's parameters, and they sit directly under this binder, so they
  * need no shifting.
+ *
+ * A constructor with no fields of a datatype with no parameters is a *value*:
+ * there is nothing to apply and nothing to instantiate, so `True` rather than
+ * `True()`. Both conditions are needed. `Nil` of `List[A]` still has a type
+ * argument to fix, and `[A]List[A]` is a quantifier over a non-function --
+ * which the value restriction rules out -- so it stays `[A]() -> List[A]` and
+ * is written `Nil[Bool]()`.
  */
 export function constructorType(
   datatype: DatatypeInfo,
   ctor: CtorInfo,
 ): Type {
+  const result = TData(datatype.name, datatype.params.map((_, j) => BVar(j)));
+  if (datatype.params.length === 0 && ctor.fields.length === 0) return result;
   return TFun(
-    datatype.params.map((param) => mkBinder(param, TUnknown)),
+    datatype.params.map((param) => mkTypeParamInfo(param, TUnknown)),
     ctor.fields,
-    TData(datatype.name, datatype.params.map((_, j) => BVar(j))),
+    result,
   );
 }
 

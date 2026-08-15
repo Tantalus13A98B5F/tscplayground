@@ -5,9 +5,9 @@ import {
   closeFrom,
   FVar,
   isClosed,
-  mkBinder,
   mkDataName,
   mkLevel,
+  mkTypeParamInfo,
   open,
   openMany,
   TData,
@@ -33,23 +33,27 @@ Deno.test("open replaces the nearest bound variable", () => {
 Deno.test("bounds are parallel, but parameters are inside the binder", () => {
   // The bound's index 0 is the enclosing binder; the parameter's is this one.
   const opened = open(
-    TFun([mkBinder("B", BVar(0))], [BVar(0)], TUnknown),
+    TFun([mkTypeParamInfo("B", BVar(0))], [BVar(0)], TUnknown),
     TData(Bool),
   );
-  const expected = TFun([mkBinder("B", TData(Bool))], [BVar(0)], TUnknown);
+  const expected = TFun(
+    [mkTypeParamInfo("B", TData(Bool))],
+    [BVar(0)],
+    TUnknown,
+  );
   expect(alphaEq(opened, expected)).toBe(true);
 });
 
 Deno.test("open moves inward by the full arity of a quantifier", () => {
   // Under `forall A, B` the outer variable is BVar 2, not BVar 1.
   const type = TFun(
-    [mkBinder("A", TUnknown), mkBinder("B", TUnknown)],
+    [mkTypeParamInfo("A", TUnknown), mkTypeParamInfo("B", TUnknown)],
     [BVar(0)],
     BVar(2),
   );
   const opened = open(type, TData(Bool));
   const expected = TFun(
-    [mkBinder("A", TUnknown), mkBinder("B", TUnknown)],
+    [mkTypeParamInfo("A", TUnknown), mkTypeParamInfo("B", TUnknown)],
     [BVar(0)],
     TData(Bool),
   );
@@ -95,11 +99,15 @@ Deno.test("close then open is the identity on a free variable", () => {
 
 Deno.test("close shifts by the arity of each enclosing quantifier", () => {
   const closed = closeFrom(
-    TFun([mkBinder("A", TUnknown), mkBinder("B", TUnknown)], [], FVar(X, "X")),
+    TFun(
+      [mkTypeParamInfo("A", TUnknown), mkTypeParamInfo("B", TUnknown)],
+      [],
+      FVar(X, "X"),
+    ),
     X,
   );
   const expected = TFun(
-    [mkBinder("A", TUnknown), mkBinder("B", TUnknown)],
+    [mkTypeParamInfo("A", TUnknown), mkTypeParamInfo("B", TUnknown)],
     [],
     BVar(2),
   );
@@ -121,7 +129,7 @@ Deno.test("isClosed counts a quantifier's own group as binders", () => {
   expect(isClosed(field, 0, 2)).toBe(true);
   expect(isClosed(field, 0, 1)).toBe(false);
 
-  const inside = TFun([mkBinder("A", TUnknown)], [BVar(0)], BVar(1));
+  const inside = TFun([mkTypeParamInfo("A", TUnknown)], [BVar(0)], BVar(1));
   expect(isClosed(inside, 0, 1)).toBe(true);
   expect(isClosed(inside, 0, 0)).toBe(false);
 });
@@ -129,7 +137,7 @@ Deno.test("isClosed counts a quantifier's own group as binders", () => {
 Deno.test("isClosed reads a bound in the enclosing scope, being parallel", () => {
   // The bound sits outside its own binder, so `BVar 0` there is the *enclosing*
   // group -- it needs a depth the parameters do not.
-  const type = TFun([mkBinder("A", BVar(0))], [BVar(0)], TUnknown);
+  const type = TFun([mkTypeParamInfo("A", BVar(0))], [BVar(0)], TUnknown);
   expect(isClosed(type, 0, 1)).toBe(true);
   expect(isClosed(type, 0, 0)).toBe(false);
 });
@@ -137,8 +145,8 @@ Deno.test("isClosed reads a bound in the enclosing scope, being parallel", () =>
 Deno.test("alphaEq ignores printing hints but not arity", () => {
   expect(
     alphaEq(
-      TFun([mkBinder("A", TUnknown)], [], BVar(0)),
-      TFun([mkBinder("Z", TUnknown)], [], BVar(0)),
+      TFun([mkTypeParamInfo("A", TUnknown)], [], BVar(0)),
+      TFun([mkTypeParamInfo("Z", TUnknown)], [], BVar(0)),
     ),
   ).toBe(true);
   expect(
@@ -148,7 +156,7 @@ Deno.test("alphaEq ignores printing hints but not arity", () => {
 
 Deno.test("typeToString names bound variables from their binders", () => {
   const type = TFun(
-    [mkBinder("A", TUnknown), mkBinder("B", TUnknown)],
+    [mkTypeParamInfo("A", TUnknown), mkTypeParamInfo("B", TUnknown)],
     [BVar(0)],
     TData(Pair, [BVar(1), TNever]),
   );
@@ -157,7 +165,7 @@ Deno.test("typeToString names bound variables from their binders", () => {
 
 Deno.test("typeToString elides only the trivial bound", () => {
   // `<: unknown` is the default, so printing it is noise on every signature.
-  const type = TFun([mkBinder("A", TData(Bool))], [BVar(0)], BVar(0));
+  const type = TFun([mkTypeParamInfo("A", TData(Bool))], [BVar(0)], BVar(0));
   expect(typeToString(type)).toBe("[A <: Bool](A) -> A");
 });
 
@@ -176,7 +184,7 @@ Deno.test("TFun is TPoly binding nothing", () => {
 });
 
 Deno.test("a quantifier survives a traversal that rebuilds it", () => {
-  const type = TFun([mkBinder("A", TUnknown)], [], FVar(X, "X"));
+  const type = TFun([mkTypeParamInfo("A", TUnknown)], [], FVar(X, "X"));
   const closed = closeFrom(type, X);
   expect(closed.kind === "TFun" && closed.typeParams.length).toBe(1);
 });

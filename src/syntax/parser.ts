@@ -28,6 +28,7 @@ import {
 } from "../diagnostics/diagnostic.ts";
 import type {
   AliasDecl,
+  BindingIdent,
   CtorDecl,
   DatatypeDecl,
   Ident,
@@ -204,7 +205,7 @@ class Parser {
   private datatypeDecl(): DatatypeDecl {
     const keyword = this.cursor.peek(); // the `datatype` the block loop saw
     this.cursor.advance();
-    const name = this.ident("a type name");
+    const name = this.declName("a type name");
 
     const typeParams = this.cursor.at("lbracket")
       ? this.plainTypeBinders()
@@ -220,7 +221,7 @@ class Parser {
   private aliasDecl(): AliasDecl {
     const keyword = this.cursor.peek(); // the `typedef` the block loop saw
     this.cursor.advance();
-    const name = this.ident("a type name");
+    const name = this.declName("a type name");
     const typeParams = this.cursor.at("lbracket")
       ? this.plainTypeBinders()
       : [];
@@ -235,7 +236,7 @@ class Parser {
   }
 
   private ctorDecl(at: Position): CtorDecl {
-    const name = this.ident("a constructor name");
+    const name = this.declName("a constructor name");
     // A constructor is an ordinary function, so its fields are a domain -- and
     // absent entirely for a nullary one, which takes no `()` at all.
     const params = this.cursor.at("lparen") ? this.domainTypes() : [];
@@ -297,7 +298,7 @@ class Parser {
   private letBinding(): LetItem {
     const at = this.cursor.here; // the `let` the block loop saw
     this.cursor.advance();
-    const name = this.ident("a name to bind");
+    const name = this.binderName("a name to bind");
     const annotation = this.cursor.accept("colon") === undefined
       ? undefined
       : this.type();
@@ -380,11 +381,14 @@ class Parser {
    * being dropped whole rather than left covering anything.
    */
   private matchPat(): MatchPat {
-    const name = this.ident("a constructor name or `_`");
-    if (name.text === WILDCARD) return { kind: "PWild", at: name.at };
+    // The one head position where `_` means something, so it is read as a
+    // binder and the catch-all falls out of the wildcard case.
+    const head = this.binderName("a constructor name or `_`");
+    if (head.text === undefined) return { kind: "PWild", at: head.at };
 
+    const name = { text: head.text, at: head.at };
     const args = this.cursor.at("lparen") ? this.plainFunBinders() : [];
-    return { kind: "PCtor", name, args, at: name.at };
+    return { kind: "PCtor", name, args, at: head.at };
   }
 
   /** The postfix tier: application and instantiation, both left-associative. */
@@ -558,7 +562,7 @@ class Parser {
   }
 
   private typeBinder(): TypeParam {
-    const name = this.ident("a type parameter");
+    const name = this.binderName("a type parameter");
     const bound = this.cursor.accept("subtype") === undefined
       ? undefined
       : this.type();
@@ -582,7 +586,7 @@ class Parser {
    * itself -- pointing at it, saying why it has no meaning here -- where a rule
    * refusing to read it could only have named the `,` or `]` it wanted instead.
    */
-  private plainTypeBinders(): Ident[] {
+  private plainTypeBinders(): BindingIdent[] {
     return this.typeBinders().map(({ name, bound }) => {
       if (bound !== undefined) {
         this.cursor.failAt(
@@ -606,7 +610,7 @@ class Parser {
   }
 
   private funBinder(what: string): Param {
-    const name = this.ident(what);
+    const name = this.binderName(what);
     const annotation = this.cursor.accept("colon") === undefined
       ? undefined
       : this.type();
@@ -620,7 +624,7 @@ class Parser {
    * type being settled by the declaration, and a pattern that restated it could
    * disagree with it.
    */
-  private plainFunBinders(): Ident[] {
+  private plainFunBinders(): BindingIdent[] {
     return this.funBinders("a name to bind").map(({ name, annotation }) => {
       if (annotation !== undefined) {
         this.cursor.failAt(
@@ -642,15 +646,35 @@ class Parser {
     const token = this.cursor.expect("identifier", what);
     return { text: token.text, at: token.at };
   }
+
+  /**
+   * A name that has to be one: what a declaration or a constructor is called.
+   *
+   * Binding positions only. A `_` written where a type or a term is *used* is
+   * left alone, resolving to nothing like any other unbound name -- calling
+   * that a syntax error would say the wrong thing about a plain typo.
+   */
+  private declName(what: string): Ident {
+    const name = this.ident(what);
+    if (name.text === WILDCARD) this.cursor.failAt(name.at, what);
+    return name;
+  }
+
+  /** The name at a binding occurrence, `_` meaning it declines to have one. */
+  private binderName(what: string): BindingIdent {
+    const token = this.cursor.expect("identifier", what);
+    const text = token.text === WILDCARD ? undefined : token.text;
+    return { text, at: token.at };
+  }
 }
 
 /**
- * An ordinary identifier, not a token kind of its own. So everything that walks
- * binders -- the duplicate check, the shadowing warning, the context -- must
- * exempt it by name.
+ * An ordinary identifier to the lexer, so which positions admit it is decided
+ * here. Downstream sees an `BindingIdent` that either has a name or does not, and
+ * no pass walking binders compares against this again.
  */
 export const WILDCARD = "_";
 
-function wildcard(at: Position): Ident {
-  return { text: WILDCARD, at };
+function wildcard(at: Position): BindingIdent {
+  return { text: undefined, at };
 }

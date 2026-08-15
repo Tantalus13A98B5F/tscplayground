@@ -12,6 +12,27 @@ export type Ident = {
 };
 
 /**
+ * An `Ident` at a binding occurrence, which may decline to name itself. The
+ * record is always there; only the name inside it may not be.
+ *
+ * `_` is a lexical identifier, so telling the two apart is a decision the
+ * parser makes once. Most of what that buys is in the positions that *cannot*
+ * take one: a declaration's name and a constructor's are `Ident`, so "a
+ * constructor may not be `_`" is a thing the types say rather than a check.
+ *
+ * Uses stay `Ident` throughout. Nothing nameless is ever indexed, so `_` in a
+ * type or a term is a name that resolves to nothing, and needs no case here.
+ */
+export type BindingIdent = {
+  /**
+   * The name it binds, or `undefined` for `_`. Named as `Ident`'s is, so a
+   * binding position reads the same whichever of the two sits there.
+   */
+  readonly text: string | undefined;
+  readonly at: Position;
+};
+
+/**
  * The two binding positions, differing in what an *absent* annotation means:
  * `TypeParam` defaults to `<: unknown`, while a `Param` takes its type from the
  * checking context -- never from an EVar, so a `fn` with no annotation and no
@@ -23,14 +44,14 @@ export type Ident = {
  * and a function type names nothing, so its fields are types alone.
  */
 export type TypeParam = {
-  readonly name: Ident;
+  readonly name: BindingIdent;
   /** Parallel, not telescoping: may name an enclosing binder, never its group. */
   readonly bound?: TypeNode;
   readonly at: Position;
 };
 
 export type Param = {
-  readonly name: Ident;
+  readonly name: BindingIdent;
   readonly annotation?: TypeNode;
   readonly at: Position;
 };
@@ -101,7 +122,7 @@ export type TermNode =
    */
   | {
     readonly kind: "Let";
-    readonly name: Ident;
+    readonly name: BindingIdent;
     readonly annotation?: TypeNode;
     readonly bound: TermNode;
     readonly body: TermNode;
@@ -135,7 +156,7 @@ export type MatchPat =
   | {
     readonly kind: "PCtor";
     readonly name: Ident;
-    readonly args: readonly Ident[];
+    readonly args: readonly BindingIdent[];
     readonly at: Position;
   };
 
@@ -150,7 +171,7 @@ export type MatchPat =
 export type DatatypeDecl = {
   readonly kind: "DatatypeDecl";
   readonly name: Ident;
-  readonly typeParams: readonly Ident[];
+  readonly typeParams: readonly BindingIdent[];
   readonly ctors: readonly CtorDecl[];
   readonly at: Position;
 };
@@ -175,7 +196,7 @@ export type CtorDecl = {
 export type AliasDecl = {
   readonly kind: "AliasDecl";
   readonly name: Ident;
-  readonly typeParams: readonly Ident[];
+  readonly typeParams: readonly BindingIdent[];
   readonly body: TypeNode;
   readonly at: Position;
 };
@@ -189,7 +210,7 @@ export type TypeDecl = DatatypeDecl | AliasDecl;
 
 /** One top-level `let`, before `parseProgram` folds the chain into `term`. */
 export type LetItem = {
-  readonly name: Ident;
+  readonly name: BindingIdent;
   readonly annotation?: TypeNode;
   readonly bound: TermNode;
   readonly at: Position;
@@ -200,3 +221,12 @@ export type Program = {
   readonly term: TermNode;
   readonly at: Position;
 };
+
+/**
+ * What to print at a binding position. A wildcard has no name, so this is a
+ * hint and never a key -- `text` is what a lookup or a duplicate check asks,
+ * and it is `undefined` exactly where this falls back to `_`.
+ */
+export function bindingHint(name: BindingIdent): string {
+  return name.text ?? "_";
+}

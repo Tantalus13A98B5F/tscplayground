@@ -22,6 +22,16 @@
  * checks it at every exit, and turns what would be a silent alias into a loud
  * failure.
  *
+ * One namespace across all of it. A term variable, a constructor, and a type
+ * variable of the same name shadow each other rather than coexisting, so the
+ * innermost binding is always the answer and being the wrong kind makes a name
+ * unusable rather than sending the lookup further out. Type *declarations* are
+ * the other namespace, unshadowable, and live in `Declarations`.
+ *
+ * Not every entry has a name. An EVar and the variables subtyping opens a
+ * quantifier under are reached from a node carrying their level, so what they
+ * carry is a `hint` that prints and nothing resolves.
+ *
  * Nothing here backtracks. Subtyping collects bounds and solves once per
  * argument list rather than speculatively, so no operation is ever undone.
  */
@@ -29,55 +39,79 @@
 import {
   isClosed,
   type Level,
-  mkBinder,
   mkLevel,
+  mkTypeParamInfo,
   TData,
   TFun,
   type Type,
 } from "./types.ts";
 
-export type Entry =
-  /**
-   * `X <: bound` -- rigid, never solved.
-   *
-   * `name` is load-bearing where `Binder.hint` is decoration, and it is not
-   * spent by the time an entry gets here: elaboration is not a pass that runs
-   * to completion first. A type written inside a term -- a parameter's
-   * annotation, a bound on a `fn`'s own type parameter -- is elaborated when
-   * checking reaches it, against this context, because the binder it sits
-   * under is only in scope then. So `lookupTypeVar` resolves against these
-   * names for as long as checking runs.
-   */
-  | { readonly kind: "TypeVar"; readonly name: string; readonly bound: Type }
-  /**
-   * `?a`, or `?a = solution` once solved.
-   *
-   * Constraints accumulate here rather than being solved on sight: a whole
-   * argument list contributes before anything is decided, so the solution is
-   * the join of the lower bounds rather than whichever argument came first.
-   * Every recorded bound is already avoided -- closed by this EVar's own level
-   * -- so `solve` can never be handed something out of scope.
-   */
-  | {
-    readonly kind: "EVar";
-    readonly name: string;
-    readonly lower: Type[];
-    readonly upper: Type[];
-    readonly solution?: Type;
-  }
-  /** `x : type` */
-  | { readonly kind: "TermVar"; readonly name: string; readonly type: Type };
+/**
+ * `X <: bound` -- rigid, never solved.
+ *
+ * `name` is load-bearing where `TypeParamInfo.hint` is decoration, and is
+ * not spent by the time an entry gets here: elaboration is not a pass that runs
+ * to completion first. A type written inside a term -- a parameter's
+ * annotation, a bound on a `fn`'s own type parameter -- is elaborated when
+ * checking reaches it, against this context, because the binder it sits
+ * under is only in scope then. So `lookupTypeVar` resolves against these
+ * names for as long as checking runs.
+ *
+ * `undefined` where nothing will ever resolve one: the variables subtyping
+ * opens a pair of quantifiers under, and the wildcard `_`. Those are reached
+ * from an `FVar` that already carries the level. Nameless and not
+ * `name: ""`, so the type says which entries can be looked up.
+ */
+export type TypeVarEntry = {
+  readonly kind: "TypeVar";
+  readonly name: string | undefined;
+  readonly bound: Type;
+};
 
-/** What resolving a name in the term namespace yields. */
-export type TermBinding = {
-  readonly level: Level;
+/**
+ * `?a`, or `?a = solution` once solved.
+ *
+ * Constraints accumulate here rather than being solved on sight: a whole
+ * argument list contributes before anything is decided, so the solution is
+ * the join of the lower bounds rather than whichever argument came first.
+ * Every recorded bound is already avoided -- closed by this EVar's own level
+ * -- so `setSolution` can never be handed something out of scope.
+ *
+ * `lower` and `upper` grow all through an argument list, so they are pushed
+ * in place. `solution` is written once, so it is `readonly` and solving
+ * replaces the entry -- a guardrail, not a guarantee: it catches an assignment
+ * written by someone who missed `setSolution`, and TypeScript drops the
+ * modifier the moment the entry is read at a type that lacks it.
+ *
+ * `hint` and not `name`: an EVar is reached from an `EVar` node carrying its
+ * level, never by name, so this is what a diagnostic prints and nothing else.
+ */
+export type EVarEntry = {
+  readonly kind: "EVar";
+  readonly hint: string;
+  readonly lower: Type[];
+  readonly upper: Type[];
+  readonly solution?: Type;
+};
+
+/** `x : type`, or the wildcard `_`, which binds a position and no name. */
+export type TermVarEntry = {
+  readonly kind: "TermVar";
+  readonly name: string | undefined;
   readonly type: Type;
 };
 
-/** What resolving a name in the type namespace yields. */
-export type TypeBinding = {
+/** What the context holds, in one ordered list. */
+export type Entry = TypeVarEntry | EVarEntry | TermVarEntry;
+
+/**
+ * What resolving a name yields, the two halves not being peers: the level is
+ * the binding's *identity*, the entry merely what sits there. `E` narrows it,
+ * so `lookupTerm` reaches a `type` without a second test.
+ */
+export type Binding<E extends Entry = Entry> = {
   readonly level: Level;
-  readonly bound: Type;
+  readonly entry: E;
 };
 
 export type SolveFailure =
@@ -96,6 +130,17 @@ export class Context {
   readonly #entries: Entry[] = [];
 
   /**
+   * Every named entry's levels, innermost last, so resolving a name is the top
+   * of its stack rather than a scan back through the whole context.
+   *
+   * Nothing persistent is needed to survive `truncate`: truncation knows
+   * exactly which entries it drops, and pops them on the way out. Each is
+   * pushed once and popped at most once, so this costs O(1) amortised per
+   * binding where a resolution alone used to cost O(size).
+   */
+  readonly #levelsByName = new Map<string, Level[]>();
+
+  /**
    * How many entries are in scope, and equally the next level to be handed
    * out. Save one to open a scope, pass it to `truncate` to close it.
    */
@@ -103,27 +148,47 @@ export class Context {
     return this.#entries.length;
   }
 
-  /** Read-only view, for tests and diagnostics. Nothing should mutate it. */
+  /**
+   * The entries, for tests and diagnostics. `readonly` covers the array only --
+   * its length and which entries are in it -- so what stops a caller writing
+   * through one is that entry's own fields, nothing here.
+   */
   get entries(): readonly Entry[] {
     return this.#entries;
   }
 
-  /** Append at the right -- the innermost position -- and hand back its level. */
-  push(entry: Entry): Level {
+  /**
+   * Append at the right -- the innermost position -- and hand back its level,
+   * indexing the entry under its name if it has one.
+   */
+  #push(entry: Entry): Level {
+    const level = mkLevel(this.#entries.length);
     this.#entries.push(entry);
-    return mkLevel(this.#entries.length - 1);
+
+    const name = entry.kind === "EVar" ? undefined : entry.name;
+    if (name !== undefined) {
+      const levels = this.#levelsByName.get(name);
+      if (levels === undefined) this.#levelsByName.set(name, [level]);
+      else levels.push(level);
+    }
+    return level;
   }
 
-  pushTypeVar(name: string, bound: Type): Level {
-    return this.push({ kind: "TypeVar", name, bound });
+  /**
+   * A rigid type variable. Omit `name` for one nothing reaches: subtyping
+   * opening a quantifier, or a wildcard parameter. It still holds a position,
+   * so its `BVar` has something to open onto -- unnameable, not absent.
+   */
+  pushTypeVar(bound: Type, name?: string): Level {
+    return this.#push({ kind: "TypeVar", name, bound });
   }
 
-  pushEVar(name: string): Level {
-    return this.push({ kind: "EVar", name, lower: [], upper: [] });
+  pushEVar(hint: string): Level {
+    return this.#push({ kind: "EVar", hint, lower: [], upper: [] });
   }
 
   /** The EVar at `level`, or `undefined` if that is not what lives there. */
-  evarAt(level: Level): Extract<Entry, { kind: "EVar" }> | undefined {
+  evarAt(level: Level): EVarEntry | undefined {
     const entry = this.#entries[level];
     return entry?.kind === "EVar" ? entry : undefined;
   }
@@ -149,22 +214,38 @@ export class Context {
     // watermark, and everything to its right is legitimately still standing.
     if (!isClosed(type, level)) {
       throw new Error(
-        `bound on ?${entry.name}: mentions something at or past level ${level}`,
+        `bound on ?${entry.hint}: mentions something at or past level ${level}`,
       );
     }
     entry[side].push(type);
   }
 
-  pushTermVar(name: string, type: Type): Level {
-    return this.push({ kind: "TermVar", name, type });
+  /** The same for a term: omit `name` for a wildcard, which binds a position
+   * and nothing else. */
+  pushTermVar(type: Type, name?: string): Level {
+    return this.#push({ kind: "TermVar", name, type });
   }
 
   /**
    * Drop everything pushed since `size`. Ends a scope in one step; whatever was
    * introduced inside it goes away together.
+   *
+   * Innermost first, so each name's stack is unwound in the order it was built
+   * and the binding revealed is the one that was shadowed.
    */
   truncate(size: number): void {
-    this.#entries.length = Math.min(size, this.#entries.length);
+    const target = Math.min(size, this.#entries.length);
+    for (let i = this.#entries.length - 1; i >= target; i--) {
+      const entry = this.#entries[i];
+      const name = entry === undefined || entry.kind === "EVar"
+        ? undefined
+        : entry.name;
+      if (name === undefined) continue;
+      const levels = this.#levelsByName.get(name);
+      levels?.pop();
+      if (levels?.length === 0) this.#levelsByName.delete(name);
+    }
+    this.#entries.length = target;
   }
 
   /**
@@ -235,33 +316,37 @@ export class Context {
     return entry?.kind === "TypeVar" ? entry.bound : undefined;
   }
 
-  /**
-   * Resolve `name` in the term namespace, innermost binding first -- so an
-   * inner binder shadows an outer one rather than colliding with it.
-   */
-  lookupTerm(name: string): TermBinding | undefined {
-    for (let i = this.#entries.length - 1; i >= 0; i--) {
-      const entry = this.#entries[i];
-      if (entry?.kind === "TermVar" && entry.name === name) {
-        return { level: mkLevel(i), type: entry.type };
-      }
-    }
-    return undefined;
+  /** The innermost binding of `name`, whatever kind it turned out to be. */
+  lookup(name: string): Binding | undefined {
+    const levels = this.#levelsByName.get(name);
+    const level = levels?.[levels.length - 1];
+    if (level === undefined) return undefined;
+    const entry = this.#entries[level];
+    return entry === undefined ? undefined : { level, entry };
   }
 
   /**
-   * Resolve `name` in the type namespace, innermost first. Type variables live
-   * in their own namespace, so a type variable and a term variable may share a
-   * name without either hiding the other.
+   * Resolve `name` as a term. The lookup stops at the innermost binding, so a
+   * type variable of the same name does not hide behind it -- it shadows, and
+   * the answer is that `name` is not a term here.
    */
-  lookupTypeVar(name: string): TypeBinding | undefined {
-    for (let i = this.#entries.length - 1; i >= 0; i--) {
-      const entry = this.#entries[i];
-      if (entry?.kind === "TypeVar" && entry.name === name) {
-        return { level: mkLevel(i), bound: entry.bound };
-      }
-    }
-    return undefined;
+  lookupTerm(name: string): Binding<TermVarEntry> | undefined {
+    const found = this.lookup(name);
+    return found?.entry.kind === "TermVar"
+      ? { level: found.level, entry: found.entry }
+      : undefined;
+  }
+
+  /**
+   * The same, as a type variable. `undefined` does not settle the name: type
+   * *declarations* are the other namespace, so `#elaborateName` goes on to ask
+   * the aliases and datatypes, which no binder here can shadow.
+   */
+  lookupTypeVar(name: string): Binding<TypeVarEntry> | undefined {
+    const found = this.lookup(name);
+    return found?.entry.kind === "TypeVar"
+      ? { level: found.level, entry: found.entry }
+      : undefined;
   }
 
   /**
@@ -286,8 +371,23 @@ export class Context {
    * Apply the context as a substitution: replace every solved EVar by
    * its solution, repeatedly, since one solution may mention another.
    *
-   * Termination rests on the escape check in `solve`: a solution only mentions
-   * EVars to its left, so the chain strictly decreases in level.
+   * The recursion is load-bearing, and not in the way one batch would suggest.
+   * Within a batch it would be dead: `#solveEVars` goes ascending and applies
+   * before storing, so every EVar a solution could name is already gone.
+   *
+   * Chains come from *nested* argument lists. An inner one is solved while an
+   * outer EVar is still open, and a bare lambda's parameter takes that outer
+   * EVar as its type directly -- so in
+   *
+   *     let id = fn [B](y: B) -> y
+   *     let f = fn [A](g: (A) -> A, a: A) -> g(a)
+   *     f(fn (x) -> id(x), True)
+   *
+   * `?B := ?A` is stored with `?A` unsolved, and only the later `?A := Bool`
+   * makes it a type. One hop, through a batch boundary.
+   *
+   * Termination rests on the escape check in `setSolution`: a solution only
+   * mentions EVars to its left, so the chain strictly decreases in level.
    */
   apply(type: Type): Type {
     switch (type.kind) {
@@ -306,7 +406,9 @@ export class Context {
       }
       case "TFun":
         return TFun(
-          type.typeParams.map((b) => mkBinder(b.hint, this.apply(b.bound))),
+          type.typeParams.map((b) =>
+            mkTypeParamInfo(b.hint, this.apply(b.bound))
+          ),
           type.params.map((param) => this.apply(param)),
           this.apply(type.result),
         );

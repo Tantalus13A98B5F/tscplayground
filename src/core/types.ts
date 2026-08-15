@@ -13,9 +13,11 @@
 
 /**
  * A free variable's identity *is* its position in the context, so a level needs
- * no allocator: the next one is the context's size. Universals and EVars
- * share the space -- one level names one entry, and the entry's kind says which
- * it is, an invariant the scope assertions check rather than the types enforce.
+ * no allocator: the next one is the context's size. Type variables and EVars
+ * share the space, because scoping compares the two against each other: a
+ * solution may only mention what stands to its left, whichever kind that is.
+ * So one level names one entry, and the entry's kind says which it is -- ask
+ * `Context.upperBoundOf` or `evarAt`, each of which asks and narrows at once.
  */
 export type Level = number & { readonly __brand: "Level" };
 export type DataName = string & { readonly __brand: "DataName" };
@@ -23,7 +25,12 @@ export type DataName = string & { readonly __brand: "DataName" };
 export const mkLevel = (n: number): Level => n as Level;
 export const mkDataName = (s: string): DataName => s as DataName;
 
-export type Binder = {
+/**
+ * One of a `TFun`'s quantified parameters. `hint` is for printing only -- the
+ * variable itself is an index -- which is what distinguishes this from the
+ * surface `BindingIdent`, whose text is a name something resolves against.
+ */
+export type TypeParamInfo = {
   readonly hint: string;
   readonly bound: Type;
 };
@@ -43,7 +50,7 @@ export type Type =
    */
   | {
     readonly kind: "TFun";
-    readonly typeParams: readonly Binder[];
+    readonly typeParams: readonly TypeParamInfo[];
     readonly params: readonly Type[];
     readonly result: Type;
   }
@@ -72,7 +79,7 @@ export function EVar(level: Level, hint: string): Type {
 
 /** Pass an empty `typeParams` for the monomorphic arrow. */
 export function TFun(
-  typeParams: readonly Binder[],
+  typeParams: readonly TypeParamInfo[],
   params: readonly Type[],
   result: Type,
 ): Type {
@@ -83,7 +90,7 @@ export function TData(name: DataName, args: readonly Type[] = []): Type {
   return { kind: "TData", name, args };
 }
 
-export function mkBinder(hint: string, bound: Type): Binder {
+export function mkTypeParamInfo(hint: string, bound: Type): TypeParamInfo {
   return { hint, bound };
 }
 
@@ -125,7 +132,7 @@ function openAt(
       const inner = depth + type.typeParams.length;
       return TFun(
         type.typeParams.map((b) =>
-          mkBinder(b.hint, openAt(b.bound, depth, replacements))
+          mkTypeParamInfo(b.hint, openAt(b.bound, depth, replacements))
         ),
         type.params.map((param) => openAt(param, inner, replacements)),
         openAt(type.result, inner, replacements),
@@ -170,7 +177,7 @@ function closeAt(
       const inner = depth + type.typeParams.length;
       return TFun(
         type.typeParams.map((b) =>
-          mkBinder(b.hint, closeAt(b.bound, depth, mark))
+          mkTypeParamInfo(b.hint, closeAt(b.bound, depth, mark))
         ),
         type.params.map((param) => closeAt(param, inner, mark)),
         closeAt(type.result, inner, mark),

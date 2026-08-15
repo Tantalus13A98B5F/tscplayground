@@ -14,7 +14,7 @@ import { constructorType, Elaborator } from "./elaborate.ts";
 import {
   alphaEq,
   BVar,
-  mkBinder,
+  mkTypeParamInfo,
   TFun,
   TUnknown,
   type Type,
@@ -151,12 +151,25 @@ Deno.test("a constructor field may name a datatype declared later", () => {
   expect(fixture.messages()).toEqual([]);
 });
 
-Deno.test("a nullary constructor is a function, so it takes no fields", () => {
+Deno.test("a nullary constructor of a monomorphic datatype is a value", () => {
   const fixture = elaborated("datatype Flag where\n  | On\n  | Off" + END);
   const flag = fixture.declarations.datatypeOf("Flag");
   const on = fixture.declarations.ctorOf("Flag", "On");
   if (flag === undefined || on === undefined) throw new Error("no Flag");
-  expect(typeToString(constructorType(flag, on))).toBe("() -> Flag");
+  // Nothing to apply and nothing to instantiate, so `On` rather than `On()`.
+  expect(typeToString(constructorType(flag, on))).toBe("Flag");
+});
+
+Deno.test("a nullary constructor of a polymorphic datatype stays a function", () => {
+  // `[A]List[A]` would be a quantifier over a non-function, which the value
+  // restriction rules out -- so the argument list survives to carry it.
+  const fixture = elaborated(
+    "datatype List[A] where\n  | Nil\n  | Cons(A, List[A])" + END,
+  );
+  const list = fixture.declarations.datatypeOf("List");
+  const nil = fixture.declarations.ctorOf("List", "Nil");
+  if (list === undefined || nil === undefined) throw new Error("no List");
+  expect(typeToString(constructorType(list, nil))).toBe("[A]() -> List[A]");
 });
 
 Deno.test("seedConstructors binds every constructor as a term", () => {
@@ -166,7 +179,7 @@ Deno.test("seedConstructors binds every constructor as a term", () => {
   fixture.elaborator.seedConstructors();
   const bound = fixture.context.lookupTerm("MkPair");
   expect(bound).toBeDefined();
-  expect(typeToString(bound?.type ?? never())).toBe(
+  expect(typeToString(bound?.entry.type ?? never())).toBe(
     "[A, B](A, B) -> Pair[A, B]",
   );
   expect(fixture.context.lookupTerm("MkTriple")).toBeUndefined();
@@ -194,8 +207,10 @@ Deno.test("an inner binder shadows an outer one of the same name", () => {
   // compares indices. The inner `A` must be `BVar 0` of its *own* group; had
   // the outer binder captured it, it would be `BVar 1`.
   const type = fixture.elaborate("[A]([A](A) -> unknown) -> A");
-  const inner = TFun([mkBinder("A", TUnknown)], [BVar(0)], TUnknown);
-  expect(alphaEq(type, TFun([mkBinder("A", TUnknown)], [inner], BVar(0))))
+  const inner = TFun([mkTypeParamInfo("A", TUnknown)], [BVar(0)], TUnknown);
+  expect(
+    alphaEq(type, TFun([mkTypeParamInfo("A", TUnknown)], [inner], BVar(0))),
+  )
     .toBe(true);
 });
 
