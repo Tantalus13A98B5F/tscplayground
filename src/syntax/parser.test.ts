@@ -3,7 +3,13 @@ import { mkSource } from "../diagnostics/diagnostic.ts";
 import { tokenize } from "./lexer.ts";
 import { layout } from "./layout.ts";
 import { parseProgram, parseType } from "./parser.ts";
-import type { DatatypeDecl, Program, TermNode, TypeNode } from "./ast.ts";
+import {
+  bindingHint,
+  type DatatypeDecl,
+  type Program,
+  type TermNode,
+  type TypeNode,
+} from "./ast.ts";
 
 /** The pipeline as the driver runs it: layout is resolved before parsing. */
 function scan(text: string) {
@@ -54,7 +60,7 @@ function datatypes(program: Program): DatatypeDecl[] {
 function bindings(term: TermNode): string[] {
   const names: string[] = [];
   for (let node = term; node.kind === "Let"; node = node.body) {
-    names.push(node.name.text);
+    names.push(bindingHint(node.name));
   }
   return names;
 }
@@ -99,7 +105,7 @@ Deno.test("declarations are collected, never nested in the chain", () => {
     "let a = x\ndatatype Pair[A, B] where\n  | MkPair(A, B)\nlet b = y\na\n",
   );
   expect(datatypes(program).map((d) => d.name.text)).toEqual(["Pair"]);
-  expect(datatypes(program)[0]?.typeParams.map((p) => p.text)).toEqual([
+  expect(datatypes(program)[0]?.typeParams.map(bindingHint)).toEqual([
     "A",
     "B",
   ]);
@@ -146,7 +152,7 @@ Deno.test("typedef declares a transparent alias, with parameters", () => {
   const alias = program.decls[0];
   expect(alias?.kind).toBe("AliasDecl");
   if (alias?.kind !== "AliasDecl") return;
-  expect(alias.typeParams.map((p) => p.text)).toEqual(["A"]);
+  expect(alias.typeParams.map(bindingHint)).toEqual(["A"]);
   expect(alias.body.kind).toBe("FunType");
 });
 
@@ -444,9 +450,9 @@ Deno.test("a lambda binds types and values in one node", () => {
   const bound = program.term.kind === "Let" ? program.term.bound : undefined;
   expect(bound?.kind).toBe("Abs");
   if (bound?.kind !== "Abs") return;
-  expect(bound.typeParams.map((b) => b.name.text)).toEqual(["A"]);
+  expect(bound.typeParams.map((b) => bindingHint(b.name))).toEqual(["A"]);
   expect(bound.typeParams[0]?.bound?.kind).toBe("UnknownType");
-  expect(bound.params.map((p) => p.name.text)).toEqual(["x"]);
+  expect(bound.params.map((p) => bindingHint(p.name))).toEqual(["x"]);
 });
 
 Deno.test("a lambda's `->` is required, so its body is never guessed", () => {
@@ -470,7 +476,7 @@ Deno.test("parseType reads the fused quantifier", () => {
   const node = type("[A <: Bool](A, A) -> A");
   expect(node.kind).toBe("FunType");
   if (node.kind !== "FunType") return;
-  expect(node.typeParams.map((b) => b.name.text)).toEqual(["A"]);
+  expect(node.typeParams.map((b) => bindingHint(b.name))).toEqual(["A"]);
   expect(node.params.length).toBe(2);
 });
 

@@ -20,14 +20,14 @@ import {
   type Position,
   reportError,
 } from "../diagnostics/diagnostic.ts";
-import type {
-  MatchArm,
-  Param,
-  Program,
-  TermNode,
-  TypeParam,
+import {
+  bindingHint,
+  type BindingIdent,
+  type MatchArm,
+  type Param,
+  type Program,
+  type TermNode,
 } from "../syntax/ast.ts";
-import { WILDCARD } from "../syntax/parser.ts";
 import { Context } from "./context.ts";
 import { type CtorInfo, Declarations } from "./declarations.ts";
 import { ctorFieldsAt, Elaborator } from "./elaborate.ts";
@@ -36,13 +36,11 @@ import {
   closeFrom,
   EVar,
   FVar,
-  mkBinder,
   mkLevel,
   openMany,
   TBad,
   TFun,
   TNever,
-  TUnknown,
   type Type,
   typeToString,
 } from "./types.ts";
@@ -151,25 +149,65 @@ export class Checker {
       // The expected type's bounds are what the body may assume.
       const opened = wanted.typeParams.map((binder, j) => {
         const declared = term.typeParams[j];
-        const name = declared?.name.text ?? binder.hint;
+        const name = declared === undefined
+          ? binder.hint
+          : bindingHint(declared.name);
+        // Only a written name can clash; a hint borrowed from the expected
+        // type is not a binding anyone wrote.
+        if (declared !== undefined) {
+          this.elaborator.reportDeclaredName(declared.name);
+        }
         if (declared?.bound !== undefined) {
           // Contravariant: a lambda may promise less of its type parameter
           // than the expected type does, never more.
           const written = this.elaborator.elaborateType(declared.bound);
           this.#subsume(binder.bound, written, declared.at);
         }
-        return FVar(this.context.pushTypeVar(name, binder.bound), name);
+        return FVar(this.context.pushTypeVar(binder.bound, name), name);
       });
 
       const params = wanted.params.map((param) => openMany(param, opened));
       const result = openMany(wanted.result, opened);
 
+      this.#reportDuplicateBinders(
+        term.params.map((param) => param.name),
+        "parameter list",
+      );
       for (const [j, param] of term.params.entries()) {
         this.#bindParam(param, params[j] ?? TBad);
       }
       this.check(term.body, result);
     });
     return expected;
+  }
+
+  /**
+   * Bind a source binder: a parameter, a `let`, a pattern field. A wildcard
+   * binds its position and no name, so nothing ever resolves to it.
+   */
+  #pushBinding(binder: BindingIdent, type: Type): void {
+    this.context.pushTermVar(type, binder.text);
+  }
+
+  /** Report a name bound twice in one group: a parameter list, a pattern. */
+  #reportDuplicateBinders(
+    binders: readonly BindingIdent[],
+    what: string,
+  ): void {
+    const seen = new Set<string>();
+    for (const binder of binders) {
+      // A wildcard is not in the running: it binds no name to collide.
+      const name = binder.text;
+      if (name === undefined) continue;
+      if (seen.has(name)) {
+        this.#report(
+          `${name} is bound twice in one ${what}`,
+          binder.at,
+          name.length,
+        );
+      }
+      seen.add(name);
+    }
   }
 
   /** Bind one parameter, preferring its annotation where it has one. */
@@ -181,12 +219,12 @@ export class Checker {
       this.#subsume(fromContext, written, param.at);
       type = written;
     }
-    this.context.pushTermVar(param.name.text, type);
+    this.#pushBinding(param.name, type);
   }
 
   #checkLet(term: Extract<TermNode, { kind: "Let" }>, expected: Type): Type {
     this.context.inScope(() => {
-      this.context.pushTermVar(term.name.text, this.#letBinding(term));
+      this.#pushBinding(term.name, this.#letBinding(term));
       this.check(term.body, expected);
     });
     return expected;
@@ -213,7 +251,7 @@ export class Checker {
 
   #inferVar(term: Extract<TermNode, { kind: "Var" }>): Type {
     const found = this.context.lookupTerm(term.name.text);
-    if (found !== undefined) return found.type;
+    if (found !== undefined) return found.entry.type;
     this.#report(
       `unknown name ${term.name.text}`,
       term.name.at,
@@ -224,7 +262,7 @@ export class Checker {
 
   #inferAbs(term: Extract<TermNode, { kind: "Abs" }>): Type {
     const type = this.context.inScope((mark) => {
-      const binders = this.#bindTypeParams(term.typeParams);
+      const binders = this.elaborator.bindTypeParams(term.typeParams);
 
       const params = term.params.map((param) => {
         if (param.annotation !== undefined) {
@@ -233,15 +271,19 @@ export class Checker {
         // Inference has nothing to draw on -- and never invents an EVar for it,
         // since a parameter's type is not something local inference guesses.
         this.#report(
-          `cannot infer a type for ${param.name.text}: annotate it, or use ` +
-            `this function where its parameter types are known`,
+          `cannot infer a type for ${bindingHint(param.name)}: annotate it, ` +
+            `or use this function where its parameter types are known`,
           param.name.at,
-          param.name.text.length,
+          bindingHint(param.name).length,
         );
         return TBad;
       });
+      this.#reportDuplicateBinders(
+        term.params.map((param) => param.name),
+        "parameter list",
+      );
       for (const [j, param] of term.params.entries()) {
-        this.context.pushTermVar(param.name.text, params[j] ?? TBad);
+        this.#pushBinding(param.name, params[j] ?? TBad);
       }
 
       // Applied before closing: an EVar solved inside the body must be gone
@@ -256,22 +298,6 @@ export class Checker {
     });
     this.context.assertClosed("function", [type]);
     return type;
-  }
-
-  /** Push a lambda's or a quantifier's type parameters, bounds first. */
-  #bindTypeParams(params: readonly TypeParam[]) {
-    // Bounds are parallel, so every one is elaborated before any is in scope.
-    const bounds = params.map((param) =>
-      param.bound === undefined
-        ? TUnknown
-        : this.elaborator.elaborateType(param.bound)
-    );
-    for (const [j, param] of params.entries()) {
-      this.context.pushTypeVar(param.name.text, bounds[j] ?? TUnknown);
-    }
-    return params.map((param, j) =>
-      mkBinder(param.name.text, bounds[j] ?? TUnknown)
-    );
   }
 
   #inferApp(term: Extract<TermNode, { kind: "App" }>): Type {
@@ -337,7 +363,7 @@ export class Checker {
 
       if (entry.lower.length === 0 && entry.upper.length === 0) {
         this.#report(
-          `cannot infer the type argument ${entry.name}: ` +
+          `cannot infer the type argument ${entry.hint}: ` +
             `nothing constrains it, so give it explicitly`,
           at,
         );
@@ -421,7 +447,7 @@ export class Checker {
 
   #inferLet(term: Extract<TermNode, { kind: "Let" }>): Type {
     const result = this.context.inScope(() => {
-      this.context.pushTermVar(term.name.text, this.#letBinding(term));
+      this.#pushBinding(term.name, this.#letBinding(term));
       return this.context.apply(this.infer(term.body));
     });
     // With no dependent types a term variable cannot appear in a type, so a
@@ -543,9 +569,7 @@ export class Checker {
           name.length,
         );
       }
-      for (const binder of pattern.args) {
-        this.context.pushTermVar(binder.text, TBad);
-      }
+      for (const binder of pattern.args) this.#pushBinding(binder, TBad);
       return;
     }
 
@@ -569,17 +593,9 @@ export class Checker {
         ctor.name.length,
       );
     }
-    const seen = new Set<string>();
+    this.#reportDuplicateBinders(pattern.args, "pattern");
     for (const [j, binder] of pattern.args.entries()) {
-      if (seen.has(binder.text) && binder.text !== WILDCARD) {
-        this.#report(
-          `${binder.text} is bound twice in one pattern`,
-          binder.at,
-          binder.text.length,
-        );
-      }
-      seen.add(binder.text);
-      this.context.pushTermVar(binder.text, fields[j] ?? TBad);
+      this.#pushBinding(binder, fields[j] ?? TBad);
     }
   }
 }

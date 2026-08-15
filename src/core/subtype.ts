@@ -20,7 +20,7 @@ import {
   FVar,
   isClosed,
   type Level,
-  mkBinder,
+  mkTypeParamInfo,
   openMany,
   TBad,
   TFun,
@@ -183,9 +183,13 @@ export class Subtyper {
     // them holds under the left's too.
     // Bounds are parallel -- already in the enclosing scope -- so they are
     // pushed as they stand, with no opening of their own.
+    //
+    // Nameless: the variable is reached through the `FVar` built here, and
+    // nothing elaborates surface syntax mid-comparison, so a name would only
+    // be one nothing could ask for. `hint` still prints.
     return this.context.inScope(() => {
       const opened = t.typeParams.map((binder) =>
-        FVar(this.context.pushTypeVar(binder.hint, binder.bound), binder.hint)
+        FVar(this.context.pushTypeVar(binder.bound), binder.hint)
       );
       for (const [j, param] of t.params.entries()) {
         const mine = s.params[j];
@@ -307,7 +311,7 @@ export class Subtyper {
           // A bound sits in a contravariant position, like a parameter.
           const avoided = this.#avoid(binder.bound, levels, !up);
           if (avoided === undefined) return undefined;
-          typeParams.push(mkBinder(binder.hint, avoided));
+          typeParams.push(mkTypeParamInfo(binder.hint, avoided));
         }
         const params = [];
         for (const param of type.params) {
