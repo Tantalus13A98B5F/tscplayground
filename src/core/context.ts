@@ -114,18 +114,6 @@ export type Binding<E extends Entry = Entry> = {
   readonly entry: E;
 };
 
-export type SolveFailure =
-  /** `level` is not an EVar of this context. */
-  | { readonly kind: "unbound" }
-  /** It already has a solution. */
-  | { readonly kind: "alreadySolved"; readonly existing: Type }
-  /**
-   * `type` mentions something bound at or after it, so the solution would
-   * escape its scope. That covers `type` mentioning the variable itself, which
-   * sits at its own level and so is not to the left of it either.
-   */
-  | { readonly kind: "escapes" };
-
 export class Context {
   readonly #entries: Entry[] = [];
 
@@ -187,10 +175,35 @@ export class Context {
     return this.#push({ kind: "EVar", hint, lower: [], upper: [] });
   }
 
-  /** The EVar at `level`, or `undefined` if that is not what lives there. */
-  evarAt(level: Level): EVarEntry | undefined {
+  /**
+   * The entry at `level`. Total: a level is only ever obtained from a `push`
+   * or carried on a node the checker built, so one that names nothing -- or
+   * names an entry of the wrong kind -- is a checker bug, and reads by level
+   * say so rather than handing back an `undefined` a caller has to invent an
+   * answer for. Resolving a *name* is the question that may legitimately come
+   * back empty; `lookup` is where that is asked.
+   */
+  #entryAt<K extends Entry["kind"]>(
+    level: Level,
+    kind: K,
+  ): Extract<Entry, { kind: K }> {
     const entry = this.#entries[level];
-    return entry?.kind === "EVar" ? entry : undefined;
+    if (entry === undefined) {
+      throw new Error(
+        `level ${level} names no entry: the context holds ${this.size}`,
+      );
+    }
+    if (entry.kind !== kind) {
+      throw new Error(
+        `level ${level} holds a ${entry.kind}, asked for a ${kind}`,
+      );
+    }
+    return entry as Extract<Entry, { kind: K }>;
+  }
+
+  /** The EVar at `level`. Total, so the level must name one. */
+  evarAt(level: Level): EVarEntry {
+    return this.#entryAt(level, "EVar");
   }
 
   /**
@@ -209,7 +222,6 @@ export class Context {
    */
   addConstraint(level: Level, side: "lower" | "upper", type: Type): void {
     const entry = this.evarAt(level);
-    if (entry === undefined) return;
     // Not `assertClosed`: the bar is this EVar's level, not the context's
     // watermark, and everything to its right is legitimately still standing.
     if (!isClosed(type, level)) {
@@ -302,18 +314,19 @@ export class Context {
   }
 
   /**
-   * The *declared* upper bound of the type variable at `level`, or `undefined`
-   * if that is not what lives there. Named for the side it takes because a
-   * bounded-below type variable would want the other, and `boundOf` would then
-   * name neither.
+   * The *declared* upper bound of the type variable at `level`. Total, like
+   * every read by level -- and total in a second sense: an unbounded variable
+   * stores `TUnknown`, so there is no "no bound" answer either.
    *
-   * Not to be confused with `Subtyper.upperBoundOf`, which is the same words
-   * about a different thing: the meet of an EVar's collected upper constraints.
-   * This one reads a binder, that one solves.
+   * Named for the side it takes, leaving room for a lower bound to be added
+   * beside it under its own name. `boundOf` would then name neither.
+   *
+   * Not to be confused with `Subtyper.solveUpperBoundOf`, which is about a
+   * different thing: the meet of an EVar's collected upper constraints. This
+   * one reads a binder, that one solves.
    */
-  upperBoundOf(level: Level): Type | undefined {
-    const entry = this.#entries[level];
-    return entry?.kind === "TypeVar" ? entry.bound : undefined;
+  upperBoundAt(level: Level): Type {
+    return this.#entryAt(level, "TypeVar").bound;
   }
 
   /** The innermost binding of `name`, whatever kind it turned out to be. */
@@ -350,21 +363,29 @@ export class Context {
   }
 
   /**
-   * Solve `level := type` in place, or explain why not -- `undefined` means it
-   * took. The escape check is what the ordering buys: a solution may only
-   * mention entries strictly to the left, which is `isClosed(type, level)`.
-   * No separate occurs check, that being the same question about one level.
+   * Solve `level := type` in place. The escape check is what the ordering
+   * buys: a solution may only mention entries strictly to the left, which is
+   * `isClosed(type, level)`. No separate occurs check, that being the same
+   * question about one level.
+   *
+   * Throws rather than reporting, for the reason the reads do. Solving twice,
+   * solving a level that holds no EVar, and solving to something that escapes
+   * are all checker bugs -- the solver decides each EVar once, at a point it
+   * chose, from bounds `addConstraint` already checked. A returned failure
+   * would only be a failure every caller ignored.
    */
-  setSolution(level: Level, type: Type): SolveFailure | undefined {
-    const entry = this.#entries[level];
-    if (entry?.kind !== "EVar") return { kind: "unbound" };
+  setSolution(level: Level, type: Type): void {
+    const entry = this.evarAt(level);
     if (entry.solution !== undefined) {
-      return { kind: "alreadySolved", existing: entry.solution };
+      throw new Error(`?${entry.hint} is already solved`);
     }
-    if (!isClosed(type, level)) return { kind: "escapes" };
-
+    if (!isClosed(type, level)) {
+      throw new Error(
+        `solution for ?${entry.hint} escapes: it mentions something at or ` +
+          `past level ${level}`,
+      );
+    }
     this.#entries[level] = { ...entry, solution: type };
-    return undefined;
   }
 
   /**
@@ -398,10 +419,10 @@ export class Context {
       case "FVar":
         return type;
       case "EVar": {
-        // Two questions, so two `undefined`s, and they must not be conflated:
-        // no EVar at that level is a checker bug, an unsolved one is the
-        // ordinary case. Asking through `evarAt` keeps them apart.
-        const solution = this.evarAt(type.level)?.solution;
+        // One `undefined` now, and it means the ordinary thing: unsolved. The
+        // other question -- whether the level holds an EVar at all -- is the
+        // read itself, and it throws rather than answering.
+        const solution = this.evarAt(type.level).solution;
         return solution === undefined ? type : this.apply(solution);
       }
       case "TFun":
