@@ -10,8 +10,14 @@
  *
  * The relation is not a predicate. Meeting an unsolved EVar records a
  * constraint on it, so `isSubtype` mutates the context. Nothing is solved on
- * sight, though -- bounds accumulate and `solveEVars` decides the whole group
- * at once, which is why no operation ever has to be undone.
+ * sight, though -- bounds accumulate, and the checker's `#solveEVars` calls
+ * `solveEVar` here once the whole batch is in, which is why no operation ever
+ * has to be undone.
+ *
+ * `join` and `meet` mutate for the same reason, `#relate` being how they test
+ * the pair they are given. Joining two types that mention an open EVar records
+ * constraints on it, which is worth knowing where a lattice operation reads as
+ * a question -- taking the LUB of a `match`'s arms, say.
  */
 
 import type { Context } from "./context.ts";
@@ -23,6 +29,7 @@ import {
   type Level,
   mkTypeParamInfo,
   openMany,
+  type Polarity,
   TBad,
   TFun,
   TNever,
@@ -219,23 +226,42 @@ export class Subtyper {
     // Fully resolved first: a solved EVar may stand for something perfectly in
     // scope, and judging it by its own level would reject that wrongly.
     const resolved = this.context.apply(type);
+    const batch = this.context.evarAt(level).batch;
 
-    // Interdependence is decided over the whole type, before any widening. An
-    // unsolved EVar to the right has no value yet, so nothing can be said in
-    // terms of it -- and unlike a rigid variable it has no bound to widen to,
-    // so quietly collapsing it to top would drop the constraint on the floor.
-    if (this.#mentionsLaterEVar(resolved, level)) return "interdependent";
+    // Interdependence is decided over the whole type, before any widening, and
+    // against the *batch* rather than this variable's own level -- so a sibling
+    // is refused in either direction. An unsolved EVar has no value yet, so
+    // nothing can be said in terms of it; unlike a rigid variable it has no
+    // bound to widen to, so quietly collapsing it to top would drop the
+    // constraint on the floor. See `EVarEntry.batch`.
+    if (this.#mentionsUnsolvedEVarFrom(resolved, batch)) {
+      this.context.refuseConstraint(level);
+      return "interdependent";
+    }
 
+    // Avoidance is about *scope*, so it keeps this EVar's own level as its bar:
+    // a solution may mention anything to its left, siblings having just been
+    // ruled out above.
     const avoided = side === "lower"
       ? this.#promote(resolved, level)
       : this.#demote(resolved, level);
-    if (avoided === undefined) return "interdependent";
+    if (avoided === undefined) {
+      this.context.refuseConstraint(level);
+      return "interdependent";
+    }
     this.context.addConstraint(level, side, avoided);
     return "yes";
   }
 
-  /** Does `type` mention an unsolved EVar at or beyond `levels`? */
-  #mentionsLaterEVar(type: Type, levels: number): boolean {
+  /**
+   * Does `type` mention an unsolved EVar at or beyond `from`? Everything here
+   * has been through `apply`, so an EVar still standing is unsolved by that
+   * alone.
+   *
+   * "From", not "later": the bar is a batch's first level, so a *sibling*
+   * counts even standing to the left of the variable being constrained.
+   */
+  #mentionsUnsolvedEVarFrom(type: Type, from: number): boolean {
     switch (type.kind) {
       case "TUnknown":
       case "TNever":
@@ -244,15 +270,17 @@ export class Subtyper {
       case "FVar":
         return false;
       case "EVar":
-        return type.level >= levels;
+        return type.level >= from;
       case "TFun":
         return type.typeParams.some((b) =>
-          this.#mentionsLaterEVar(b.bound, levels)
+          this.#mentionsUnsolvedEVarFrom(b.bound, from)
         ) ||
-          type.params.some((p) => this.#mentionsLaterEVar(p, levels)) ||
-          this.#mentionsLaterEVar(type.result, levels);
+          type.params.some((p) => this.#mentionsUnsolvedEVarFrom(p, from)) ||
+          this.#mentionsUnsolvedEVarFrom(type.result, from);
       case "TData":
-        return type.args.some((arg) => this.#mentionsLaterEVar(arg, levels));
+        return type.args.some((arg) =>
+          this.#mentionsUnsolvedEVarFrom(arg, from)
+        );
     }
   }
 
@@ -293,6 +321,14 @@ export class Subtyper {
         return this.#avoid(this.context.upperBoundAt(type.level), levels, true);
       }
       case "EVar":
+        // Unreachable from `#constrain`, which rejects a type mentioning an
+        // unsolved EVar from the batch onward before any of this runs -- a
+        // stricter bar, the batch beginning at or before `levels`. Kept because
+        // the `TData` case below cannot ask: it collapses to top or bottom
+        // without looking, so an EVar inside an invariant argument would be
+        // dropped silently rather than reaching this branch at all. That is the
+        // hole the pre-pass exists to cover, and this is what it would cost.
+        //
         // An unsolved EVar out of scope is the interdependent case: its
         // solution is not known yet, so no bound can be given in terms of it,
         // and widening to top would silently throw the constraint away.
@@ -444,7 +480,7 @@ export class Subtyper {
    * The join of every lower bound, or `never` if there are none.
    *
    * `solve`-prefixed because this computes a candidate solution, where
-   * `Context.upperBoundOf` reads a binder's declared bound. Same words
+   * `Context.upperBoundAt` reads a binder's declared bound. Same words
    * otherwise, and the two are not the same question.
    */
   solveLowerBoundOf(level: Level): Type {
@@ -464,30 +500,81 @@ export class Subtyper {
   }
 
   /**
-   * The candidate solution for an EVar: the join of its lower bounds if it has
-   * any, else the meet of its upper ones. `undefined` when it has neither --
-   * nothing constrains it, and inventing `never` or `unknown` there would put a
-   * type on a program the checker cannot actually infer one for.
+   * Solve one EVar, given how it occurs in the type the application hands back.
    *
-   * A lower bound is a *demand* -- something really flows in -- so it wins when
-   * there is one. Falling back to the upper bound covers the case where only a
-   * declared bound is known.
+   * Both bounds are computed, never one: they are peers, and which is the
+   * answer is what `polarity` decides. `never` and `unknown` are not fallbacks
+   * but the honest defaults -- an EVar with no lower bound really is above
+   * bottom, and one with no upper really is below top.
    *
-   * A fixed policy, where Pierce & Turner choose by *counting* the EVar's
-   * occurrences in the result type by polarity: covariant only takes the lower
-   * bound, contravariant only the upper, and invariant or both demands the two
-   * agree. That signed count would go here.
+   * Then, in order:
    *
-   * Only the candidate. Whether it sits under the upper bounds is checked by
-   * the caller, which is where the diagnostic for it belongs.
+   * 1. `lower <: upper`, or the constraints have no solution at all. This is
+   *    the check that keeps a callee's declared bound honest, that bound being
+   *    an upper constraint like any other.
+   * 2. The selection. Covariant occurrences take the *lower* bound: it is the
+   *    smallest type the constraints admit, so it is the most informative
+   *    result, which is what makes the answer principal rather than merely
+   *    sound. Contravariant ones take the upper bound, dually.
+   *
+   * Occurring both ways, or inside an invariant `TData` argument, there is no
+   * principal choice to make -- widening either way breaks the other -- and
+   * demanding the bounds *agree* would be the honest reading of that. It is not
+   * what happens here, because it rejects working programs:
+   *
+   *     let apply = fn [A](x: A) -> fn (f: (A) -> A) -> f(x)
+   *     apply(True)(fn (y) -> y)
+   *
+   * `?A` occurs invariantly in `((A) -> A) -> A`, and `True` is the only thing
+   * said about it, so demanding agreement asks for an annotation where `Bool`
+   * is plainly the answer. So the lower bound wins where there is one, being
+   * the *demand* -- something really flowed in -- and the upper bound covers
+   * the case where only a declared bound is known. Sound, since step 1 has
+   * already placed it under every upper bound; simply not principal, which for
+   * an invariant occurrence nothing could be.
+   *
+   * A variable occurring nowhere in the result is decided the same way. Nothing
+   * downstream can tell, so the more informative one costs nothing.
    */
-  solveEVar(level: Level): Type | undefined {
+  solveEVar(level: Level, polarity: Polarity): EVarSolution {
     const entry = this.context.evarAt(level);
-    if (entry.lower.length > 0) return this.solveLowerBoundOf(level);
-    if (entry.upper.length > 0) return this.solveUpperBoundOf(level);
-    return undefined;
+    if (entry.lower.length === 0 && entry.upper.length === 0) {
+      return { kind: "unconstrained" };
+    }
+
+    const lower = this.solveLowerBoundOf(level);
+    const upper = this.solveUpperBoundOf(level);
+
+    const verdict = this.isSubtype(lower, upper);
+    if (verdict !== "yes") return { kind: "conflict", lower, upper, verdict };
+
+    if (polarity === "covariant") return { kind: "solved", type: lower };
+    if (polarity === "contravariant") return { kind: "solved", type: upper };
+    // Invariant, or occurring nowhere: the demand first.
+    return {
+      kind: "solved",
+      type: entry.lower.length > 0 ? lower : upper,
+    };
   }
 }
+
+/**
+ * What solving one EVar came to. The two failures want different messages --
+ * one is the program's doing and one is the checker's -- which is why this
+ * comes back as a value rather than being reported here: `Subtyper` has no
+ * diagnostics, and the relation should not acquire any.
+ */
+export type EVarSolution =
+  | { readonly kind: "solved"; readonly type: Type }
+  /** Nothing was recorded, so every type would do and none is right. */
+  | { readonly kind: "unconstrained" }
+  /** No type is above the lower bound and below the upper one. */
+  | {
+    readonly kind: "conflict";
+    readonly lower: Type;
+    readonly upper: Type;
+    readonly verdict: Verdict;
+  };
 
 /** Convenience for the common `=== "yes"` test. */
 export function holds(verdict: Verdict): boolean {

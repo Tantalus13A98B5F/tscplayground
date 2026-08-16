@@ -10,6 +10,7 @@ import {
   mkTypeParamInfo,
   open,
   openMany,
+  polarityOf,
   TData,
   TFun,
   TNever,
@@ -187,4 +188,34 @@ Deno.test("a quantifier survives a traversal that rebuilds it", () => {
   const type = TFun([mkTypeParamInfo("A", TUnknown)], [], FVar(X, "X"));
   const closed = closeFrom(type, X);
   expect(closed.kind === "TFun" && closed.typeParams.length).toBe(1);
+});
+
+Deno.test("polarity reads a variable's occurrences by variance", () => {
+  const x = FVar(X, "X");
+  expect(polarityOf(X, TFun([], [TNever], x))).toBe("covariant");
+  expect(polarityOf(X, TFun([], [x], TNever))).toBe("contravariant");
+  expect(polarityOf(X, TFun([], [x], x))).toBe("invariant");
+  expect(polarityOf(X, TFun([], [TNever], TUnknown))).toBe("none");
+});
+
+Deno.test("a doubly contravariant position is covariant again", () => {
+  // `((X) -> Bool) -> Bool`: X is a parameter of a parameter, so it flips twice.
+  const x = FVar(X, "X");
+  const inner = TFun([], [x], TUnknown);
+  expect(polarityOf(X, TFun([], [inner], TUnknown))).toBe("covariant");
+});
+
+Deno.test("a binder's bound is contravariant, like a parameter", () => {
+  const x = FVar(X, "X");
+  expect(polarityOf(X, TFun([mkTypeParamInfo("A", x)], [], TUnknown)))
+    .toBe("contravariant");
+});
+
+Deno.test("an occurrence inside a datatype argument is invariant however deep", () => {
+  // Arguments have no declared variance, so nothing under one may be widened.
+  const x = FVar(X, "X");
+  expect(polarityOf(X, TData(Pair, [x, TUnknown]))).toBe("invariant");
+  // Even at a position that would otherwise be contravariant twice over.
+  const nested = TData(Pair, [TFun([], [x], TUnknown), TUnknown]);
+  expect(polarityOf(X, nested)).toBe("invariant");
 });
