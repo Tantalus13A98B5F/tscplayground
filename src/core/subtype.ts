@@ -17,6 +17,7 @@
 import type { Context } from "./context.ts";
 import {
   alphaEq,
+  closeFrom,
   FVar,
   isClosed,
   type Level,
@@ -27,6 +28,7 @@ import {
   TNever,
   TUnknown,
   type Type,
+  type TypeParamInfo,
 } from "./types.ts";
 
 /**
@@ -61,9 +63,7 @@ export class Subtyper {
   expose(type: Type): Type {
     let current = this.#head(type);
     while (current.kind === "FVar") {
-      const bound = this.context.upperBoundOf(current.level);
-      if (bound === undefined) return current;
-      current = this.#head(bound);
+      current = this.#head(this.context.upperBoundAt(current.level));
     }
     return current;
   }
@@ -94,7 +94,7 @@ export class Subtyper {
   #head(type: Type): Type {
     let current = type;
     while (current.kind === "EVar") {
-      const solution = this.context.evarAt(current.level)?.solution;
+      const solution = this.context.evarAt(current.level).solution;
       if (solution === undefined) return current;
       current = solution;
     }
@@ -134,9 +134,11 @@ export class Subtyper {
 
     // Only the left is promoted. Promoting the right would relate `X <: Y`
     // whenever their bounds happened to meet, which is unsound.
+    // An unbounded variable promotes to `unknown`, which the top rule above
+    // has already turned down for this `t` -- so the recursion answers "no"
+    // there, and nothing here has to.
     if (s.kind === "FVar") {
-      const bound = this.context.upperBoundOf(s.level);
-      return bound === undefined ? "no" : this.#relate(bound, t);
+      return this.#relate(this.context.upperBoundAt(s.level), t);
     }
 
     if (s.kind === "TData" && t.kind === "TData") {
@@ -288,10 +290,7 @@ export class Subtyper {
         // known to sit under; downward there is no lower bound to appeal to,
         // so bottom is all that is left.
         if (!up) return TNever;
-        const bound = this.context.upperBoundOf(type.level);
-        return bound === undefined
-          ? TUnknown
-          : this.#avoid(bound, levels, true);
+        return this.#avoid(this.context.upperBoundAt(type.level), levels, true);
       }
       case "EVar":
         // An unsolved EVar out of scope is the interdependent case: its
@@ -341,18 +340,9 @@ export class Subtyper {
     if (this.#relate(s, t) === "yes") return t;
     if (this.#relate(t, s) === "yes") return s;
 
-    // Two unrelated functions still meet at an arrow, pointwise: parameters
-    // are contravariant, so they *meet* where the results join.
-    if (
-      s.kind === "TFun" && t.kind === "TFun" &&
-      s.typeParams.length === 0 && t.typeParams.length === 0 &&
-      s.params.length === t.params.length
-    ) {
-      return TFun(
-        [],
-        s.params.map((param, i) => this.#meet(param, t.params[i] ?? TUnknown)),
-        this.#join(s.result, t.result),
-      );
+    // Two unrelated functions still meet at an arrow, pointwise.
+    if (s.kind === "TFun" && t.kind === "TFun") {
+      return this.#latticeFun(s, t, true) ?? TUnknown;
     }
     return TUnknown;
   }
@@ -369,34 +359,133 @@ export class Subtyper {
     if (this.#relate(s, t) === "yes") return s;
     if (this.#relate(t, s) === "yes") return t;
 
-    if (
-      s.kind === "TFun" && t.kind === "TFun" &&
-      s.typeParams.length === 0 && t.typeParams.length === 0 &&
-      s.params.length === t.params.length
-    ) {
-      return TFun(
-        [],
-        s.params.map((param, i) => this.#join(param, t.params[i] ?? TNever)),
-        this.#meet(s.result, t.result),
-      );
+    if (s.kind === "TFun" && t.kind === "TFun") {
+      return this.#latticeFun(s, t, false) ?? TNever;
     }
     return TNever;
   }
 
-  /** The join of every lower bound, or `never` if there are none. */
-  lowerBoundOf(level: Level): Type {
+  /** `#join` when `up`, `#meet` otherwise -- so one arrow case serves both. */
+  #lattice(left: Type, right: Type, up: boolean): Type {
+    return up ? this.#join(left, right) : this.#meet(left, right);
+  }
+
+  /**
+   * Join or meet two arrows pointwise, or `undefined` where their shapes leave
+   * nothing better than top or bottom to say.
+   *
+   * Every position flips but the result: parameters are contravariant, so a
+   * join *meets* them, and so are binder bounds -- the joined quantifier must
+   * be usable at every instantiation both sides admit, which is the meet of
+   * their bounds, the direction `#relateFun` relates them in.
+   *
+   * Quantified arrows are joined under their binders rather than given up on.
+   * Both sides are opened at one fresh group carrying the combined bounds --
+   * the same trick as `#relateFun`, except that here a *type* comes back out,
+   * so it is closed again over the group on the way. Only the arities have no
+   * answer: an arrow of two parameters and one of three share no arrow at all.
+   */
+  #latticeFun(
+    s: Extract<Type, { kind: "TFun" }>,
+    t: Extract<Type, { kind: "TFun" }>,
+    up: boolean,
+  ): Type | undefined {
+    if (s.typeParams.length !== t.typeParams.length) return undefined;
+    if (s.params.length !== t.params.length) return undefined;
+
+    return this.context.inScope((mark) => {
+      // Bounds are parallel -- they read in the enclosing scope -- so they are
+      // combined before anything is pushed, and need no closing after.
+      const typeParams: TypeParamInfo[] = [];
+      for (const [j, binder] of s.typeParams.entries()) {
+        const other = t.typeParams[j];
+        if (other === undefined) return undefined;
+        typeParams.push(
+          mkTypeParamInfo(
+            binder.hint,
+            this.#lattice(binder.bound, other.bound, !up),
+          ),
+        );
+      }
+
+      const opened = typeParams.map((binder) =>
+        FVar(this.context.pushTypeVar(binder.bound), binder.hint)
+      );
+
+      const params: Type[] = [];
+      for (const [j, param] of s.params.entries()) {
+        const other = t.params[j];
+        if (other === undefined) return undefined;
+        params.push(
+          closeFrom(
+            this.#lattice(
+              openMany(param, opened),
+              openMany(other, opened),
+              !up,
+            ),
+            mark,
+          ),
+        );
+      }
+
+      const result = closeFrom(
+        this.#lattice(
+          openMany(s.result, opened),
+          openMany(t.result, opened),
+          up,
+        ),
+        mark,
+      );
+      return TFun(typeParams, params, result);
+    });
+  }
+
+  /**
+   * The join of every lower bound, or `never` if there are none.
+   *
+   * `solve`-prefixed because this computes a candidate solution, where
+   * `Context.upperBoundOf` reads a binder's declared bound. Same words
+   * otherwise, and the two are not the same question.
+   */
+  solveLowerBoundOf(level: Level): Type {
     const entry = this.context.evarAt(level);
     return this.#resetFuel(() =>
-      (entry?.lower ?? []).reduce((a, b) => this.#join(a, b), TNever)
+      entry.lower.reduce((a, b) => this.#join(a, b), TNever)
     );
   }
 
-  /** The meet of every upper bound, or `unknown` if there are none. */
-  upperBoundOf(level: Level): Type {
+  /** The meet of every upper bound, or `unknown` if there are none. Dual to
+   * `solveLowerBoundOf`. */
+  solveUpperBoundOf(level: Level): Type {
     const entry = this.context.evarAt(level);
     return this.#resetFuel(() =>
-      (entry?.upper ?? []).reduce((a, b) => this.#meet(a, b), TUnknown)
+      entry.upper.reduce((a, b) => this.#meet(a, b), TUnknown)
     );
+  }
+
+  /**
+   * The candidate solution for an EVar: the join of its lower bounds if it has
+   * any, else the meet of its upper ones. `undefined` when it has neither --
+   * nothing constrains it, and inventing `never` or `unknown` there would put a
+   * type on a program the checker cannot actually infer one for.
+   *
+   * A lower bound is a *demand* -- something really flows in -- so it wins when
+   * there is one. Falling back to the upper bound covers the case where only a
+   * declared bound is known.
+   *
+   * A fixed policy, where Pierce & Turner choose by *counting* the EVar's
+   * occurrences in the result type by polarity: covariant only takes the lower
+   * bound, contravariant only the upper, and invariant or both demands the two
+   * agree. That signed count would go here.
+   *
+   * Only the candidate. Whether it sits under the upper bounds is checked by
+   * the caller, which is where the diagnostic for it belongs.
+   */
+  solveEVar(level: Level): Type | undefined {
+    const entry = this.context.evarAt(level);
+    if (entry.lower.length > 0) return this.solveLowerBoundOf(level);
+    if (entry.upper.length > 0) return this.solveUpperBoundOf(level);
+    return undefined;
   }
 }
 

@@ -47,7 +47,7 @@ Deno.test("a bad type flows into an EVar rather than short-circuiting", () => {
   expect(sub.isSubtype(TBad, EVar(a, "a"))).toBe("yes");
   // Recorded, so the EVar solves to `<bad>` instead of looking unconstrained.
   expect(context.evarAt(a)?.lower.map(typeToString)).toEqual(["<bad>"]);
-  expect(typeToString(sub.lowerBoundOf(a))).toBe("<bad>");
+  expect(typeToString(sub.solveLowerBoundOf(a))).toBe("<bad>");
 });
 
 Deno.test("a datatype is invariant in its arguments", () => {
@@ -140,7 +140,7 @@ Deno.test("several lower bounds join into one solution", () => {
   sub.isSubtype(Bool, EVar(a, "a"));
   sub.isSubtype(Int, EVar(a, "a"));
   // Nothing relates Bool and Int, and there is no union, so the join is top.
-  expect(typeToString(sub.lowerBoundOf(a))).toBe("unknown");
+  expect(typeToString(sub.solveLowerBoundOf(a))).toBe("unknown");
 });
 
 Deno.test("a lower bound is joined, not overwritten by the last constraint", () => {
@@ -148,7 +148,7 @@ Deno.test("a lower bound is joined, not overwritten by the last constraint", () 
   const a = context.pushEVar("a");
   sub.isSubtype(TNever, EVar(a, "a"));
   sub.isSubtype(Bool, EVar(a, "a"));
-  expect(typeToString(sub.lowerBoundOf(a))).toBe("Bool");
+  expect(typeToString(sub.solveLowerBoundOf(a))).toBe("Bool");
 });
 
 Deno.test("between two EVars the constraint lands on the righthand one", () => {
@@ -247,6 +247,28 @@ Deno.test("join of two arrows meets their parameters", () => {
   expect(typeToString(joined)).toBe("never -> unknown");
 });
 
+Deno.test("two quantified arrows join under their binders", () => {
+  const { sub, context } = fixture();
+  const before = context.size;
+  // `[A <: Bool](A) -> Bool` and `[A <: Int](A) -> Int`. The bounds are
+  // contravariant, so the joined quantifier takes their meet.
+  const left = TFun([mkTypeParamInfo("A", Bool)], [BVar(0)], Bool);
+  const right = TFun([mkTypeParamInfo("A", Int)], [BVar(0)], Int);
+  expect(typeToString(sub.join(left, right))).toBe(
+    "[A <: never](A) -> unknown",
+  );
+  // The group opened to join under is gone again, and the result closed over it.
+  expect(context.size).toBe(before);
+});
+
+Deno.test("arrows of different arity share no arrow", () => {
+  const { sub } = fixture();
+  expect(typeToString(sub.join(fn([Bool], Bool), fn([Bool, Bool], Bool))))
+    .toBe("unknown");
+  const quantified = TFun([mkTypeParamInfo("A", TUnknown)], [BVar(0)], Bool);
+  expect(typeToString(sub.join(quantified, fn([Bool], Bool)))).toBe("unknown");
+});
+
 Deno.test("a bad type absorbs both lattice operations", () => {
   const { sub } = fixture();
   expect(typeToString(sub.join(TBad, Bool))).toBe("<bad>");
@@ -256,8 +278,8 @@ Deno.test("a bad type absorbs both lattice operations", () => {
 Deno.test("an EVar with no bounds spans the whole lattice", () => {
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
-  expect(typeToString(sub.lowerBoundOf(a))).toBe("never");
-  expect(typeToString(sub.upperBoundOf(a))).toBe("unknown");
+  expect(typeToString(sub.solveLowerBoundOf(a))).toBe("never");
+  expect(typeToString(sub.solveUpperBoundOf(a))).toBe("unknown");
 });
 
 /** Nested arrows, each level forcing one more bound comparison. */
@@ -293,8 +315,17 @@ Deno.test("a comparison within the budget still decides", () => {
   expect(sub.isSubtype(nest(50, Bool), nest(50, Int))).toBe("no");
 });
 
-Deno.test("expose stops at a variable with no bound", () => {
+Deno.test("expose promotes an unbounded variable to top", () => {
+  // There is no "no bound": unbounded means `TUnknown`, so exposure has an
+  // answer here rather than stopping at the variable.
+  const { context, sub } = fixture();
+  const X = context.pushTypeVar(TUnknown, "X");
+  expect(typeToString(sub.expose(FVar(X, "X")))).toBe("unknown");
+});
+
+Deno.test("a variable naming no entry is a bug, not a type that exposes to itself", () => {
   const { sub } = fixture();
-  const stray = FVar(99 as Level, "Stray");
-  expect(sub.expose(stray)).toBe(stray);
+  expect(() => sub.expose(FVar(99 as Level, "Stray"))).toThrow(
+    "names no entry",
+  );
 });

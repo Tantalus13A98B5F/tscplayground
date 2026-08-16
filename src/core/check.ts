@@ -36,7 +36,7 @@ import {
   closeFrom,
   EVar,
   FVar,
-  mkLevel,
+  type Level,
   openMany,
   TBad,
   TFun,
@@ -314,10 +314,13 @@ export class Checker {
       return TBad;
     }
 
-    const result = this.context.inScope((mark) => {
-      // One EVar per type parameter. This is the only place they are created.
+    const result = this.context.inScope(() => {
+      // One EVar per type parameter. This is the only place they are created,
+      // and their levels are kept because `#solveEVars` decides exactly these.
+      const levels: Level[] = [];
       const evars = callee.typeParams.map((binder) => {
         const level = this.context.pushEVar(binder.hint);
+        levels.push(level);
         // The declared bound is an upper bound like any other. Bounds being
         // parallel, it stands in the enclosing scope and needs no opening.
         if (binder.bound.kind !== "TUnknown") {
@@ -344,7 +347,7 @@ export class Checker {
         else this.check(arg, param);
       }
 
-      this.#solveEVars(mark, term.at);
+      this.#solveEVars(levels, term.at);
       return this.context.apply(openMany(callee.result, evars));
     });
     this.context.assertClosed("application", [result]);
@@ -352,16 +355,21 @@ export class Checker {
   }
 
   /**
-   * Decide every EVar of one argument list at once, left to right so a later
+   * Decide every EVar of one argument list at once, ascending so a later
    * solution may mention an earlier one.
+   *
+   * The levels are passed rather than scanned for. `#inferApp` created them and
+   * knows exactly which they are, so looking for them again would be asking the
+   * context a question the caller had already answered -- and would have to
+   * treat "not an EVar" as an ordinary answer, which by then it never is.
    */
-  #solveEVars(mark: number, at: Position): void {
-    for (let i = mark; i < this.context.size; i++) {
-      const level = mkLevel(i);
+  #solveEVars(levels: readonly Level[], at: Position): void {
+    for (const level of levels) {
       const entry = this.context.evarAt(level);
-      if (entry === undefined || entry.solution !== undefined) continue;
+      if (entry.solution !== undefined) continue;
 
-      if (entry.lower.length === 0 && entry.upper.length === 0) {
+      const solution = this.subtyper.solveEVar(level);
+      if (solution === undefined) {
         this.#report(
           `cannot infer the type argument ${entry.hint}: ` +
             `nothing constrains it, so give it explicitly`,
@@ -371,20 +379,8 @@ export class Checker {
         continue;
       }
 
-      // A lower bound is a *demand* -- something really flows in -- so it wins
-      // when there is one. Falling back to the upper bound covers the case
-      // where only a declared bound is known.
-      //
-      // A fixed policy, where Pierce & Turner choose by *counting* the EVar's
-      // occurrences in the result type by polarity: covariant only takes the
-      // lower bound, contravariant only the upper, and invariant or both
-      // demands the two agree. That signed count would go here.
-      const solution = entry.lower.length > 0
-        ? this.subtyper.lowerBoundOf(level)
-        : this.subtyper.upperBoundOf(level);
-
       if (entry.upper.length > 0) {
-        const upper = this.subtyper.upperBoundOf(level);
+        const upper = this.subtyper.solveUpperBoundOf(level);
         const verdict = this.subtyper.isSubtype(solution, upper);
         if (verdict !== "yes") {
           this.#reportVerdict(verdict, solution, upper, at);

@@ -64,7 +64,7 @@ Deno.test("a nameless binding holds a position but answers to no name", () => {
   const nameless = context.pushTypeVar(TData(Bool));
 
   expect(nameless).toBe(mkLevel(1));
-  expect(context.upperBoundOf(nameless)).toBeDefined();
+  expect(alphaEq(context.upperBoundAt(nameless), TData(Bool))).toBe(true);
   // Still reachable by level, so its bound is not lost -- only its name is.
   expect(context.lookupTypeVar("X")?.level).toBe(outer);
 });
@@ -79,8 +79,8 @@ Deno.test("push hands back the level it allocated", () => {
 Deno.test("solve records a solution in place", () => {
   const { context, a } = withEVar();
 
-  expect(context.setSolution(a, TData(Bool))).toBeUndefined();
-  expect(alphaEq(context.evarAt(a)?.solution ?? TUnknown, TData(Bool))).toBe(
+  context.setSolution(a, TData(Bool));
+  expect(alphaEq(context.evarAt(a).solution ?? TUnknown, TData(Bool))).toBe(
     true,
   );
 });
@@ -89,9 +89,9 @@ Deno.test("solve rejects a solution mentioning the variable itself", () => {
   const { context, a } = withEVar();
 
   // `?a` is not to the left of itself, so this is the escape check doing it.
-  const failure = context.setSolution(a, TFun([], [EVar(a, "a")], TUnknown));
-  expect(failure?.kind).toBe("escapes");
-  expect(context.evarAt(a)?.solution).toBeUndefined();
+  expect(() => context.setSolution(a, TFun([], [EVar(a, "a")], TUnknown)))
+    .toThrow("escapes");
+  expect(context.evarAt(a).solution).toBeUndefined();
 });
 
 Deno.test("solve rejects a solution that escapes its scope", () => {
@@ -99,7 +99,7 @@ Deno.test("solve rejects a solution that escapes its scope", () => {
   const { context, a } = withEVar();
   const X = context.pushTypeVar(TUnknown, "X");
 
-  expect(context.setSolution(a, FVar(X, "X"))?.kind).toBe("escapes");
+  expect(() => context.setSolution(a, FVar(X, "X"))).toThrow("escapes");
 });
 
 Deno.test("solve accepts a solution mentioning something to its left", () => {
@@ -107,8 +107,8 @@ Deno.test("solve accepts a solution mentioning something to its left", () => {
   const X = context.pushTypeVar(TUnknown, "X");
   const a = context.pushEVar("a");
 
-  expect(context.setSolution(a, FVar(X, "X"))).toBeUndefined();
-  expect(alphaEq(context.evarAt(a)?.solution ?? TUnknown, FVar(X, "X"))).toBe(
+  context.setSolution(a, FVar(X, "X"));
+  expect(alphaEq(context.evarAt(a).solution ?? TUnknown, FVar(X, "X"))).toBe(
     true,
   );
 });
@@ -117,17 +117,24 @@ Deno.test("solve refuses to overwrite an existing solution", () => {
   const { context, a } = withEVar();
   context.setSolution(a, TData(Bool));
 
-  expect(context.setSolution(a, TUnknown)?.kind).toBe("alreadySolved");
-  expect(alphaEq(context.evarAt(a)?.solution ?? TUnknown, TData(Bool))).toBe(
+  expect(() => context.setSolution(a, TUnknown)).toThrow("already solved");
+  expect(alphaEq(context.evarAt(a).solution ?? TUnknown, TData(Bool))).toBe(
     true,
   );
 });
 
-Deno.test("solve reports a level that is not an EVar", () => {
+Deno.test("a read by level is total, so a wrong one is a bug and not a value", () => {
+  // Every level comes from a `push` or off a node the checker built, so the
+  // kind is known before the read. Answering `undefined` would leave a caller
+  // inventing a type for a program that has nothing wrong with it.
   const context = new Context();
   const X = context.pushTypeVar(TUnknown, "X");
-  expect(context.setSolution(X, TUnknown)?.kind).toBe("unbound");
-  expect(context.setSolution(mkLevel(9), TUnknown)?.kind).toBe("unbound");
+  const a = context.pushEVar("a");
+
+  expect(() => context.setSolution(X, TUnknown)).toThrow("holds a TypeVar");
+  expect(() => context.evarAt(X)).toThrow("holds a TypeVar");
+  expect(() => context.upperBoundAt(a)).toThrow("holds a EVar");
+  expect(() => context.evarAt(mkLevel(9))).toThrow("names no entry");
 });
 
 Deno.test("apply follows a chain of solutions", () => {
