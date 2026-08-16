@@ -517,24 +517,28 @@ export class Subtyper {
    *    result, which is what makes the answer principal rather than merely
    *    sound. Contravariant ones take the upper bound, dually.
    *
-   * Occurring both ways, or inside an invariant `TData` argument, there is no
-   * principal choice to make -- widening either way breaks the other -- and
-   * demanding the bounds *agree* would be the honest reading of that. It is not
-   * what happens here, because it rejects working programs:
+   * Occurring both ways, or inside an invariant `TData` argument, the bounds
+   * must *agree*: widening either way breaks the other, so unless they meet
+   * there is no principal choice and the checker declines rather than picking.
+   * Taking the lower bound would be sound -- step 1 has already placed it under
+   * every upper bound -- and that is exactly the objection. Silently settling
+   * on a type that merely happens to work leaves the author with a program that
+   * checks for a reason nothing states, and no sign that a choice was made on
+   * their behalf. The explicit type argument they would have written is both
+   * the fix and the record of it.
+   *
+   * It is a real cost, and falls on staged calls in particular:
    *
    *     let apply = fn [A](x: A) -> fn (f: (A) -> A) -> f(x)
-   *     apply(True)(fn (y) -> y)
+   *     apply[Bool](True)(fn (y) -> y)
    *
-   * `?A` occurs invariantly in `((A) -> A) -> A`, and `True` is the only thing
-   * said about it, so demanding agreement asks for an annotation where `Bool`
-   * is plainly the answer. So the lower bound wins where there is one, being
-   * the *demand* -- something really flowed in -- and the upper bound covers
-   * the case where only a declared bound is known. Sound, since step 1 has
-   * already placed it under every upper bound; simply not principal, which for
-   * an invariant occurrence nothing could be.
+   * `?A` occurs invariantly in `((A) -> A) -> A` -- covariantly as the result,
+   * contravariantly inside the parameter -- and `True` bounds it only from
+   * below, so the first list cannot settle it and the annotation is required.
    *
-   * A variable occurring nowhere in the result is decided the same way. Nothing
-   * downstream can tell, so the more informative one costs nothing.
+   * A variable occurring nowhere in the result is not this case: nothing
+   * downstream can tell which bound it took, so the lower one is taken for
+   * being the *demand*, something that really flowed in.
    */
   solveEVar(level: Level, polarity: Polarity): EVarSolution {
     const entry = this.context.evarAt(level);
@@ -550,7 +554,16 @@ export class Subtyper {
 
     if (polarity === "covariant") return { kind: "solved", type: lower };
     if (polarity === "contravariant") return { kind: "solved", type: upper };
-    // Invariant, or occurring nowhere: the demand first.
+
+    if (polarity === "invariant") {
+      // One direction is the check above; this is the other. Together they make
+      // the bounds equivalent, and then either may be taken.
+      const back = this.isSubtype(upper, lower);
+      if (back !== "yes") return { kind: "disagrees", lower, upper };
+      return { kind: "solved", type: lower };
+    }
+
+    // Occurring nowhere: the demand first.
     return {
       kind: "solved",
       type: entry.lower.length > 0 ? lower : upper,
@@ -559,9 +572,9 @@ export class Subtyper {
 }
 
 /**
- * What solving one EVar came to. The two failures want different messages --
- * one is the program's doing and one is the checker's -- which is why this
- * comes back as a value rather than being reported here: `Subtyper` has no
+ * What solving one EVar came to. Three of the four are the checker declining,
+ * each for its own reason and so each wanting its own message -- which is why
+ * this comes back as a value rather than being reported here: `Subtyper` has no
  * diagnostics, and the relation should not acquire any.
  */
 export type EVarSolution =
@@ -574,6 +587,16 @@ export type EVarSolution =
     readonly lower: Type;
     readonly upper: Type;
     readonly verdict: Verdict;
+  }
+  /**
+   * The bounds are satisfiable but unequal, at a position that needs them
+   * equal. Not a mistake in the program's types -- it is the checker declining
+   * to choose where no choice is principal, and asking for the type argument.
+   */
+  | {
+    readonly kind: "disagrees";
+    readonly lower: Type;
+    readonly upper: Type;
   };
 
 /** Convenience for the common `=== "yes"` test. */

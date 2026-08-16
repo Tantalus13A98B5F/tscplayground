@@ -96,15 +96,32 @@ Deno.test("several arguments join rather than the first one winning", () => {
 });
 
 Deno.test("a bare lambda works in a later parameter list", () => {
-  // The Scala staging: by the second application `A` is solved, so the
-  // parameter type is ground and `x` needs no annotation.
+  // The Scala staging: by the second application `A` is fixed, so the
+  // parameter type is ground and `y` needs no annotation.
+  //
+  // `A` is given explicitly because the first list cannot settle it: it occurs
+  // invariantly in what that list hands back, `((A) -> A) -> A`.
   expect(
     typeOf(
       ...BOOL,
       "let apply = fn [A](x: A) -> fn (f: (A) -> A) -> f(x);",
-      "apply(True)(fn (y) -> y)",
+      "apply[Bool](True)(fn (y) -> y)",
     ),
   ).toBe("Bool");
+});
+
+Deno.test("an invariant occurrence is not settled by a bound from one side", () => {
+  // `True` says `Bool <: A` and nothing says anything from above, so `Bool` is
+  // a choice rather than the answer. Sound, and declined all the same: the
+  // author is the one who knows, and the annotation is the record of it.
+  const [type, ...messages] = run(
+    ...BOOL,
+    "let apply = fn [A](x: A) -> fn (f: (A) -> A) -> f(x);",
+    "apply(True)(fn (y) -> y)",
+  );
+  expect(type).toBe("<bad>");
+  expect(messages.length).toBe(1);
+  expect(messages[0]).toContain("occurs invariantly");
 });
 
 Deno.test("a bare lambda in the same list binds to the EVar itself", () => {
@@ -138,12 +155,14 @@ Deno.test("a bare lambda that destructures needs a later list", () => {
   );
   expect(messages).toEqual(["cannot match on ?A: it is not a datatype"]);
 
-  // Staged over two lists, the same body is fine.
+  // Staged over two lists, the same body is fine -- `A` given explicitly,
+  // since it occurs invariantly in what the first list returns.
   expect(
     typeOf(
       ...BOOL,
       "let staged = fn [A](x: A) -> fn (f: (A) -> A) -> f(x);",
-      "staged(True)(fn (y) -> match y with | True -> False | False -> True)",
+      "staged[Bool](True)(fn (y) -> match y with | True -> False " +
+        "| False -> True)",
     ),
   ).toBe("Bool");
 });
