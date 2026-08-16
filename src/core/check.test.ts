@@ -436,3 +436,43 @@ Deno.test("a nullary constructor of a monomorphic datatype is a value", () => {
   // `[A]List[A]` would be a quantifier over a non-function.
   expect(typeOf(...LIST, ...BOOL, "Nil[Bool]()")).toBe("List[Bool]");
 });
+
+Deno.test("a declared bound is checked against what the arguments demand", () => {
+  // The bound is an upper constraint, the argument a lower one, so this is the
+  // `lower <: upper` step failing rather than a rule of its own.
+  const [type, ...messages] = run(
+    ...BOOL,
+    "datatype Int where | Zero",
+    "let f = fn [A <: Bool](x: A) -> x;",
+    "f(Zero)",
+  );
+  expect(type).toBe("<bad>");
+  expect(messages.length).toBe(1);
+  expect(messages[0]).toContain("Int");
+});
+
+Deno.test("two type parameters of one call may not depend on each other", () => {
+  // `?A <: ?B` is a dependency within one batch, which polarity cannot see:
+  // the selection for `?A` reads the result type alone. Refused, and reported
+  // once -- `?B` does not go on to complain that nothing constrained it.
+  const [type, ...messages] = run(
+    ...BOOL,
+    "let both = fn [A, B](x: A, f: (A) -> B) -> f(x);",
+    "both(True, fn (y) -> y)",
+  );
+  expect(type).toBe("<bad>");
+  expect(messages.length).toBe(1);
+  expect(messages[0]).toContain("depends on another type argument");
+});
+
+Deno.test("staging the same call in two lists is inferred", () => {
+  // The annotation the batch rule asks for is not the only way out: a second
+  // parameter list puts `B` in a batch of its own, with `A` already solved.
+  expect(
+    typeOf(
+      ...BOOL,
+      "let both = fn [A](x: A) -> fn [B](f: (A) -> B) -> f(x);",
+      "both(True)(fn (y) -> y)",
+    ),
+  ).toBe("Bool");
+});

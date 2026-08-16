@@ -17,7 +17,8 @@
  * share the space, because scoping compares the two against each other: a
  * solution may only mention what stands to its left, whichever kind that is.
  * So one level names one entry, and the entry's kind says which it is -- ask
- * `Context.upperBoundOf` or `evarAt`, each of which asks and narrows at once.
+ * `Context.upperBoundAt` or `evarAt`, each of which asks and narrows at once,
+ * and neither of which answers: a level naming the wrong kind is a bug.
  */
 export type Level = number & { readonly __brand: "Level" };
 export type DataName = string & { readonly __brand: "DataName" };
@@ -219,7 +220,7 @@ export function closeFrom(type: Type, mark: number): Type {
  *
  * At `depth = 0` this is the scope-exit assertion: nothing surviving a
  * `truncate` to `mark` may mention a level `>= mark`. It is also exactly the
- * escape check `solve` needs, so both rest on one traversal.
+ * escape check `setSolution` needs, so both rest on one traversal.
  */
 export function isClosed(type: Type, levels: number, depth = 0): boolean {
   switch (type.kind) {
@@ -243,6 +244,75 @@ export function isClosed(type: Type, levels: number, depth = 0): boolean {
     case "TData":
       return type.args.every((arg) => isClosed(arg, levels, depth));
   }
+}
+
+/**
+ * Where a variable occurs, by variance. `none` is not-at-all, and is the
+ * identity: a variable occurring nowhere constrains nothing.
+ */
+export type Polarity = "none" | "covariant" | "contravariant" | "invariant";
+
+/** Contravariant positions swap the two directions and fix the other two. */
+function flip(polarity: Polarity): Polarity {
+  if (polarity === "covariant") return "contravariant";
+  if (polarity === "contravariant") return "covariant";
+  return polarity;
+}
+
+/**
+ * Two occurrences of one variable. Disagreeing is what makes it invariant --
+ * neither direction can be widened without breaking the other.
+ */
+function bothPolarities(left: Polarity, right: Polarity): Polarity {
+  if (left === "none") return right;
+  if (right === "none") return left;
+  return left === right ? left : "invariant";
+}
+
+function polarityAt(type: Type, level: Level, here: Polarity): Polarity {
+  switch (type.kind) {
+    case "TUnknown":
+    case "TNever":
+    case "TBad":
+    case "BVar":
+      return "none";
+    // Kind-agnostic: levels are one space, so this asks about the *position*
+    // and lets the caller know which kind lives there.
+    case "FVar":
+    case "EVar":
+      return type.level === level ? here : "none";
+    case "TFun": {
+      // Parameters and binder bounds are contravariant, the result covariant --
+      // the same split `#avoid` swaps direction on.
+      const parts = [
+        ...type.typeParams.map((b) => polarityAt(b.bound, level, flip(here))),
+        ...type.params.map((param) => polarityAt(param, level, flip(here))),
+        polarityAt(type.result, level, here),
+      ];
+      return parts.reduce(bothPolarities, "none");
+    }
+    case "TData":
+      // Arguments are invariant, so an occurrence anywhere inside one is
+      // invariant however deep it sits: `invariant` survives every flip.
+      return type.args
+        .map((arg) => polarityAt(arg, level, "invariant"))
+        .reduce(bothPolarities, "none");
+  }
+}
+
+/**
+ * How the variable at `level` occurs in `type`, reading the whole type as a
+ * covariant position.
+ *
+ * This is what makes a solution *principal* rather than merely sound. A
+ * variable occurring only covariantly can take its lower bound -- the smallest
+ * type the constraints admit, and so the most informative result -- while one
+ * occurring only contravariantly takes its upper. Occurring both ways, or
+ * inside an invariant `TData` argument, no choice is free: the two bounds have
+ * to agree.
+ */
+export function polarityOf(level: Level, type: Type): Polarity {
+  return polarityAt(type, level, "covariant");
 }
 
 function allPairs(

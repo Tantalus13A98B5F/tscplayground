@@ -38,6 +38,7 @@ import {
   FVar,
   type Level,
   openMany,
+  polarityOf,
   TBad,
   TFun,
   TNever,
@@ -95,9 +96,12 @@ export class Checker {
           at,
         );
       case "interdependent":
+        // Any sibling, not only one further right: they are decided together
+        // and each on its own occurrences, so one leaning on another is a
+        // dependency the solver has no order to resolve.
         return this.#report(
           `cannot infer a type argument from ${found}: it depends on another ` +
-            `argument still being inferred, so give it explicitly`,
+            `type argument of the same call, so give it explicitly`,
           at,
         );
     }
@@ -316,18 +320,25 @@ export class Checker {
 
     const result = this.context.inScope(() => {
       // One EVar per type parameter. This is the only place they are created,
-      // and their levels are kept because `#solveEVars` decides exactly these.
-      const levels: Level[] = [];
-      const evars = callee.typeParams.map((binder) => {
-        const level = this.context.pushEVar(binder.hint);
-        levels.push(level);
-        // The declared bound is an upper bound like any other. Bounds being
-        // parallel, it stands in the enclosing scope and needs no opening.
+      // and one batch, which is the unit `#solveEVars` decides at once.
+      const levels = this.context.pushEVarBatch(
+        callee.typeParams.map((binder) => binder.hint),
+      );
+      const evars: Type[] = [];
+      for (const [j, binder] of callee.typeParams.entries()) {
+        const level = levels[j];
+        if (level === undefined) continue;
+        evars.push(EVar(level, binder.hint));
+        // The declared bound is an upper bound like any other, so it takes part
+        // in the `lower <: upper` check rather than being enforced separately.
+        //
+        // Bounds are *parallel*: one may name an enclosing binder but never a
+        // member of its own group, so this can never mention a sibling EVar --
+        // which `addConstraint` would refuse.
         if (binder.bound.kind !== "TUnknown") {
           this.context.addConstraint(level, "upper", binder.bound);
         }
-        return EVar(level, binder.hint);
-      });
+      }
 
       const params = callee.params.map((param) => openMany(param, evars));
       if (term.args.length !== params.length) {
@@ -347,8 +358,12 @@ export class Checker {
         else this.check(arg, param);
       }
 
-      this.#solveEVars(levels, term.at);
-      return this.context.apply(openMany(callee.result, evars));
+      // Built before solving, not after: which bound an EVar takes depends on
+      // how it occurs *here*, so this is an input to the solver and not only
+      // its output.
+      const result = openMany(callee.result, evars);
+      this.#solveEVars(levels, result, term.at);
+      return this.context.apply(result);
     });
     this.context.assertClosed("application", [result]);
     return result;
@@ -362,33 +377,57 @@ export class Checker {
    * knows exactly which they are, so looking for them again would be asking the
    * context a question the caller had already answered -- and would have to
    * treat "not an EVar" as an ordinary answer, which by then it never is.
+   *
+   * `result` is the type the application hands back, and the selection between
+   * an EVar's two bounds is read off how it occurs in it. Members of one batch
+   * never depend on each other -- `#constrain` refuses that -- so each is
+   * decided on its own occurrences alone, with no ordering among them to get
+   * right.
+   *
+   * Every failure solves to `TBad`. Checking against a bad type always
+   * succeeds, so one uninferable argument does not go on to fail again wherever
+   * the result is used.
    */
-  #solveEVars(levels: readonly Level[], at: Position): void {
+  #solveEVars(levels: readonly Level[], result: Type, at: Position): void {
     for (const level of levels) {
       const entry = this.context.evarAt(level);
       if (entry.solution !== undefined) continue;
 
-      const solution = this.subtyper.solveEVar(level);
-      if (solution === undefined) {
-        this.#report(
-          `cannot infer the type argument ${entry.hint}: ` +
-            `nothing constrains it, so give it explicitly`,
-          at,
-        );
+      // A refused constraint was reported where it was refused, so this one is
+      // bad already and silently: whatever bounds did get through describe a
+      // variable the checker has given up on, and solving from them could only
+      // report the same mistake a second time under a different name.
+      if (entry.refused) {
         this.context.setSolution(level, TBad);
         continue;
       }
 
-      if (entry.upper.length > 0) {
-        const upper = this.subtyper.solveUpperBoundOf(level);
-        const verdict = this.subtyper.isSubtype(solution, upper);
-        if (verdict !== "yes") {
-          this.#reportVerdict(verdict, solution, upper, at);
+      const solved = this.subtyper.solveEVar(
+        level,
+        polarityOf(level, result),
+      );
+      switch (solved.kind) {
+        case "solved":
+          this.context.setSolution(level, this.context.apply(solved.type));
+          break;
+        case "unconstrained":
+          // Bottom would do, and would even be principal. It is refused all the
+          // same: `never` propagates outward as a type the author never wrote
+          // and cannot act on, and the mistake it usually stands for -- an
+          // argument list that says nothing about a type parameter -- is better
+          // named where it happened.
+          this.#report(
+            `cannot infer the type argument ${entry.hint}: ` +
+              `nothing constrains it, so give it explicitly`,
+            at,
+          );
           this.context.setSolution(level, TBad);
-          continue;
-        }
+          break;
+        case "conflict":
+          this.#reportVerdict(solved.verdict, solved.lower, solved.upper, at);
+          this.context.setSolution(level, TBad);
+          break;
       }
-      this.context.setSolution(level, this.context.apply(solution));
     }
   }
 

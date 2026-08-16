@@ -18,18 +18,27 @@ Checker structure:
 - So, never fail checking a tree halfway
 
 Local type inference. EVars arise from one place only: instantiating a
-polymorphic callee at an application. Collect constraints on them and solve with
-GLB/LUB at the end of each argument list.
+polymorphic callee at an application. Collect constraints on them and solve at
+the end of each argument list: both bounds always, LUB of the lower constraints
+and GLB of the upper ones, defaulting to bottom and to top. A declared bound is
+an upper constraint like any other. Then check the lower bound sits under the
+upper, and pick between them by how the EVar occurs in the application's result
+type -- covariant takes the lower, contravariant the upper, which is what makes
+the answer principal. Occurring both ways admits no principal choice, so the
+lower bound wins for being the one something actually flowed into.
 
 A constraint picked up under a binder may mention variables that binder
 introduced, which an EVar's solution must not. Avoidance removes them, widening
 a lower bound and narrowing an upper one, swapping direction at every
 contravariant position: a rigid variable goes to its declared bound or to
 top/bottom, and an invariant `TData` argument cannot be touched at all, so the
-whole type collapses. An unsolved EVar standing to the right is _interdependent_
-and is rejected rather than approximated -- there is no bound to widen to, and
+whole type collapses. An unsolved EVar of the same batch is _interdependent_ and
+is rejected rather than approximated -- there is no bound to widen to, and
 collapsing it would silently drop the constraint. Say so and ask for an
-annotation.
+annotation. In either direction, not only rightward: selection reads the result
+type alone, so a sibling standing in a pending bound is a dependency it cannot
+see. An EVar of an _enclosing_ batch is ordinary, and is how a bare lambda's
+parameter gets its type.
 
 Unannotated lambda parameters are never EVars -- a parameter's type comes from
 annotations or from the checking context. In an argument list the parameter

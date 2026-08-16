@@ -22,6 +22,12 @@
  * checks it at every exit, and turns what would be a silent alias into a loud
  * failure.
  *
+ * Reads by level are total, and writes too. A level comes from a `push` or off
+ * a node the checker built, so one naming nothing -- or naming an entry of the
+ * wrong kind -- is a checker bug, and these throw rather than returning an
+ * `undefined` a caller would have to invent an answer for. Resolving a *name*
+ * is the other question, and that one may legitimately come back empty.
+ *
  * One namespace across all of it. A term variable, a constructor, and a type
  * variable of the same name shadow each other rather than coexisting, so the
  * innermost binding is always the answer and being the wrong kind makes a name
@@ -89,8 +95,37 @@ export type TypeVarEntry = {
 export type EVarEntry = {
   readonly kind: "EVar";
   readonly hint: string;
+  /**
+   * Where the group this EVar was created with begins -- one argument list's
+   * worth, and the unit `#solveEVars` decides at once.
+   *
+   * Carried because a constraint may not mention *any* EVar of its own batch,
+   * not merely one to its right. Leftward looks harmless -- the solver goes
+   * ascending, so `?a` would be decided before `?b` reads it -- but the choice
+   * it makes for `?a` is made by polarity in the *result type* alone, blind to
+   * `?a` standing inside `?b`'s pending bounds. A principal choice there can
+   * still be the wrong one here, and the failure surfaces as a bound conflict
+   * on `?b` that names nothing the author wrote. Refusing the dependency keeps
+   * every batch a set of independent variables, which is the condition under
+   * which per-variable polarity is the whole story.
+   *
+   * Only within a batch. An EVar of an *enclosing* argument list is already
+   * solved or will be solved later by its own batch, and depending on one is
+   * ordinary -- it is how a bare lambda's parameter type gets fixed.
+   */
+  readonly batch: number;
   readonly lower: Type[];
   readonly upper: Type[];
+  /**
+   * Whether a constraint on this EVar was refused rather than recorded -- the
+   * interdependent case, already reported where it was refused.
+   *
+   * Without it the variable is indistinguishable from one nothing ever tried to
+   * constrain, and the solver reports a second time that it cannot be inferred.
+   * That is the same mistake twice, and the second telling names the type
+   * parameter rather than the argument that caused it.
+   */
+  refused: boolean;
   readonly solution?: Type;
 };
 
@@ -171,8 +206,38 @@ export class Context {
     return this.#push({ kind: "TypeVar", name, bound });
   }
 
+  /**
+   * A whole batch of EVars at once -- one per type parameter of the callee
+   * being instantiated, which is the only place they arise.
+   *
+   * The group is pushed together so that `batch` cannot be got wrong: it is the
+   * size before the first, so every member agrees on where the group starts,
+   * where a mark passed in by a caller could drift from the pushes it describes.
+   */
+  pushEVarBatch(hints: readonly string[]): Level[] {
+    const batch = this.size;
+    return hints.map((hint) =>
+      this.#push({
+        kind: "EVar",
+        hint,
+        batch,
+        lower: [],
+        upper: [],
+        refused: false,
+      })
+    );
+  }
+
+  /**
+   * A batch of one, which is what a lone EVar is: its batch begins at its own
+   * level, so it has no siblings to be refused a dependency on. Two of these
+   * are two batches, not one -- an argument list's worth must go through
+   * `pushEVarBatch` to be a batch.
+   */
   pushEVar(hint: string): Level {
-    return this.#push({ kind: "EVar", hint, lower: [], upper: [] });
+    const [level] = this.pushEVarBatch([hint]);
+    if (level === undefined) throw new Error("pushEVar pushed nothing");
+    return level;
   }
 
   /**
@@ -211,25 +276,35 @@ export class Context {
    * by `level` -- since an EVar's constraints may only mention what stands to
    * its left, exactly as its eventual solution must.
    *
-   * `level` and not the mark the whole batch was inserted at, which would be
-   * the stronger bar: no constraint mentioning *any* EVar of its own batch.
-   * That is deliberate. Leftward is not the interdependent case -- it is a
-   * dependency order the solver already follows, solving ascending and
-   * applying each solution before storing it, so `?a` is concrete by the time
-   * `?b` is decided. What is genuinely circular always points rightward too,
-   * and `#constrain` refuses it there. Tightening to the batch mark would cost
-   * `?a <: ?b` and buy nothing.
+   * The bar is the *batch*, not the level. Between the two stand only this
+   * EVar's own siblings -- a batch is pushed contiguously -- so the two bars
+   * agree on every type variable and differ on exactly one thing: a sibling.
+   * See `EVarEntry.batch` for why a sibling is refused even leftward.
+   *
+   * A caller is expected to have decided that already, and to have reported it
+   * as `interdependent` where it is the program's doing. Reaching here with one
+   * is a checker bug, so this throws.
    */
   addConstraint(level: Level, side: "lower" | "upper", type: Type): void {
     const entry = this.evarAt(level);
-    // Not `assertClosed`: the bar is this EVar's level, not the context's
-    // watermark, and everything to its right is legitimately still standing.
-    if (!isClosed(type, level)) {
+    // Not `assertClosed`: the bar is this batch, not the context's watermark,
+    // and everything to its right is legitimately still standing.
+    if (!isClosed(type, entry.batch)) {
       throw new Error(
-        `bound on ?${entry.hint}: mentions something at or past level ${level}`,
+        `bound on ?${entry.hint}: mentions something at or past level ` +
+          `${entry.batch}, where its batch begins`,
       );
     }
     entry[side].push(type);
+  }
+
+  /**
+   * Note that a constraint on this EVar was refused. Recorded on the variable
+   * because that is what the solver will be looking at, long after the argument
+   * that caused it has been left behind.
+   */
+  refuseConstraint(level: Level): void {
+    this.evarAt(level).refused = true;
   }
 
   /** The same for a term: omit `name` for a wildcard, which binds a position
@@ -393,8 +468,8 @@ export class Context {
    * its solution, repeatedly, since one solution may mention another.
    *
    * The recursion is load-bearing, and not in the way one batch would suggest.
-   * Within a batch it would be dead: `#solveEVars` goes ascending and applies
-   * before storing, so every EVar a solution could name is already gone.
+   * Within a batch it is dead by construction: a constraint may not mention a
+   * sibling at all, so no solution can name one.
    *
    * Chains come from *nested* argument lists. An inner one is solved while an
    * outer EVar is still open, and a bare lambda's parameter takes that outer

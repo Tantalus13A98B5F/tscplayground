@@ -329,3 +329,85 @@ Deno.test("a variable naming no entry is a bug, not a type that exposes to itsel
     "names no entry",
   );
 });
+
+Deno.test("a contravariant occurrence takes the upper bound", () => {
+  // `?a` is only ever a parameter of the result, so the widest type that still
+  // satisfies the constraints is the informative answer.
+  const { context, sub } = fixture();
+  const a = context.pushEVar("a");
+  sub.isSubtype(EVar(a, "a"), Bool);
+
+  const solved = sub.solveEVar(a, "contravariant");
+  expect(solved.kind === "solved" && typeToString(solved.type)).toBe("Bool");
+});
+
+Deno.test("a covariant occurrence takes the lower bound", () => {
+  const { context, sub } = fixture();
+  const a = context.pushEVar("a");
+  sub.isSubtype(Bool, EVar(a, "a"));
+
+  const solved = sub.solveEVar(a, "covariant");
+  expect(solved.kind === "solved" && typeToString(solved.type)).toBe("Bool");
+});
+
+Deno.test("a covariant EVar with only an upper bound takes bottom", () => {
+  // Principal, and the point of asking polarity at all: nothing demanded a
+  // larger type, so the smallest the constraints admit is the answer.
+  const { context, sub } = fixture();
+  const a = context.pushEVar("a");
+  sub.isSubtype(EVar(a, "a"), Bool);
+
+  const solved = sub.solveEVar(a, "covariant");
+  expect(solved.kind === "solved" && typeToString(solved.type)).toBe("never");
+});
+
+Deno.test("an invariant occurrence takes the demand rather than refusing", () => {
+  // No choice is principal here, so the lower bound wins for being the one
+  // something actually flowed into.
+  const { context, sub } = fixture();
+  const a = context.pushEVar("a");
+  sub.isSubtype(Bool, EVar(a, "a"));
+
+  const solved = sub.solveEVar(a, "invariant");
+  expect(solved.kind === "solved" && typeToString(solved.type)).toBe("Bool");
+});
+
+Deno.test("bounds with nothing between them are a conflict, not a choice", () => {
+  const { context, sub } = fixture();
+  const a = context.pushEVar("a");
+  sub.isSubtype(Bool, EVar(a, "a"));
+  sub.isSubtype(EVar(a, "a"), Int);
+
+  const solved = sub.solveEVar(a, "covariant");
+  expect(solved.kind).toBe("conflict");
+});
+
+Deno.test("an EVar with no bounds at all is unconstrained, not bottom", () => {
+  const { context, sub } = fixture();
+  const a = context.pushEVar("a");
+  expect(sub.solveEVar(a, "covariant").kind).toBe("unconstrained");
+});
+
+Deno.test("one batch's EVars may not depend on each other", () => {
+  // Polarity is read off the result type alone, so a sibling standing in a
+  // pending bound would be a dependency the selection cannot see.
+  const { context, sub } = fixture();
+  const [a, b] = context.pushEVarBatch(["a", "b"]);
+  if (a === undefined || b === undefined) throw new Error("no batch");
+
+  expect(sub.isSubtype(EVar(a, "a"), EVar(b, "b"))).toBe("interdependent");
+  expect(context.evarAt(b).lower.length).toBe(0);
+  expect(context.evarAt(a).upper.length).toBe(0);
+});
+
+Deno.test("an EVar of an enclosing batch is an ordinary dependency", () => {
+  // How a bare lambda's parameter gets its type: the outer variable is solved
+  // by its own batch, later, and `apply` resolves the chain then.
+  const { context, sub } = fixture();
+  const outer = context.pushEVar("A");
+  const [inner] = context.pushEVarBatch(["B"]);
+  if (inner === undefined) throw new Error("no batch");
+
+  expect(sub.isSubtype(EVar(outer, "A"), EVar(inner, "B"))).toBe("yes");
+  expect(context.evarAt(inner).lower.map(typeToString)).toEqual(["?A"]);
+});
