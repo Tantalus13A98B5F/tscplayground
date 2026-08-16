@@ -427,6 +427,20 @@ export class Checker {
           this.#reportVerdict(solved.verdict, solved.lower, solved.upper, at);
           this.context.setSolution(level, TBad);
           break;
+        case "disagrees":
+          // Not "expected X, found Y": both bounds hold, and either would
+          // check. What is missing is a reason to prefer one, which only the
+          // author has.
+          this.#report(
+            `cannot infer the type argument ${entry.hint}: it occurs ` +
+              `invariantly, and the arguments bound it only between ` +
+              `${typeToString(solved.lower)} and ` +
+              `${typeToString(solved.upper)}, so no choice is the general ` +
+              `one; give it explicitly`,
+            at,
+          );
+          this.context.setSolution(level, TBad);
+          break;
       }
     }
   }

@@ -361,14 +361,30 @@ Deno.test("a covariant EVar with only an upper bound takes bottom", () => {
   expect(solved.kind === "solved" && typeToString(solved.type)).toBe("never");
 });
 
-Deno.test("an invariant occurrence takes the demand rather than refusing", () => {
-  // No choice is principal here, so the lower bound wins for being the one
-  // something actually flowed into.
+Deno.test("an invariant occurrence demands the bounds meet", () => {
+  // `Bool` would check. It is declined because nothing says it is *the*
+  // answer, and settling silently hides that a choice was made.
+  const { context, sub } = fixture();
+  const a = context.pushEVar("a");
+  sub.isSubtype(Bool, EVar(a, "a"));
+  expect(sub.solveEVar(a, "invariant").kind).toBe("disagrees");
+
+  // Bounded from both sides by the same type, there is nothing to choose.
+  const b = context.pushEVar("b");
+  sub.isSubtype(Bool, EVar(b, "b"));
+  sub.isSubtype(EVar(b, "b"), Bool);
+  const solved = sub.solveEVar(b, "invariant");
+  expect(solved.kind === "solved" && typeToString(solved.type)).toBe("Bool");
+});
+
+Deno.test("occurring nowhere is not the invariant case", () => {
+  // Nothing downstream can tell which bound it took, so nothing is hidden by
+  // taking one -- the demand.
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
   sub.isSubtype(Bool, EVar(a, "a"));
 
-  const solved = sub.solveEVar(a, "invariant");
+  const solved = sub.solveEVar(a, "none");
   expect(solved.kind === "solved" && typeToString(solved.type)).toBe("Bool");
 });
 
