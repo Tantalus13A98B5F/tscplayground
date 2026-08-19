@@ -310,7 +310,11 @@ export function isClosed(type: Type, levels: number, depth = 0): boolean {
   }
 }
 
-function allPairs(
+/**
+ * Whether two lists relate elementwise. Separate from any one relation because
+ * the length check and the missing-element guard are the same every time.
+ */
+export function allPairs(
   left: readonly Type[],
   right: readonly Type[],
   relate: (a: Type, b: Type) => boolean,

@@ -142,6 +142,8 @@ export class Checker {
         return this.#checkMatch(term, expected);
       case "Let":
         return this.#checkLet(term, expected);
+      case "App":
+        return this.#checkApp(term, expected);
       default: {
         this.#subsume(this.infer(term), expected, term.at);
         return expected;
@@ -347,6 +349,33 @@ export class Checker {
   }
 
   #inferApp(term: Extract<TermNode, { kind: "App" }>): Type {
+    return this.#applyCall(term, undefined);
+  }
+
+  /**
+   * An application checked against an expected type.
+   *
+   * The expected type does not reach the arguments -- it says nothing about
+   * them -- but it does say something about the type arguments, so it joins the
+   * argument list as one more source of constraints on the same batch. That is
+   * what lets `empty()` at `List[Bool]` pick `Bool` where inference alone would
+   * have nothing to go on.
+   *
+   * It is a constraint and not a demand: the result is still subsumed against
+   * it afterwards, on the solved types, which is where a mismatch is reported.
+   */
+  #checkApp(
+    term: Extract<TermNode, { kind: "App" }>,
+    expected: Type,
+  ): Type {
+    this.#subsume(this.#applyCall(term, expected), expected, term.at);
+    return expected;
+  }
+
+  #applyCall(
+    term: Extract<TermNode, { kind: "App" }>,
+    expected: Type | undefined,
+  ): Type {
     const callee = this.subtyper.expose(this.infer(term.callee));
     if (callee.kind !== "TFun") {
       if (callee.kind !== "TBad") {
@@ -422,6 +451,13 @@ export class Checker {
         if (param === undefined) this.infer(arg);
         else this.check(arg, param);
       }
+
+      // The expected type, last: an argument tells us more about a type
+      // argument than the context does, and a constraint arriving later is not
+      // weaker anyway -- they are all joined at once. The verdict is dropped
+      // because the types it would name still hold EVars; the subsumption in
+      // `#checkApp` asks again once they are solved, and reports there.
+      if (expected !== undefined) this.subtyper.isSubtype(result, expected);
 
       this.#solveEVars(levels, term.at);
       return this.context.apply(result);

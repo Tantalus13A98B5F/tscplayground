@@ -69,6 +69,40 @@ Deno.test("a solution may name an EVar of an enclosing argument list", () => {
   ).toBe("Bool");
 });
 
+Deno.test("an expected type constrains the type arguments", () => {
+  // Nothing in the argument list mentions `A` -- there is no argument list --
+  // so the expected type is the only thing that can say what `Nil` is empty
+  // of. Inferring first and comparing after would have given up before it saw
+  // it.
+  expect(
+    typeOf(...LIST, ...BOOL, "let xs : List[Bool] = Nil();", "xs"),
+  ).toBe("List[Bool]");
+});
+
+Deno.test("the expected type reaches a nested application", () => {
+  // Checking pushes through the argument list too: `Cons` takes its `A` from
+  // the expected type, and the `Nil()` in its second field takes it from the
+  // parameter type that follows.
+  expect(
+    typeOf(...LIST, ...BOOL, "let xs : List[Bool] = Cons(True, Nil());", "xs"),
+  ).toBe("List[Bool]");
+});
+
+Deno.test("an application checked against the wrong type says so once", () => {
+  // The expected type is a constraint, not a demand: `?A` picks up `Bool` from
+  // the argument and `List[Bool]` from the context, they do not agree, and the
+  // conflict is reported where the call is. The result is then `TBad`, so the
+  // subsumption that follows adds nothing.
+  const [, ...messages] = run(
+    ...LIST,
+    ...BOOL,
+    "let id = fn [A](x: A) -> x;",
+    "let bad : List[Bool] = id(True);",
+    "bad",
+  );
+  expect(messages).toEqual(["expected List[Bool], found Bool"]);
+});
+
 Deno.test("a type argument is inferred from an invariant position", () => {
   // `List[?A] <: List[Bool]` only constrains ?A because invariance relates
   // arguments both ways rather than testing them for equality.

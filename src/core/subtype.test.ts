@@ -245,6 +245,81 @@ Deno.test("join and meet agree with the relation on ordered pairs", () => {
   expect(typeToString(sub.meet(Bool, TNever))).toBe("never");
 });
 
+Deno.test("top and bottom meet an EVar without constraining it", () => {
+  // Both are decided by shape, before the relation is consulted. Asking the
+  // relation would answer with a *constraint* -- `unknown <: ?a` recorded as a
+  // lower bound -- which is true, useless, and not something anyone asked for:
+  // a lattice operation must not write on its operands.
+  const { context, sub } = fixture();
+  const a = context.pushEVar("a");
+  const evar = EVar(a, "a");
+  expect(typeToString(sub.join(TNever, evar))).toBe("?a");
+  expect(typeToString(sub.join(evar, TUnknown))).toBe("unknown");
+  expect(typeToString(sub.meet(TUnknown, evar))).toBe("?a");
+  expect(typeToString(sub.meet(evar, TNever))).toBe("never");
+  expect(context.evarAt(a).lower).toEqual([]);
+  expect(context.evarAt(a).upper).toEqual([]);
+});
+
+Deno.test("a variable joins at its bound and meets as itself", () => {
+  const { context, sub } = fixture();
+  const X = FVar(context.pushTypeVar(Bool, "X"), "X");
+  // Upward the bound stands in for the variable; downward it only answers
+  // whether the variable fits, since nothing sits below `X` but `X`.
+  expect(typeToString(sub.join(X, Bool))).toBe("Bool");
+  expect(typeToString(sub.meet(X, Bool))).toBe("X");
+  expect(typeToString(sub.join(X, Int))).toBe("unknown");
+  expect(typeToString(sub.meet(X, Int))).toBe("never");
+});
+
+Deno.test("two unrelated variables join above both their bounds", () => {
+  // Neither sits under the other, so an ordering test would give up at top.
+  // Each stands aside for its bound instead, and the join goes on there.
+  const { context, sub } = fixture();
+  const X = FVar(context.pushTypeVar(Bool, "X"), "X");
+  const Y = FVar(context.pushTypeVar(Bool, "Y"), "Y");
+  expect(typeToString(sub.join(X, Y))).toBe("Bool");
+  expect(typeToString(sub.join(Y, X))).toBe("Bool");
+  // And the bound keeps its shape, so the join is still taken pointwise.
+  const F = FVar(context.pushTypeVar(fn([Bool], Bool), "F"), "F");
+  expect(typeToString(sub.join(F, fn([Int], Bool)))).toBe("never -> Bool");
+});
+
+Deno.test("an unbounded variable has no meet with anything but itself", () => {
+  // Promoting `X` to `unknown` and meeting there would answer `Bool`, which
+  // nothing says sits under `X`. Bottom is the honest answer.
+  const { context, sub } = fixture();
+  const X = FVar(context.pushTypeVar(TUnknown, "X"), "X");
+  expect(typeToString(sub.meet(X, Bool))).toBe("never");
+  expect(typeToString(sub.meet(X, X))).toBe("X");
+  expect(typeToString(sub.join(X, Bool))).toBe("unknown");
+});
+
+Deno.test("two variables order by their bounds, however they are given", () => {
+  const { context, sub } = fixture();
+  const X = FVar(context.pushTypeVar(TUnknown, "X"), "X");
+  const Y = FVar(context.pushTypeVar(X, "Y"), "Y");
+  const pairs: readonly (readonly [Type, Type])[] = [[X, Y], [Y, X]];
+  for (const [a, b] of pairs) {
+    expect(typeToString(sub.join(a, b))).toBe("X");
+    expect(typeToString(sub.meet(a, b))).toBe("Y");
+  }
+});
+
+Deno.test("a lattice operation leaves an EVar alone", () => {
+  // The relation records a bound instead of answering, so testing a pair with
+  // it is a write. `join` is asked as a question -- the LUB of a match's arms
+  // -- and must not answer by constraining whichever side it tried first.
+  const { context, sub } = fixture();
+  const a = context.pushEVar("a");
+  const evar = EVar(a, "a");
+  expect(typeToString(sub.join(evar, Bool))).toBe("unknown");
+  expect(typeToString(sub.meet(evar, Bool))).toBe("never");
+  expect(typeToString(sub.join(List(evar), List(Bool)))).toBe("unknown");
+  expect(context.evarAt(a).lower).toEqual([]);
+  expect(context.evarAt(a).upper).toEqual([]);
+});
+
 Deno.test("join of unrelated types is top, there being no union", () => {
   const { sub } = fixture();
   expect(typeToString(sub.join(Bool, Int))).toBe("unknown");
@@ -317,6 +392,16 @@ Deno.test("the budget is per query, so one deep ask does not poison the next", (
   expect(sub.isSubtype(nest(50, Bool), nest(50, Int))).toBe("exhausted");
   expect(sub.isSubtype(Bool, TUnknown)).toBe("yes");
   expect(typeToString(sub.join(TNever, Bool))).toBe("Bool");
+});
+
+Deno.test("a nest of datatypes compares with itself in one walk", () => {
+  // Invariance relates each argument in both directions, so without the
+  // equality test in that loop this pair costs `2^depth` and exhausts a real
+  // budget by depth 11. A budget of two says it is not recursing at all.
+  const sub = new Subtyper(new Context(), 2);
+  let deep: Type = Bool;
+  for (let i = 0; i < 20; i++) deep = List(deep);
+  expect(sub.isSubtype(deep, deep)).toBe("yes");
 });
 
 Deno.test("a comparison within the budget still decides", () => {
