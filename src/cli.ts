@@ -67,8 +67,7 @@ async function readStdin(): Promise<string> {
 
 /** Piped input cannot require anything -- there is no directory to resolve in. */
 async function checkStdin(): Promise<Checked> {
-  const source = mkSource(await readStdin(), "<stdin>");
-  return { ...checkSource(source), sources: [source] };
+  return checkSource(mkSource(await readStdin(), "<stdin>"));
 }
 
 async function main(): Promise<number> {

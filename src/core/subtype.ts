@@ -63,16 +63,46 @@ export class Subtyper {
   }
 
   /**
-   * Promote a type to its bound repeatedly, until it is not a variable. A
-   * bound may only mention entries to its left, so the level strictly
+   * Promote a type variable to its bound repeatedly until what is left is not
+   * one. A bound may only mention entries to its left, so the level strictly
    * decreases and this terminates without a counter.
+   *
+   * Only for a type in a *left* position -- one being used, not one being asked
+   * for. `X <: Bool` says every X is a Bool, so a value of type X may be used
+   * as one; it says nothing in reverse, so a checking rule's expected type must
+   * be taken as written, and there is nothing here for it to call.
+   *
+   * No substitution on the way. Nothing this class is handed mentions a solved
+   * EVar -- see `#constrain` -- so following one would be a step that never
+   * happens, and `#assertUnsolved` says so rather than quietly taking it.
    */
   expose(type: Type): Type {
-    let current = this.#head(type);
+    let current = type;
+    this.#assertUnsolved(current);
     while (current.kind === "FVar") {
-      current = this.#head(this.context.upperBoundAt(current.level));
+      current = this.context.upperBoundAt(current.level);
+      this.#assertUnsolved(current);
     }
     return current;
+  }
+
+  /**
+   * A solved EVar standing where the relation can see it is a checker bug: the
+   * one place they are solved applies and truncates immediately afterwards, so
+   * what escapes is the solution and never the variable.
+   *
+   * The head alone, which is where dispatch happens. Anything deeper is reached
+   * by a recursive call that asks again, or by `#unsolvedEVarsFrom`, which asks
+   * about a whole type at once.
+   */
+  #assertUnsolved(type: Type): void {
+    if (type.kind !== "EVar") return;
+    const entry = this.context.evarAt(type.level);
+    if (entry.solution !== undefined) {
+      throw new Error(
+        `?${entry.hint} is solved, but reached the relation unsubstituted`,
+      );
+    }
   }
 
   /** Does `left <: right` hold? Resets the fuel, so this is a *top-level* ask. */
@@ -91,28 +121,13 @@ export class Subtyper {
     return run();
   }
 
-  /**
-   * Resolve just enough to dispatch: follow a solved EVar at the head and stop.
-   * A full `apply` here would rewrite the entire type at every step --
-   * quadratic, and deep enough to overflow the stack before the fuel counter
-   * ever got a chance to report. Children are resolved by the recursive calls
-   * that reach them.
-   */
-  #head(type: Type): Type {
-    let current = type;
-    while (current.kind === "EVar") {
-      const solution = this.context.evarAt(current.level).solution;
-      if (solution === undefined) return current;
-      current = solution;
-    }
-    return current;
-  }
-
-  #relate(left: Type, right: Type): Verdict {
+  #relate(s: Type, t: Type): Verdict {
     if (this.#fuel-- <= 0) return "exhausted";
-
-    const s = this.#head(left);
-    const t = this.#head(right);
+    // Dispatch reads these two heads, so this is where the invariant is asked
+    // about: what stands here has to be a variable still open, not the shadow
+    // of one already decided.
+    this.#assertUnsolved(s);
+    this.#assertUnsolved(t);
 
     // Vacuous either way, so nothing is learned and nothing is recorded.
     if (t.kind === "TUnknown" || s.kind === "TNever") return "yes";
@@ -223,9 +238,12 @@ export class Subtyper {
    * side: a lower bound may only be widened, an upper bound only narrowed.
    */
   #constrain(level: Level, side: "lower" | "upper", type: Type): Verdict {
-    // Fully resolved first: a solved EVar may stand for something perfectly in
-    // scope, and judging it by its own level would reject that wrongly.
-    const resolved = this.context.apply(type);
+    // No `apply` first. Nothing reaching here can mention a *solved* EVar, and
+    // `#unsolvedEVarsFrom` says so rather than trusting it: a bound is closed
+    // by its batch, so it cannot name a sibling at all; an enclosing batch is
+    // solved strictly after this one finishes; and a nested application applies
+    // and truncates before it returns anything. Substituting first would have
+    // been a no-op that hid all three.
     const batch = this.context.evarAt(level).batch;
 
     // Interdependence is decided over the whole type, before any widening, and
@@ -234,8 +252,14 @@ export class Subtyper {
     // nothing can be said in terms of it; unlike a rigid variable it has no
     // bound to widen to, so quietly collapsing it to top would drop the
     // constraint on the floor. See `EVarEntry.batch`.
-    if (this.#mentionsUnsolvedEVarFrom(resolved, batch)) {
-      this.context.refuseConstraint(level);
+    // Both sides are marked, not just the one being constrained. The two are
+    // parties to one rejected dependency, and a sibling left unmarked goes on
+    // to report that nothing constrained it -- the same mistake, told twice,
+    // the second time about a variable that was never the problem.
+    const siblings = this.#unsolvedEVarsFrom(type, batch);
+    if (siblings.length > 0) {
+      this.context.noteReported(level);
+      for (const sibling of siblings) this.context.noteReported(sibling);
       return "interdependent";
     }
 
@@ -243,10 +267,10 @@ export class Subtyper {
     // a solution may mention anything to its left, siblings having just been
     // ruled out above.
     const avoided = side === "lower"
-      ? this.#promote(resolved, level)
-      : this.#demote(resolved, level);
+      ? this.#promote(type, level)
+      : this.#demote(type, level);
     if (avoided === undefined) {
-      this.context.refuseConstraint(level);
+      this.context.noteReported(level);
       return "interdependent";
     }
     this.context.addConstraint(level, side, avoided);
@@ -254,33 +278,46 @@ export class Subtyper {
   }
 
   /**
-   * Does `type` mention an unsolved EVar at or beyond `from`? Everything here
-   * has been through `apply`, so an EVar still standing is unsolved by that
-   * alone.
+   * Every unsolved EVar `type` mentions at or beyond `from`.
+   *
+   * "Unsolved" is checked, not filtered for: a constrained type may not mention
+   * a solved EVar at all, and the traversal that would have had to skip one
+   * says so instead. See `#constrain` for why that holds.
    *
    * "From", not "later": the bar is a batch's first level, so a *sibling*
    * counts even standing to the left of the variable being constrained.
+   *
+   * The levels and not a yes-or-no, because the callers that ask also have to
+   * mark what they found -- one traversal answering both.
    */
-  #mentionsUnsolvedEVarFrom(type: Type, from: number): boolean {
+  #unsolvedEVarsFrom(type: Type, from: number): Level[] {
     switch (type.kind) {
       case "TUnknown":
       case "TNever":
       case "TBad":
       case "BVar":
       case "FVar":
-        return false;
-      case "EVar":
-        return type.level >= from;
+        return [];
+      case "EVar": {
+        const entry = this.context.evarAt(type.level);
+        if (entry.solution !== undefined) {
+          throw new Error(
+            `?${entry.hint} is solved, but stands in a type being ` +
+              `constrained: it should have been substituted away`,
+          );
+        }
+        return type.level >= from ? [type.level] : [];
+      }
       case "TFun":
-        return type.typeParams.some((b) =>
-          this.#mentionsUnsolvedEVarFrom(b.bound, from)
-        ) ||
-          type.params.some((p) => this.#mentionsUnsolvedEVarFrom(p, from)) ||
-          this.#mentionsUnsolvedEVarFrom(type.result, from);
+        return [
+          ...type.typeParams.flatMap((b) =>
+            this.#unsolvedEVarsFrom(b.bound, from)
+          ),
+          ...type.params.flatMap((p) => this.#unsolvedEVarsFrom(p, from)),
+          ...this.#unsolvedEVarsFrom(type.result, from),
+        ];
       case "TData":
-        return type.args.some((arg) =>
-          this.#mentionsUnsolvedEVarFrom(arg, from)
-        );
+        return type.args.flatMap((arg) => this.#unsolvedEVarsFrom(arg, from));
     }
   }
 
@@ -369,9 +406,7 @@ export class Subtyper {
     return this.#resetFuel(() => this.#join(left, right));
   }
 
-  #join(left: Type, right: Type): Type {
-    const s = this.#head(left);
-    const t = this.#head(right);
+  #join(s: Type, t: Type): Type {
     if (s.kind === "TBad" || t.kind === "TBad") return TBad;
     if (this.#relate(s, t) === "yes") return t;
     if (this.#relate(t, s) === "yes") return s;
@@ -388,9 +423,7 @@ export class Subtyper {
     return this.#resetFuel(() => this.#meet(left, right));
   }
 
-  #meet(left: Type, right: Type): Type {
-    const s = this.#head(left);
-    const t = this.#head(right);
+  #meet(s: Type, t: Type): Type {
     if (s.kind === "TBad" || t.kind === "TBad") return TBad;
     if (this.#relate(s, t) === "yes") return s;
     if (this.#relate(t, s) === "yes") return t;
@@ -539,6 +572,14 @@ export class Subtyper {
    * A variable occurring nowhere in the result is not this case: nothing
    * downstream can tell which bound it took, so the lower one is taken for
    * being the *demand*, something that really flowed in.
+   *
+   * The relation tests here mutate, as everywhere -- but never this batch.
+   * Every recorded bound is closed by `batch`, so the only EVars either bound
+   * can mention belong to an *enclosing* argument list, and a constraint
+   * reaching one of those is a real requirement travelling outward: the outer
+   * variable genuinely has to admit what this one was solved to. What cannot
+   * happen is a sibling picking up a bound while its neighbours are being
+   * decided, which is the case that would make the order of this loop matter.
    */
   solveEVar(level: Level, polarity: Polarity): EVarSolution {
     const entry = this.context.evarAt(level);

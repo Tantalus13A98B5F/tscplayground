@@ -43,10 +43,12 @@
  */
 
 import {
+  bothPolarities,
   isClosed,
   type Level,
   mkLevel,
   mkTypeParamInfo,
+  type Polarity,
   TData,
   TFun,
   type Type,
@@ -80,12 +82,13 @@ export type TypeVarEntry = {
  * Constraints accumulate here rather than being solved on sight: a whole
  * argument list contributes before anything is decided, so the solution is
  * the join of the lower bounds rather than whichever argument came first.
- * Every recorded bound is already avoided -- closed by this EVar's own level
- * -- so `setSolution` can never be handed something out of scope.
+ * Every recorded bound is already avoided -- closed by this EVar's `batch` --
+ * so `setSolution` can never be handed something out of scope.
  *
- * `lower` and `upper` grow all through an argument list, so they are pushed
- * in place. `solution` is written once, so it is `readonly` and solving
- * replaces the entry -- a guardrail, not a guarantee: it catches an assignment
+ * Most of this entry is written after it is pushed, and read once the batch is
+ * solved: `lower` and `upper` grow, `polarity` combines, `reported` latches.
+ * `solution` is the exception, written once -- so it is `readonly` and solving
+ * replaces the entry. A guardrail, not a guarantee: it catches an assignment
  * written by someone who missed `setSolution`, and TypeScript drops the
  * modifier the moment the entry is read at a type that lacks it.
  *
@@ -117,15 +120,32 @@ export type EVarEntry = {
   readonly lower: Type[];
   readonly upper: Type[];
   /**
-   * Whether a constraint on this EVar was refused rather than recorded -- the
-   * interdependent case, already reported where it was refused.
+   * How this EVar occurs in the type its application hands back, which is what
+   * decides between its two bounds.
    *
-   * Without it the variable is indistinguishable from one nothing ever tried to
-   * constrain, and the solver reports a second time that it cannot be inferred.
-   * That is the same mistake twice, and the second telling names the type
-   * parameter rather than the argument that caused it.
+   * On the entry and not in a table beside it, because a batch belongs to one
+   * application and that application has one result type -- so there is exactly
+   * one such fact per variable, the same as its bounds. Recorded by the opening
+   * that puts the variable into that result, `#inferApp` being the only place
+   * either happens.
+   *
+   * `none` until noted, and `none` forever for a variable the result never
+   * mentions. The two are the same answer: nothing downstream can tell which
+   * bound such a variable took. Like `lower` and `upper`, it is provisional
+   * until the batch is solved and meant to be read then.
    */
-  refused: boolean;
+  polarity: Polarity;
+  /**
+   * Whether something already reported accounts for this EVar: a constraint
+   * refused as interdependent, or an argument list of the wrong length that
+   * never supplied the constraint it would have.
+   *
+   * Without it such a variable is indistinguishable from one nothing ever tried
+   * to constrain, and the solver reports a second time that it cannot be
+   * inferred. That is one mistake told twice, and the second telling names a
+   * type parameter where the first named the thing the author wrote.
+   */
+  reported: boolean;
   readonly solution?: Type;
 };
 
@@ -223,7 +243,8 @@ export class Context {
         batch,
         lower: [],
         upper: [],
-        refused: false,
+        polarity: "none",
+        reported: false,
       })
     );
   }
@@ -299,12 +320,22 @@ export class Context {
   }
 
   /**
-   * Note that a constraint on this EVar was refused. Recorded on the variable
-   * because that is what the solver will be looking at, long after the argument
-   * that caused it has been left behind.
+   * Note that this EVar stands at `polarity` in its application's result,
+   * combining with wherever else it stands: two occurrences that disagree make
+   * it invariant, which is the case admitting no principal choice.
    */
-  refuseConstraint(level: Level): void {
-    this.evarAt(level).refused = true;
+  notePolarity(level: Level, polarity: Polarity): void {
+    const entry = this.evarAt(level);
+    entry.polarity = bothPolarities(entry.polarity, polarity);
+  }
+
+  /**
+   * Note that a diagnostic already accounts for this EVar. Recorded on the
+   * variable because that is what the solver will be looking at, long after the
+   * argument that caused it has been left behind.
+   */
+  noteReported(level: Level): void {
+    this.evarAt(level).reported = true;
   }
 
   /** The same for a term: omit `name` for a wildcard, which binds a position

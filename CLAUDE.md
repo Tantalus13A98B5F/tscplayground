@@ -24,8 +24,12 @@ and GLB of the upper ones, defaulting to bottom and to top. A declared bound is
 an upper constraint like any other. Then check the lower bound sits under the
 upper, and pick between them by how the EVar occurs in the application's result
 type -- covariant takes the lower, contravariant the upper, which is what makes
-the answer principal. Occurring both ways admits no principal choice, so the
-lower bound wins for being the one something actually flowed into.
+the answer principal. Occurring both ways, or inside an invariant `TData`
+argument, admits no principal choice, so the two bounds must _meet_; where they
+do not, say so and ask for the type argument. Either bound would check there,
+and that is the objection -- settling silently would hide that a choice was
+made. A variable occurring nowhere in the result is not this case: nothing can
+tell which bound it took, so it takes the lower one.
 
 A constraint picked up under a binder may mention variables that binder
 introduced, which an EVar's solution must not. Avoidance removes them, widening

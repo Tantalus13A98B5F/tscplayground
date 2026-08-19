@@ -207,3 +207,18 @@ Deno.test("assertClosed allows the binders a stored type was closed into", () =>
   expect(() => context.assertClosed("field", [field], 2)).not.toThrow();
   expect(() => context.assertClosed("field", [field])).toThrow();
 });
+
+Deno.test("an EVar records where it stands, combining its occurrences", () => {
+  const { context, a } = withEVar();
+  // Nothing noted yet, and a variable the result never mentions stays here.
+  expect(context.evarAt(a).polarity).toBe("none");
+
+  context.notePolarity(a, "covariant");
+  expect(context.evarAt(a).polarity).toBe("covariant");
+  // Twice at the same polarity says nothing new.
+  context.notePolarity(a, "covariant");
+  expect(context.evarAt(a).polarity).toBe("covariant");
+  // Standing both ways is what leaves no bound free to widen.
+  context.notePolarity(a, "contravariant");
+  expect(context.evarAt(a).polarity).toBe("invariant");
+});

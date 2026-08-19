@@ -381,13 +381,13 @@ Deno.test("checking runs to the end, so one program reports every error", () => 
 
 Deno.test("a require directive is skipped by the lexer, not lexed", () => {
   // The walker reads directives off the raw source; the lexer must step over
-  // them without meeting `#` or `"`, which it has no tokens for. A single-source
-  // run has nowhere to resolve one, so it says so rather than dropping it.
+  // them without meeting `#` or `"`, which it has no tokens for. A lone source
+  // is a filesystem holding just itself, so the directive resolves to nothing
+  // and is reported in the walker's words -- the same ones a real run gives a
+  // path that is not there.
   const [type, ...messages] = run('#require "other.tg"', ...BOOL, "True");
   expect(type).toBe("Bool");
-  expect(messages).toEqual([
-    'cannot require "other.tg": this run has a single source',
-  ]);
+  expect(messages).toEqual(['cannot resolve "other.tg"']);
 });
 
 Deno.test("a term binding shadows a type variable of the same name", () => {
@@ -494,4 +494,81 @@ Deno.test("staging the same call in two lists is inferred", () => {
       "both(True)(fn (y) -> y)",
     ),
   ).toBe("Bool");
+});
+
+Deno.test("a lambda is not pushed into a variable that merely bounds one", () => {
+  // `X <: (Bool) -> Bool` says every X is that arrow, never the reverse, so a
+  // written arrow is not an X. Promoting the *expected* type would accept one.
+  const [, ...messages] = run(
+    ...BOOL,
+    "let h = fn [X <: (Bool) -> Bool](k: (X) -> Bool) -> k(fn (b: Bool) -> b);",
+    "h",
+  );
+  expect(messages).toEqual(["expected X, found Bool -> Bool"]);
+});
+
+Deno.test("the same value is judged the same written inline or bound", () => {
+  // The checking rule and the inference rule have to agree: a lambda argument
+  // must not pass where the identical `let` fails.
+  const inline = run(
+    ...BOOL,
+    "let h = fn [X <: (Bool) -> Bool](k: (X) -> Bool) -> k(fn (b: Bool) -> b);",
+    "h",
+  );
+  const bound = run(
+    ...BOOL,
+    "let id = fn (b: Bool) -> b;",
+    "let h = fn [X <: (Bool) -> Bool](k: (X) -> Bool) -> k(id);",
+    "h",
+  );
+  expect(inline.slice(1)).toEqual(bound.slice(1));
+});
+
+Deno.test("a refused dependency is reported once, on both variables", () => {
+  // `?A <: ?B` is refused, and `?A` is left with nothing. Marking only `?B`
+  // would report a second time that `A` could not be inferred.
+  const [, ...messages] = run(
+    ...BOOL,
+    "let both = fn [A, B](f: (A) -> B) -> f;",
+    "both(fn (y) -> y)",
+  );
+  expect(messages.length).toBe(1);
+  expect(messages[0]).toContain("depends on another type argument");
+});
+
+Deno.test("an arity error does not also report an uninferable type argument", () => {
+  // The missing argument is what would have constrained `B`, so saying so
+  // again under another name is one mistake told twice.
+  const [, ...messages] = run(
+    ...BOOL,
+    "let f = fn [A, B](x: A, y: B) -> x;",
+    "f(True)",
+  );
+  expect(messages).toEqual(["expected 2 arguments, found 1"]);
+});
+
+Deno.test("a lambda of the wrong arity is still checked inward", () => {
+  // The count is the mistake. Inferring instead would ask the author to
+  // annotate parameters whose types the expected type had just supplied.
+  const [, ...tooMany] = run(
+    ...BOOL,
+    "let f : (Bool) -> Bool = fn (x, y) -> x;",
+    "f",
+  );
+  expect(tooMany).toEqual(["expected 1 parameter, found 2"]);
+
+  const [, ...tooFew] = run(
+    ...BOOL,
+    "let f : (Bool, Bool) -> Bool = fn (x) -> x;",
+    "f",
+  );
+  expect(tooFew).toEqual(["expected 2 parameters, found 1"]);
+});
+
+Deno.test("a lambda checked against a non-function is inferred instead", () => {
+  // Nothing to push inward there, so the unannotated parameter is a real
+  // second complaint rather than a consequence of the first.
+  const [, ...messages] = run(...BOOL, "let f : Bool = fn (x) -> x;", "f");
+  expect(messages.length).toBe(2);
+  expect(messages[1]).toContain("expected Bool, found");
 });

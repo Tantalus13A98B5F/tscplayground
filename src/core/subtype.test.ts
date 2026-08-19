@@ -217,13 +217,24 @@ Deno.test("an out-of-scope EVar is interdependent, and is rejected", () => {
   expect(context.evarAt(a)?.lower.length).toBe(0);
 });
 
-Deno.test("a solved EVar is substituted before anything else looks at it", () => {
+Deno.test("a solved EVar never reaches the relation", () => {
+  // The checker substitutes at the one boundary where a solution escapes, so
+  // arriving here unsubstituted is a bug in it -- and a quiet one if the
+  // relation coped, since the variable would take fresh bounds after the fact.
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
   context.setSolution(a, Bool);
-  expect(sub.isSubtype(EVar(a, "a"), Bool)).toBe("yes");
-  expect(sub.isSubtype(EVar(a, "a"), Int)).toBe("no");
-  expect(context.evarAt(a)?.upper.length).toBe(0);
+
+  expect(() => sub.isSubtype(EVar(a, "a"), Bool)).toThrow("is solved");
+  expect(() => sub.expose(EVar(a, "a"))).toThrow("is solved");
+  // Nested rather than at the head, so the whole-type traversal is what says so.
+  const b = context.pushEVar("b");
+  expect(() => sub.isSubtype(List(EVar(a, "a")), EVar(b, "b")))
+    .toThrow("is solved");
+  // Applying first is what a caller owes the relation, and then it answers.
+  expect(sub.isSubtype(context.apply(EVar(a, "a")), Bool)).toBe("yes");
+  expect(sub.isSubtype(context.apply(EVar(a, "a")), Int)).toBe("no");
+  expect(context.evarAt(a).upper.length).toBe(0);
 });
 
 Deno.test("join and meet agree with the relation on ordered pairs", () => {
