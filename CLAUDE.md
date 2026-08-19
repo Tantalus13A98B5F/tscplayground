@@ -17,11 +17,21 @@ Checker structure:
 - Checking to a bad type always success
 - So, never fail checking a tree halfway
 
+Walk types structurally. A function over types dispatches on the kind of each
+node and recurses on what that kind contains; a whole-type equality test like
+`alphaEq` is not a case, and standing one in front of the switch as a fast path
+hides which cases it is answering for. Reach for it only where the structure
+runs out -- at a leaf, or on one invariant argument, where there is nothing to
+recurse into and nothing else to ask.
+
 Local type inference. EVars arise from one place only: instantiating a
 polymorphic callee at an application. Collect constraints on them and solve at
 the end of each argument list: both bounds always, LUB of the lower constraints
 and GLB of the upper ones, defaulting to bottom and to top. A declared bound is
-an upper constraint like any other. Then check the lower bound sits under the
+an upper constraint like any other, and so is the expected type when an
+application is checked rather than inferred -- it says nothing about the
+arguments, but it does say something about the type arguments, which is what
+lets `Nil()` know what it is empty of. Then check the lower bound sits under the
 upper, and pick between them by how the EVar occurs in the application's result
 type -- covariant takes the lower, contravariant the upper, which is what makes
 the answer principal. Occurring both ways, or inside an invariant `TData`
