@@ -38,13 +38,29 @@ import {
   FVar,
   type Level,
   openMany,
-  polarityOf,
+  openWith,
   TBad,
   TFun,
   TNever,
   type Type,
   typeToString,
 } from "./types.ts";
+
+/**
+ * Say that a case cannot arise, and fail loudly if it does.
+ *
+ * For the index lookups the type checker cannot see through: two lists built to
+ * the same length, or an opening reaching no index its binder did not bind.
+ * `?? TBad` would satisfy the compiler equally, and that is the objection --
+ * `TBad` means *an error was reported here*, and spending it on a case where
+ * none was leaves the reader unable to tell the two apart.
+ *
+ * Returns `never`, so it composes with `??` at any type without a type
+ * argument to keep in step.
+ */
+function impossible(what: string): never {
+  throw new Error(`${what}: a case that cannot arise, did`);
+}
 
 export class Checker {
   readonly declarations = new Declarations();
@@ -137,16 +153,35 @@ export class Checker {
     term: Extract<TermNode, { kind: "Abs" }>,
     expected: Type,
   ): Type {
-    const wanted = this.subtyper.expose(expected);
+    // Taken as written -- not exposed. A rigid variable bounded by an arrow is
+    // not an arrow: nothing has type `X <: (Bool) -> Bool` but an `X`, so
+    // promoting to the bound would accept any function of that shape where an
+    // `X` was asked for. Anything but a literal arrow falls through to
+    // infer-and-subsume below, which relates the two in the sound direction.
+    const wanted = expected;
     if (
       wanted.kind !== "TFun" ||
-      wanted.typeParams.length !== term.typeParams.length ||
-      wanted.params.length !== term.params.length
+      wanted.typeParams.length !== term.typeParams.length
     ) {
-      // Not a function of this shape, so there is nothing to push inward.
-      // Inferring instead reports the mismatch *and* any error in the body.
+      // Not a function, or not one quantifying the same variables, so there is
+      // nothing to push inward. Inferring instead reports the mismatch *and*
+      // any error in the body.
       this.#subsume(this.infer(term), expected, term.at);
       return expected;
+    }
+
+    // A parameter list of the wrong length is still pushed inward, the way a
+    // pattern binding too many fields is. The count is the mistake, and the
+    // types of the parameters that do line up are known -- so reporting it and
+    // going on says it once, where inferring instead would tell the author to
+    // annotate every parameter whose type the expected type just supplied.
+    if (wanted.params.length !== term.params.length) {
+      this.#report(
+        `expected ${wanted.params.length} parameter${
+          wanted.params.length === 1 ? "" : "s"
+        }, found ${term.params.length}`,
+        term.at,
+      );
     }
 
     this.context.inScope(() => {
@@ -178,6 +213,9 @@ export class Checker {
         "parameter list",
       );
       for (const [j, param] of term.params.entries()) {
+        // `TBad` for a parameter the expected type does not have: that is the
+        // count just reported, and a bad type keeps the body checkable rather
+        // than failing again at every use of the extra parameter.
         this.#bindParam(param, params[j] ?? TBad);
       }
       this.check(term.body, result);
@@ -287,7 +325,11 @@ export class Checker {
         "parameter list",
       );
       for (const [j, param] of term.params.entries()) {
-        this.#pushBinding(param.name, params[j] ?? TBad);
+        // Built from `term.params` just above, so there is one for each.
+        this.#pushBinding(
+          param.name,
+          params[j] ?? impossible("one type per written parameter"),
+        );
       }
 
       // Applied before closing: an EVar solved inside the body must be gone
@@ -324,11 +366,10 @@ export class Checker {
       const levels = this.context.pushEVarBatch(
         callee.typeParams.map((binder) => binder.hint),
       );
-      const evars: Type[] = [];
+      const evars = callee.typeParams.map((binder, j) =>
+        EVar(levels[j] ?? impossible("a level per type parameter"), binder.hint)
+      );
       for (const [j, binder] of callee.typeParams.entries()) {
-        const level = levels[j];
-        if (level === undefined) continue;
-        evars.push(EVar(level, binder.hint));
         // The declared bound is an upper bound like any other, so it takes part
         // in the `lower <: upper` check rather than being enforced separately.
         //
@@ -336,9 +377,27 @@ export class Checker {
         // member of its own group, so this can never mention a sibling EVar --
         // which `addConstraint` would refuse.
         if (binder.bound.kind !== "TUnknown") {
+          const level = levels[j] ??
+            impossible("a level per type parameter");
           this.context.addConstraint(level, "upper", binder.bound);
         }
       }
+
+      // Opened here, before an argument is looked at: the result does not
+      // depend on them, and opening it is what records each EVar's polarity --
+      // so every entry is fully described from the start rather than gaining a
+      // field partway through. The same type is what the application hands back
+      // once the batch is solved.
+      const result = openWith(callee.result, (j, polarity) => {
+        // Once per occurrence, so a variable standing in two places is noted
+        // twice and the two combine -- which is where `invariant` comes from
+        // when neither occurrence is.
+        this.context.notePolarity(
+          levels[j] ?? impossible("the result binds only this binder"),
+          polarity,
+        );
+        return evars[j] ?? impossible("the result binds only this binder");
+      });
 
       const params = callee.params.map((param) => openMany(param, evars));
       if (term.args.length !== params.length) {
@@ -348,6 +407,12 @@ export class Checker {
           }, found ${term.args.length}`,
           term.at,
         );
+        // The missing arguments are exactly what would have constrained the
+        // type parameters, so every EVar here is already spoken for. Left
+        // unmarked, a call short one argument reports the arity *and* that some
+        // type parameter could not be inferred -- a consequence, not a second
+        // mistake.
+        for (const level of levels) this.context.noteReported(level);
       }
 
       // Left to right, each contributing constraints; nothing is decided until
@@ -358,11 +423,7 @@ export class Checker {
         else this.check(arg, param);
       }
 
-      // Built before solving, not after: which bound an EVar takes depends on
-      // how it occurs *here*, so this is an input to the solver and not only
-      // its output.
-      const result = openMany(callee.result, evars);
-      this.#solveEVars(levels, result, term.at);
+      this.#solveEVars(levels, term.at);
       return this.context.apply(result);
     });
     this.context.assertClosed("application", [result]);
@@ -378,17 +439,16 @@ export class Checker {
    * context a question the caller had already answered -- and would have to
    * treat "not an EVar" as an ordinary answer, which by then it never is.
    *
-   * `result` is the type the application hands back, and the selection between
-   * an EVar's two bounds is read off how it occurs in it. Members of one batch
-   * never depend on each other -- `#constrain` refuses that -- so each is
-   * decided on its own occurrences alone, with no ordering among them to get
-   * right.
+   * Everything else it needs is on the entries: the bounds, and the polarity
+   * `#inferApp` recorded while opening the result. Members of one batch never
+   * depend on each other -- `#constrain` refuses that -- so each is decided on
+   * its own occurrences alone, with no ordering among them to get right.
    *
    * Every failure solves to `TBad`. Checking against a bad type always
    * succeeds, so one uninferable argument does not go on to fail again wherever
    * the result is used.
    */
-  #solveEVars(levels: readonly Level[], result: Type, at: Position): void {
+  #solveEVars(levels: readonly Level[], at: Position): void {
     for (const level of levels) {
       const entry = this.context.evarAt(level);
       if (entry.solution !== undefined) continue;
@@ -397,18 +457,19 @@ export class Checker {
       // bad already and silently: whatever bounds did get through describe a
       // variable the checker has given up on, and solving from them could only
       // report the same mistake a second time under a different name.
-      if (entry.refused) {
+      if (entry.reported) {
         this.context.setSolution(level, TBad);
         continue;
       }
 
-      const solved = this.subtyper.solveEVar(
-        level,
-        polarityOf(level, result),
-      );
+      const solved = this.subtyper.solveEVar(level, entry.polarity);
       switch (solved.kind) {
         case "solved":
-          this.context.setSolution(level, this.context.apply(solved.type));
+          // Stored as it stands. A candidate is built from bounds, and a bound
+          // may not mention a sibling, so there is nothing here an `apply`
+          // could substitute -- and a chain through an *enclosing* batch is
+          // resolved when the solution is read, which is what `apply` is for.
+          this.context.setSolution(level, solved.type);
           break;
         case "unconstrained":
           // Bottom would do, and would even be principal. It is refused all the
@@ -469,7 +530,12 @@ export class Checker {
     }
 
     for (const [j, binder] of callee.typeParams.entries()) {
-      this.#subsume(args[j] ?? TBad, binder.bound, term.at);
+      // The arity mismatch above returns, so there is an argument for each.
+      this.#subsume(
+        args[j] ?? impossible("the arity mismatch above returns"),
+        binder.bound,
+        term.at,
+      );
     }
     // The quantifier is discharged, so what is left is a plain arrow.
     return TFun(
@@ -644,6 +710,9 @@ export class Checker {
     }
     this.#reportDuplicateBinders(pattern.args, "pattern");
     for (const [j, binder] of pattern.args.entries()) {
+      // `TBad` where the pattern binds more than the constructor has: that is
+      // the mismatch just reported, and binding the extras to a bad type keeps
+      // the arm's body checkable rather than failing again inside it.
       this.#pushBinding(binder, fields[j] ?? TBad);
     }
   }

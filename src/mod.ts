@@ -35,64 +35,55 @@ export { Context } from "./core/context.ts";
 import {
   type Diagnostic,
   failed,
-  reportError,
   type Result,
   type Source,
   type Sources,
 } from "./diagnostics/diagnostic.ts";
 import { type Token, tokenize } from "./syntax/lexer.ts";
 import { layout } from "./syntax/layout.ts";
-import { loadSources, scanRequires } from "./syntax/require.ts";
+import { loadSources } from "./syntax/require.ts";
 import type { FileSystem } from "./io/files.ts";
 import { parseProgram } from "./syntax/parser.ts";
 import { checkProgram } from "./core/check.ts";
 import { type Type, typeToString } from "./core/types.ts";
 
 /**
- * Run the whole pipeline over one source file: tokenize, lay out, parse, check.
+ * A filesystem holding exactly `source`, under the path it already carries.
  *
- * Every phase runs to completion and every one reports, but only one of them
- * can end the run. The lexer skips a character it cannot read and layout closes
- * whatever the author left open, so neither has a failing path to branch on;
- * the parse is the first that can come back with nothing, and checking a tree
- * that failed to parse would bury the real error under consequences of it.
+ * Not `memoryFileSystem`, which resolves only *plain* paths -- a `Source`'s
+ * path is a label a diagnostic prints, and `<stdin>` is one. This resolves the
+ * entry whatever it is spelled, and nothing else, which is what a lone source
+ * is: a filesystem of one file.
  *
- * Their `value` is asserted rather than handled. If either grows a way to fail,
- * that is a contract change we want to hear about, where handling it quietly
- * would pass an empty stream on and blame the program for the silence.
- *
- * There is no file system here, so a `#require` cannot be followed. The scan
- * still runs: the lexer skips directive lines on the assumption the walker read
- * them, and without this a required file would vanish without a word.
+ * The text is the lines rejoined, which is exact -- `mkSource` split them, and
+ * splitting the join gives them back. Nothing else is reconstructed, so the
+ * `Source` the walker registers is equal to the one handed in.
  */
-export function checkSource(source: Source): Result<Type> {
-  const diagnostics: Diagnostic[] = [];
+function oneFileSystem(source: Source): FileSystem {
+  const text = source.lines.join("\n");
+  return {
+    resolve: (spec) => spec === source.path ? spec : undefined,
+    read: (path) => path === source.path ? text : undefined,
+  };
+}
 
-  const required = scanRequires(source);
-  diagnostics.push(...required.diagnostics);
-  for (const directive of required.value ?? []) {
-    diagnostics.push(
-      reportError(
-        `cannot require "${directive.spec}": this run has a single source`,
-        directive.at,
-        directive.width,
-      ),
-    );
-  }
-
-  const tokens = tokenize(source);
-  diagnostics.push(...tokens.diagnostics);
-
-  const laid = layout(tokens.value!);
-  diagnostics.push(...laid.diagnostics);
-
-  const program = parseProgram(laid.value!);
-  diagnostics.push(...program.diagnostics);
-  if (program.value === undefined) return failed(diagnostics);
-
-  const checked = checkProgram(program.value);
-  diagnostics.push(...checked.diagnostics);
-  return { value: checked.type, diagnostics };
+/**
+ * Run the whole pipeline over one source, with no filesystem behind it.
+ *
+ * A single source is a filesystem of one file, so this is `checkFiles` over
+ * exactly that -- which is the whole implementation. Nothing about a lone
+ * source differs from a walk that reads one file and finds no directives.
+ *
+ * `#require` is the case that looks like it needs its own handling and does
+ * not. The walker resolves every directive against the filesystem it was
+ * given; here that one refuses everything but the entry, so a directive is
+ * reported as unresolvable, in the walker's words and at the walker's
+ * position. Scanning for directives a second time to say something bespoke
+ * about them is what this avoids -- and with it a second copy of the phase
+ * sequence, which is where the two drifted apart before.
+ */
+export function checkSource(source: Source): Checked {
+  return checkFiles(oneFileSystem(source), source.path);
 }
 
 /**

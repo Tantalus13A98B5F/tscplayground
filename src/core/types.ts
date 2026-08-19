@@ -9,6 +9,12 @@
  * `BVar j`, no telescope reversal. `params` and `result` sit inside the binder;
  * bounds are *parallel*, outside it, so a bound may name an enclosing binder but
  * never one of its own group.
+ *
+ * Variance lives here too, and opening is where it is read: a rule is told the
+ * polarity of every position it fills, so a caller learns where a variable
+ * stood without walking the answer again. `isClosed` threads `depth` the same
+ * way, and `Subtyper`'s avoidance flips direction at the same places -- three
+ * traversals that have to agree about what a position is.
  */
 
 /**
@@ -96,14 +102,59 @@ export function mkTypeParamInfo(hint: string, bound: Type): TypeParamInfo {
 }
 
 /**
+ * Where a variable occurs, by variance. `none` is not-at-all, and is the
+ * identity: a variable occurring nowhere constrains nothing.
+ */
+export type Polarity = "none" | "covariant" | "contravariant" | "invariant";
+
+/** Contravariant positions swap the two directions and fix the other two. */
+function flip(polarity: Polarity): Polarity {
+  if (polarity === "covariant") return "contravariant";
+  if (polarity === "contravariant") return "covariant";
+  return polarity;
+}
+
+/**
+ * Two occurrences of one variable. Disagreeing is what makes it invariant --
+ * neither direction can be widened without breaking the other.
+ */
+export function bothPolarities(left: Polarity, right: Polarity): Polarity {
+  if (left === "none") return right;
+  if (right === "none") return left;
+  return left === right ? left : "invariant";
+}
+
+/**
+ * What an opening puts in a bound variable's place, told the index and *where
+ * it stands*.
+ *
+ * A rule rather than an array because the two things a caller may want at a
+ * variable's position are both things an array cannot express: the replacement
+ * may depend on the polarity of the position, and reaching one may be worth
+ * recording. `#inferApp` does the second -- it learns each EVar's polarity in
+ * the result while putting it there, rather than walking the answer again to
+ * ask -- and a substitution that reads the first is what this is shaped for.
+ *
+ * Called once per *occurrence*, so a variable appearing twice is offered twice,
+ * at each polarity it stands in. A rule that records has to combine them; one
+ * that only replaces need not care.
+ */
+export type OpenRule = (index: number, polarity: Polarity) => Type;
+
+/**
  * Replace the variables of the nearest enclosing binder. A datatype binds its
  * parameters the same way, so instantiating a constructor and a quantifier are
  * one operation.
+ *
+ * `here` is the polarity of the position being rebuilt, threaded exactly as
+ * `isClosed` threads `depth` -- and flipped at the same places `#avoid` swaps
+ * direction on, which is what keeps the two agreeing about what a position is.
  */
 function openAt(
   type: Type,
   depth: number,
-  replacements: readonly Type[],
+  rule: OpenRule,
+  here: Polarity,
 ): Type {
   switch (type.kind) {
     case "TUnknown":
@@ -112,50 +163,63 @@ function openAt(
     case "FVar":
     case "EVar":
       return type;
-    case "BVar": {
+    case "BVar":
       // Bound by a binder inside the one being opened: leave it alone.
-      if (type.index < depth) return type;
-      const replacement = replacements[type.index - depth];
-      // Every caller opens a binder at its own arity, so a miss is a checker
-      // bug rather than a program error -- and answering `TBad` would hide it,
-      // that being the one type checking against anything.
-      if (replacement === undefined) {
-        throw new Error(
-          `open: BVar ${type.index} under ${depth} binders, ` +
-            `but only ${replacements.length} replacements`,
-        );
-      }
-      return replacement;
-    }
+      return type.index < depth ? type : rule(type.index - depth, here);
     case "TFun": {
       // Bounds are parallel, so they stay at `depth`; only what the binder
-      // scopes over -- the parameters and the result -- moves inward.
+      // scopes over -- the parameters and the result -- moves inward. Both
+      // bounds and parameters are contravariant; the result alone is not.
       const inner = depth + type.typeParams.length;
       return TFun(
         type.typeParams.map((b) =>
-          mkTypeParamInfo(b.hint, openAt(b.bound, depth, replacements))
+          mkTypeParamInfo(b.hint, openAt(b.bound, depth, rule, flip(here)))
         ),
-        type.params.map((param) => openAt(param, inner, replacements)),
-        openAt(type.result, inner, replacements),
+        type.params.map((param) => openAt(param, inner, rule, flip(here))),
+        openAt(type.result, inner, rule, here),
       );
     }
     case "TData":
       // Not a binder, but skipping it leaves stale `BVar`s and nothing objects.
+      // Arguments are invariant, and `invariant` survives every flip below it,
+      // so everything inside one is invariant however deep it sits.
       return TData(
         type.name,
-        type.args.map((arg) => openAt(arg, depth, replacements)),
+        type.args.map((arg) => openAt(arg, depth, rule, "invariant")),
       );
   }
 }
 
+/**
+ * Open a binder by rule, reading the whole type as a covariant position.
+ *
+ * The general form. `openMany` is this with a rule that only looks up, which is
+ * every caller that has nothing to learn on the way.
+ */
+export function openWith(type: Type, rule: OpenRule): Type {
+  return openAt(type, 0, rule, "covariant");
+}
+
 /** Instantiate a binder's variables, `BVar j` taking `replacements[j]`. */
 export function openMany(type: Type, replacements: readonly Type[]): Type {
-  return openAt(type, 0, replacements);
+  return openWith(type, (index) => {
+    const replacement = replacements[index];
+    // Every caller opens a binder at its own arity, so a miss is a checker bug
+    // rather than a program error -- and answering `TBad` would hide it, that
+    // being the one type checking against anything.
+    if (replacement === undefined) {
+      throw new Error(
+        `open: BVar ${index} of this binder, but only ` +
+          `${replacements.length} replacements`,
+      );
+    }
+    return replacement;
+  });
 }
 
 /** Sugar for a single-variable binder. */
 export function open(type: Type, replacement: Type): Type {
-  return openAt(type, 0, [replacement]);
+  return openMany(type, [replacement]);
 }
 
 function closeAt(
@@ -244,75 +308,6 @@ export function isClosed(type: Type, levels: number, depth = 0): boolean {
     case "TData":
       return type.args.every((arg) => isClosed(arg, levels, depth));
   }
-}
-
-/**
- * Where a variable occurs, by variance. `none` is not-at-all, and is the
- * identity: a variable occurring nowhere constrains nothing.
- */
-export type Polarity = "none" | "covariant" | "contravariant" | "invariant";
-
-/** Contravariant positions swap the two directions and fix the other two. */
-function flip(polarity: Polarity): Polarity {
-  if (polarity === "covariant") return "contravariant";
-  if (polarity === "contravariant") return "covariant";
-  return polarity;
-}
-
-/**
- * Two occurrences of one variable. Disagreeing is what makes it invariant --
- * neither direction can be widened without breaking the other.
- */
-function bothPolarities(left: Polarity, right: Polarity): Polarity {
-  if (left === "none") return right;
-  if (right === "none") return left;
-  return left === right ? left : "invariant";
-}
-
-function polarityAt(type: Type, level: Level, here: Polarity): Polarity {
-  switch (type.kind) {
-    case "TUnknown":
-    case "TNever":
-    case "TBad":
-    case "BVar":
-      return "none";
-    // Kind-agnostic: levels are one space, so this asks about the *position*
-    // and lets the caller know which kind lives there.
-    case "FVar":
-    case "EVar":
-      return type.level === level ? here : "none";
-    case "TFun": {
-      // Parameters and binder bounds are contravariant, the result covariant --
-      // the same split `#avoid` swaps direction on.
-      const parts = [
-        ...type.typeParams.map((b) => polarityAt(b.bound, level, flip(here))),
-        ...type.params.map((param) => polarityAt(param, level, flip(here))),
-        polarityAt(type.result, level, here),
-      ];
-      return parts.reduce(bothPolarities, "none");
-    }
-    case "TData":
-      // Arguments are invariant, so an occurrence anywhere inside one is
-      // invariant however deep it sits: `invariant` survives every flip.
-      return type.args
-        .map((arg) => polarityAt(arg, level, "invariant"))
-        .reduce(bothPolarities, "none");
-  }
-}
-
-/**
- * How the variable at `level` occurs in `type`, reading the whole type as a
- * covariant position.
- *
- * This is what makes a solution *principal* rather than merely sound. A
- * variable occurring only covariantly can take its lower bound -- the smallest
- * type the constraints admit, and so the most informative result -- while one
- * occurring only contravariantly takes its upper. Occurring both ways, or
- * inside an invariant `TData` argument, no choice is free: the two bounds have
- * to agree.
- */
-export function polarityOf(level: Level, type: Type): Polarity {
-  return polarityAt(type, level, "covariant");
 }
 
 function allPairs(
