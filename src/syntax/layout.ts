@@ -52,6 +52,10 @@
  *   5. A closer ends what layout opened above it, and matches the innermost
  *      delimiter the author wrote -- only that one, since a closer must not
  *      end a construct the author can see.
+ *   6. So does a `,`, when the innermost delimiter is a bracket: it separates
+ *      that bracket's items, so an indented argument ends where the next one
+ *      begins. It does not consume the bracket, and inside a written `{` it is
+ *      an ordinary token, a block's items being separated by `;`.
  */
 
 import {
@@ -246,6 +250,18 @@ export function layout(tokens: readonly Token[]): Result<readonly Token[]> {
         );
       }
     } else {
+      // Rule 6, before the line rules: settled first, the comma is measured
+      // against the bracket it belongs to rather than against the block it
+      // ends, so a leading `,` picks up no separator of its own.
+      if (token.kind === "comma") {
+        const opened = findWrittenOpener();
+        // Everything above it layout opened, so nothing written is reported
+        // unclosed here.
+        if (opened !== undefined && opened.closerKind !== "rbrace") {
+          while (top() !== opened) closeTop(token.at);
+        }
+      }
+
       if (token.first) {
         // Rule 3: settle what this line's first token belongs to.
         const column = firstColumn(token);
