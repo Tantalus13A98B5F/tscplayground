@@ -130,6 +130,35 @@ Deno.test("a closer closes every block opened inside its bracket", () => {
     .toBe("map ( fn ( x : A ) -> { body } ) xs");
 });
 
+Deno.test("a `,` closes an argument, so a lambda may be one of several", () => {
+  // Without rule 6 the comma is swallowed by the first body, taking the second
+  // argument with it: nothing inside a bracket can fall short of a block's
+  // floor, so only the `)` would ever close it.
+  expect(
+    stream(
+      "cond(true,\n  fn () ->\n      hello(),\n  fn () ->\n      world())\n",
+    ),
+  )
+    .toBe(
+      "cond ( true , fn ( ) -> { hello ( ) } , fn ( ) -> { world ( ) } )",
+    );
+
+  // It closes only what layout opened, never the bracket itself.
+  expect(stream("f(g(a,\n    b), c)\n")).toBe("f ( g ( a , b ) , c )");
+});
+
+Deno.test("a `,` opening a line ends the argument above it, and takes no `;`", () => {
+  expect(stream("f(a\n  , fn () ->\n      b\n  , c)\n"))
+    .toBe("f ( a , fn ( ) -> { b } , c )");
+});
+
+Deno.test("a `,` reaches no further than the innermost written opener", () => {
+  // The arms are a block layout opened outside the `(`, so the comma leaves
+  // them alone: it ends items of the bracket it is in and of nothing else.
+  expect(stream("match x with\n| A -> f(p,\n    q)\n| B -> r\n"))
+    .toBe("match x with { | A -> f ( p , q ) | B -> r }");
+});
+
 Deno.test("a closer reaches past what layout opened, and no further", () => {
   // Reaching past a written `(` would end, on the word of one character, a
   // nesting the author can see is not this closer's. So the `]` is dropped and
