@@ -27,20 +27,146 @@ import type { Context } from "./context.ts";
 import {
   allPairs,
   alphaEq,
+  BVar,
   closeFrom,
+  EVar,
+  flip,
   FVar,
+  impossible,
   isClosed,
   type Level,
   mkTypeParamInfo,
   openMany,
   type Polarity,
   TBad,
+  TData,
   TFun,
   TNever,
   TUnknown,
   type Type,
   type TypeParamInfo,
+  type TypePattern,
 } from "./types.ts";
+
+/**
+ * Which way a cast travels, and so which relation it has to satisfy.
+ * `Polarity` without `none`: every position a cast reaches is one it answers
+ * for. Naming them after polarities rather than "up"/"down" is what lets the
+ * cast share `flip` with `openAt`, which is the fourth traversal that has to
+ * agree with the other three about what a position is.
+ */
+export type CastDirection = Exclude<Polarity, "none">;
+
+/**
+ * A cast's answer. Total, the way the relation is total: there is always a
+ * type, and the verdict says whether it was found or stood in.
+ *
+ * `TBad` stands in, and matches every pattern -- so a caller's postcondition,
+ * that what comes back has the shape that was asked for, holds whatever
+ * happened. The verdict is separate because a cast declines for the same three
+ * reasons the relation does, and reporting a spent fuel tank as a mismatch
+ * would blame the program for the checker's limit.
+ */
+export type Cast = {
+  readonly type: Type;
+  readonly verdict: Verdict;
+};
+
+const castFound = (type: Type): Cast => ({ type, verdict: "yes" });
+
+/**
+ * A pattern read back as a type, `<bad>` standing wherever it said nothing,
+ * and a verdict saying whether it had to stand anywhere. One walk, because the
+ * shape is the same either way: building it and asking what had to be invented
+ * are the same question.
+ *
+ * The shape is what makes this worth having. `check` already returns its
+ * expected type after reporting a mismatch -- the position demanded that
+ * shape, and whatever reads the answer was written against it -- so handing
+ * back a bare `<bad>` would throw away what the caller itself supplied. A
+ * `match` is where the difference shows: `List[<bad>]` is still a datatype, so
+ * its arms can be checked for membership and exhaustiveness, where `<bad>` can
+ * only be waved through.
+ *
+ * Nothing is *asserted* by the parts it invents: `<bad>` is the one type that
+ * relates to anything, and none of them can go on to be blamed. That is what
+ * separates this from choosing an arbitrary type, which would report a second
+ * time wherever the choice turned out wrong. What it costs instead is the
+ * verdict, which is the caller's to report.
+ */
+function castComplete(pattern: TypePattern): Cast {
+  switch (pattern.kind) {
+    case "TMissing":
+      return { type: TBad, verdict: "no" };
+    case "TFun": {
+      let verdict: Verdict = "yes";
+      const typeParams: TypeParamInfo[] = [];
+      for (const binder of pattern.typeParams) {
+        const bound = castComplete(binder.bound);
+        verdict = bothVerdicts(verdict, bound.verdict);
+        typeParams.push(mkTypeParamInfo(binder.hint, bound.type));
+      }
+      const params: Type[] = [];
+      for (const param of pattern.params) {
+        const built = castComplete(param);
+        verdict = bothVerdicts(verdict, built.verdict);
+        params.push(built.type);
+      }
+      const result = castComplete(pattern.result);
+      verdict = bothVerdicts(verdict, result.verdict);
+      return { type: TFun(typeParams, params, result.type), verdict };
+    }
+    case "TData": {
+      let verdict: Verdict = "yes";
+      const args: Type[] = [];
+      for (const arg of pattern.args) {
+        const built = castComplete(arg);
+        verdict = bothVerdicts(verdict, built.verdict);
+        args.push(built.type);
+      }
+      return { type: TData(pattern.name, args), verdict };
+    }
+    default:
+      return castFound(completeLeaf(pattern));
+  }
+}
+
+/**
+ * The extreme in a direction: the largest type going down, the smallest going
+ * up. Invariant has none, which is why `#castHead` cannot lift a datatype the
+ * way it lifts a function.
+ */
+const extremeFor = (dir: CastDirection): Type =>
+  dir === "contravariant" ? TUnknown : TNever;
+
+/**
+ * A cast that declined, still answering with the shape that was asked for. The
+ * verdict is the caller's, since a part may decline for a reason `castComplete`
+ * never sees -- a spent fuel tank, or a relation that gave up.
+ */
+const castFailed = (pattern: TypePattern, verdict: Verdict): Cast => ({
+  type: castComplete(pattern).type,
+  verdict,
+});
+
+/**
+ * Two verdicts about parts of one question, as `bothPolarities` combines two
+ * occurrences. Every part has to hold, so the least willing answer wins: a
+ * part that is definitely wrong settles it whatever the others said, and a
+ * limit reached elsewhere is only reported when nothing was actually wrong.
+ */
+const VERDICT_ORDER: readonly Verdict[] = [
+  "yes",
+  "exhausted",
+  "interdependent",
+  "no",
+];
+
+function bothVerdicts(left: Verdict, right: Verdict): Verdict {
+  return VERDICT_ORDER.indexOf(left) >= VERDICT_ORDER.indexOf(right)
+    ? left
+    : right;
+}
 
 /**
  * `no` means the program is wrong; `exhausted` and `interdependent` mean the
@@ -72,6 +198,31 @@ export type EVarMode = "collect" | "probe";
  * a stack overflow cannot be.
  */
 const FUEL = 2000;
+
+/**
+ * A leaf pattern read back as a type. Rebuilt case by case rather than cast:
+ * a leaf has no parts, so nothing in it *could* be missing, but the parameter
+ * does not narrow -- and one honest switch is cheaper than the walk a checked
+ * cast would need to earn.
+ */
+function completeLeaf(
+  pattern: Exclude<TypePattern, { kind: "TFun" | "TData" | "TMissing" }>,
+): Type {
+  switch (pattern.kind) {
+    case "TUnknown":
+      return TUnknown;
+    case "TNever":
+      return TNever;
+    case "TBad":
+      return TBad;
+    case "BVar":
+      return BVar(pattern.index);
+    case "FVar":
+      return FVar(pattern.level, pattern.hint);
+    case "EVar":
+      return EVar(pattern.level, pattern.hint);
+  }
+}
 
 export class Subtyper {
   #fuel: number;
@@ -565,6 +716,272 @@ export class Subtyper {
     if (s.kind === "EVar" && t.kind === "EVar" && s.level === t.level) return s;
     if (s.kind === "BVar" && t.kind === "BVar" && s.index === t.index) return s;
     return TNever;
+  }
+
+  // ------------------------------------------------------------------- casts
+
+  /**
+   * The least supertype of `type` matching `pattern`. This is how a checking
+   * rule learns what it asked for: the pattern says the shape, the type says
+   * the content, and the cast is the nearest thing that is both.
+   */
+  upcast(type: Type, pattern: TypePattern): Cast {
+    return this.#query("probe", () => this.#cast(type, pattern, "covariant"));
+  }
+
+  /** The greatest subtype of `type` matching `pattern`. Dual to `upcast`. */
+  downcast(type: Type, pattern: TypePattern): Cast {
+    return this.#query(
+      "probe",
+      () => this.#cast(type, pattern, "contravariant"),
+    );
+  }
+
+  /**
+   * The type equivalent to `type` and matching `pattern`. Neither of the other
+   * two: an invariant position may not move at all, so this can only read
+   * missing parts off `type` and check that everything written agrees.
+   *
+   * A third direction, and not a composition of the other two. A datatype
+   * argument is invariant, so a cast has to recurse into it *somehow* --
+   * `downcast(List[(Bool) -> Bool], List[(?) -> Bool])` has an answer, and it
+   * is found by filling the argument's missing part from the type without
+   * moving. Neither `upcast` nor `downcast` may be used there, since either
+   * would be free to move at a position where movement is unsound; and
+   * stopping at alpha-equality would call the pattern unmatched whenever it
+   * held a missing part, which is the case that matters.
+   */
+  exactcast(type: Type, pattern: TypePattern): Cast {
+    return this.#query("probe", () => this.#cast(type, pattern, "invariant"));
+  }
+
+  /**
+   * Walks the *pattern*, since the pattern says which shape is wanted, and
+   * asks `type` to keep up.
+   *
+   * Nothing here fails outright. A part that cannot be cast contributes the
+   * shape that was asked for with `<bad>` in it and a verdict saying so, and
+   * the walk carries on -- so a mismatched parameter costs the parameter and
+   * not the result beside it. The verdicts combine, and the caller reports
+   * once, since a type carries no position to report a part at.
+   */
+  #cast(type: Type, pattern: TypePattern, dir: CastDirection): Cast {
+    if (this.#fuel-- <= 0) return castFailed(pattern, "exhausted");
+    // Same invariant the relation asks about, and for the same reason: what
+    // stands here has to be a variable still open, not the shadow of one
+    // already decided.
+    this.#assertUnsolved(type);
+
+    // A report already stands, so a bad type satisfies any demand -- and it
+    // answers with the demanded shape for the same reason a declined cast
+    // does. A tree is never failed twice for one mistake. Before the switch
+    // because it holds whatever was asked for.
+    //
+    // Only the type is taken from `castComplete`, never its verdict: filling a
+    // missing part here invents nothing, since what stands there is already
+    // bad. That is the whole difference from lifting an extreme, where the
+    // same filling is a choice and does cost the verdict.
+    if (type.kind === "TBad") return castFound(castComplete(pattern).type);
+
+    // Three kinds of demand, and the pattern is what says which. Nothing is
+    // read off `type` until the demand is known, which is what keeps a rule
+    // meant for one kind from running in front of another.
+    switch (pattern.kind) {
+      // Nothing demanded, so nothing moves -- whatever stands there is the
+      // answer. Also the only case that reads content out of `type`, which is
+      // how an invariant position, unable to move at all, still answers.
+      case "TMissing":
+        return castFound(type);
+
+      // A shape is demanded. Only here may `type` be moved to produce one, and
+      // both ways of moving it live in `#castHead`.
+      case "TFun": {
+        const head = this.#castHead(type, pattern, dir);
+        const from = head.type;
+        if (
+          from.kind !== "TFun" ||
+          from.typeParams.length !== pattern.typeParams.length ||
+          from.params.length !== pattern.params.length
+        ) {
+          return castFailed(pattern, "no");
+        }
+        const built = this.#castFun(from, pattern, dir);
+        return {
+          type: built.type,
+          verdict: bothVerdicts(head.verdict, built.verdict),
+        };
+      }
+
+      case "TData": {
+        const head = this.#castHead(type, pattern, dir);
+        const from = head.type;
+        if (
+          from.kind !== "TData" || from.name !== pattern.name ||
+          from.args.length !== pattern.args.length
+        ) {
+          return castFailed(pattern, "no");
+        }
+        // Arguments are invariant however deep they sit, which is what
+        // `openAt` says by passing `invariant` here and never flipping out of
+        // it again.
+        //
+        // The head's verdict is folded in rather than returned on, and the
+        // walk runs over every argument even when the head already filled
+        // one. Re-entering a filled argument costs nothing and changes
+        // nothing -- `<bad>` is absorbing, so the rule at the top of `#cast`
+        // hands back the same `<bad>` it was given. Returning early instead
+        // would be assuming the head had filled the argument list *whole*,
+        // which is true only while every argument is invariant.
+        let verdict: Verdict = head.verdict;
+        const args: Type[] = [];
+        for (const [i, want] of pattern.args.entries()) {
+          const mine = from.args[i] ?? impossible("an argument per argument");
+          const arg = this.#cast(mine, want, "invariant");
+          verdict = bothVerdicts(verdict, arg.verdict);
+          args.push(arg.type);
+        }
+        return { type: TData(from.name, args), verdict };
+      }
+
+      // A leaf is demanded, written in full, so it matches only itself: the
+      // answer is the leaf and the whole question is whether `type` reaches it
+      // in this direction. That is the relation's question, and it is left
+      // whole -- the relation promotes a variable on its own, and knows
+      // `X <: X`, which moving `type` first would lose.
+      //
+      // `default` rather than six arms, and it is not a hole: `completeLeaf`
+      // enumerates the same six with no default of its own, so a new kind of
+      // type stops the compiler there.
+      default: {
+        const leaf = completeLeaf(pattern);
+        const verdict = dir === "covariant"
+          ? this.#subtype(type, leaf)
+          : dir === "contravariant"
+          ? this.#subtype(leaf, type)
+          : this.#equiv(type, leaf);
+        return verdict === "yes"
+          ? castFound(leaf)
+          : castFailed(pattern, verdict);
+      }
+    }
+  }
+
+  /**
+   * What `type` offers when a shape is wanted, as a type the shape cases can
+   * take apart -- so every way of getting there ends in the same structural
+   * walk, and there is no second traversal to keep in step with this one.
+   *
+   * A variable has no shape of its own. Going up it stands aside for its
+   * bound, sound because the bound is a supertype, the same promotion `#join`
+   * makes; going down or standing still it may not, and nothing else reaches a
+   * variable from below, so it is handed on unchanged and fails the shape test
+   * it cannot meet.
+   *
+   * Top going down and bottom going up have no head either, but for the
+   * opposite reason: everything is below top and above bottom, so the left
+   * says nothing at all and the pattern alone decides. There the extreme is
+   * *lifted* into the shape the pattern asks for, one level deep, and the
+   * ordinary walk fills the rest -- lifting again wherever it meets the
+   * extreme further in.
+   */
+  #castHead(
+    type: Type,
+    pattern: Extract<TypePattern, { kind: "TFun" | "TData" }>,
+    dir: CastDirection,
+  ): Cast {
+    if (type.kind === "FVar" && dir === "covariant") {
+      return this.#castHead(
+        this.context.upperBoundAt(type.level),
+        pattern,
+        dir,
+      );
+    }
+    if (
+      !((type.kind === "TUnknown" && dir === "contravariant") ||
+        (type.kind === "TNever" && dir === "covariant"))
+    ) {
+      return castFound(type);
+    }
+
+    // A function's parts have variance, so each has an extreme of its own and
+    // the lift is total: the greatest arrow takes the smallest parameters and
+    // the largest result, and the walk that follows lifts again wherever it
+    // meets an extreme further in.
+    if (pattern.kind === "TFun") {
+      const inner = extremeFor(flip(dir));
+      return castFound(TFun(
+        pattern.typeParams.map((b) => mkTypeParamInfo(b.hint, inner)),
+        pattern.params.map(() => inner),
+        extremeFor(dir),
+      ));
+    }
+
+    // A datatype's arguments do not: nothing is greatest among the types a
+    // `List` can be of, so there is no greatest `List`. The shape is lifted
+    // all the same -- `MutList[Sing[?]]` still comes back as
+    // `MutList[Sing[<bad>]]`, and a `match` on that has a datatype to work
+    // with. What the invariance costs is the verdict, which `castComplete`
+    // withholds exactly when something had to be invented. The gap `#avoid`
+    // names when it says an invariant argument cannot be touched at all.
+    return castComplete(pattern);
+  }
+
+  /**
+   * Both binders are opened under one group of fresh variables, the way
+   * `#latticeFun` and `#subtypeFun` open theirs. Comparing the two under their
+   * indices instead would leave a parameter standing at a `BVar`, which has no
+   * bound to read -- so a pattern asking a quantified parameter for a shape
+   * could never be answered, however tightly the binder bounded it.
+   */
+  #castFun(
+    type: Extract<Type, { kind: "TFun" }>,
+    pattern: Extract<TypePattern, { kind: "TFun" }>,
+    dir: CastDirection,
+  ): Cast {
+    const inner = flip(dir);
+    return this.context.inScope((mark) => {
+      let verdict: Verdict = "yes";
+
+      // Bounds are parallel -- they read in the enclosing scope -- so they are
+      // cast before anything is pushed, and need no closing after. They are
+      // contravariant, like the parameters.
+      const typeParams: TypeParamInfo[] = [];
+      for (const [j, want] of pattern.typeParams.entries()) {
+        const mine = type.typeParams[j] ?? impossible("a binder per binder");
+        const bound = this.#cast(mine.bound, want.bound, inner);
+        verdict = bothVerdicts(verdict, bound.verdict);
+        // The hint is print-only, and the pattern's is the one an author wrote
+        // when there was an annotation to write it in.
+        typeParams.push(mkTypeParamInfo(want.hint, bound.type));
+      }
+
+      const opened = typeParams.map((binder) =>
+        FVar(this.context.pushTypeVar(binder.bound, binder.hint), binder.hint)
+      );
+
+      const params: Type[] = [];
+      for (const [i, want] of pattern.params.entries()) {
+        const mine = type.params[i] ?? impossible("a parameter per parameter");
+        const param = this.#cast(
+          openMany(mine, opened),
+          openMany<number>(want, opened),
+          inner,
+        );
+        verdict = bothVerdicts(verdict, param.verdict);
+        params.push(closeFrom(param.type, mark));
+      }
+
+      const result = this.#cast(
+        openMany(type.result, opened),
+        openMany<number>(pattern.result, opened),
+        dir,
+      );
+      verdict = bothVerdicts(verdict, result.verdict);
+      return {
+        type: TFun(typeParams, params, closeFrom(result.type, mark)),
+        verdict,
+      };
+    });
   }
 
   /** `#join` when `up`, `#meet` otherwise -- so one arrow case serves both. */

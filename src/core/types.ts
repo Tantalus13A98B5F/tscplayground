@@ -30,6 +30,22 @@ export type Level = number & { readonly __brand: "Level" };
 export type DataName = string & { readonly __brand: "DataName" };
 
 export const mkLevel = (n: number): Level => n as Level;
+
+/**
+ * Say that a case cannot arise, and fail loudly if it does.
+ *
+ * For the index lookups the type checker cannot see through: two lists built to
+ * the same length, or an opening reaching no index its binder did not bind.
+ * `?? TBad` would satisfy the compiler equally, and that is the objection --
+ * `TBad` means *an error was reported here*, and spending it on a case where
+ * none was leaves the reader unable to tell the two apart.
+ *
+ * Returns `never`, so it composes with `??` at any type without a type
+ * argument to keep in step.
+ */
+export function impossible(what: string): never {
+  throw new Error(`${what}: a case that cannot arise, did`);
+}
 export const mkDataName = (s: string): DataName => s as DataName;
 
 /**
@@ -37,12 +53,35 @@ export const mkDataName = (s: string): DataName => s as DataName;
  * variable itself is an index -- which is what distinguishes this from the
  * surface `BindingIdent`, whose text is a name something resolves against.
  */
-export type TypeParamInfo = {
+export type TypeParamInfoMaybe<M> = {
   readonly hint: string;
-  readonly bound: Type;
+  readonly bound: TypeMaybe<M>;
 };
 
-export type Type =
+export type TypeParamInfo = TypeParamInfoMaybe<never>;
+
+/**
+ * The `TMissing` case, present only when `M` is inhabited. The conditional is
+ * distributive, and distributing over `never` yields `never` -- so the case is
+ * not merely uninhabitable at `TypeMaybe<never>`, it is *gone*, and a walk over
+ * a complete type neither needs an arm for it nor is allowed one.
+ */
+type MissingPart<M> = M extends never ? never
+  : { readonly kind: "TMissing" };
+
+/**
+ * A type, or a *pattern* -- a type with parts not yet supplied. `M` says
+ * whether a missing part is possible, and the two instantiations are the names
+ * anyone reads: `Type` and `TypePattern`.
+ *
+ * Since arrays here are `readonly` and so covariant, a complete type flows into
+ * a pattern position with no coercion, which is the direction that matters --
+ * subtyping and constraint solving take complete types only, and the compiler
+ * is what says so. The reverse does not narrow: excluding `kind === "TMissing"`
+ * does not change the parameter, so going from a pattern to a type is a walk
+ * and a checked cast, not a test.
+ */
+export type TypeMaybe<M> =
   | { readonly kind: "TUnknown" } // Top
   | { readonly kind: "TNever" } // Bottom
   | { readonly kind: "TBad" } // failure to resolve, can be used arbitrarily
@@ -57,16 +96,25 @@ export type Type =
    */
   | {
     readonly kind: "TFun";
-    readonly typeParams: readonly TypeParamInfo[];
-    readonly params: readonly Type[];
-    readonly result: Type;
+    readonly typeParams: readonly TypeParamInfoMaybe<M>[];
+    readonly params: readonly TypeMaybe<M>[];
+    readonly result: TypeMaybe<M>;
   }
   /** Saturated nominal constructor. Primitives are the nullary case. */
   | {
     readonly kind: "TData";
     readonly name: DataName;
-    readonly args: readonly Type[];
-  };
+    readonly args: readonly TypeMaybe<M>[];
+  }
+  | MissingPart<M>;
+
+/** A complete type: every part supplied. */
+export type Type = TypeMaybe<never>;
+
+/** A type with parts not yet supplied. What a checking rule pushes inward. */
+export type TypePattern = TypeMaybe<number>;
+
+export const TMissing: TypePattern = { kind: "TMissing" };
 
 export const TUnknown: Type = { kind: "TUnknown" };
 export const TNever: Type = { kind: "TNever" };
@@ -84,20 +132,31 @@ export function EVar(level: Level, hint: string): Type {
   return { kind: "EVar", level, hint };
 }
 
-/** Pass an empty `typeParams` for the monomorphic arrow. */
-export function TFun(
-  typeParams: readonly TypeParamInfo[],
-  params: readonly Type[],
-  result: Type,
-): Type {
+/**
+ * Pass an empty `typeParams` for the monomorphic arrow.
+ *
+ * Generic in `M` so that building from patterns gives a pattern and building
+ * from types gives a type, without two constructors that differ only there.
+ */
+export function TFun<M = never>(
+  typeParams: readonly TypeParamInfoMaybe<M>[],
+  params: readonly TypeMaybe<M>[],
+  result: TypeMaybe<M>,
+): TypeMaybe<M> {
   return { kind: "TFun", typeParams, params, result };
 }
 
-export function TData(name: DataName, args: readonly Type[] = []): Type {
+export function TData<M = never>(
+  name: DataName,
+  args: readonly TypeMaybe<M>[] = [],
+): TypeMaybe<M> {
   return { kind: "TData", name, args };
 }
 
-export function mkTypeParamInfo(hint: string, bound: Type): TypeParamInfo {
+export function mkTypeParamInfo<M = never>(
+  hint: string,
+  bound: TypeMaybe<M>,
+): TypeParamInfoMaybe<M> {
   return { hint, bound };
 }
 
@@ -107,11 +166,20 @@ export function mkTypeParamInfo(hint: string, bound: Type): TypeParamInfo {
  */
 export type Polarity = "none" | "covariant" | "contravariant" | "invariant";
 
+/**
+ * `flip` at the type level, so a caller that started from a narrower set of
+ * polarities gets one back. A cast travels in a direction and has to keep
+ * knowing it is not `none`.
+ */
+export type Flip<P extends Polarity> = P extends "covariant" ? "contravariant"
+  : P extends "contravariant" ? "covariant"
+  : P;
+
 /** Contravariant positions swap the two directions and fix the other two. */
-function flip(polarity: Polarity): Polarity {
-  if (polarity === "covariant") return "contravariant";
-  if (polarity === "contravariant") return "covariant";
-  return polarity;
+export function flip<P extends Polarity>(polarity: P): Flip<P> {
+  if (polarity === "covariant") return "contravariant" as Flip<P>;
+  if (polarity === "contravariant") return "covariant" as Flip<P>;
+  return polarity as Flip<P>;
 }
 
 /**
@@ -139,7 +207,10 @@ export function bothPolarities(left: Polarity, right: Polarity): Polarity {
  * at each polarity it stands in. A rule that records has to combine them; one
  * that only replaces need not care.
  */
-export type OpenRule = (index: number, polarity: Polarity) => Type;
+export type OpenRule<M = never> = (
+  index: number,
+  polarity: Polarity,
+) => TypeMaybe<M>;
 
 /**
  * Replace the variables of the nearest enclosing binder. A datatype binds its
@@ -150,16 +221,17 @@ export type OpenRule = (index: number, polarity: Polarity) => Type;
  * `isClosed` threads `depth` -- and flipped at the same places `#avoid` swaps
  * direction on, which is what keeps the two agreeing about what a position is.
  */
-function openAt(
-  type: Type,
+function openAt<M>(
+  type: TypeMaybe<M>,
   depth: number,
-  rule: OpenRule,
+  rule: OpenRule<M>,
   here: Polarity,
-): Type {
+): TypeMaybe<M> {
   switch (type.kind) {
     case "TUnknown":
     case "TNever":
     case "TBad":
+    case "TMissing":
     case "FVar":
     case "EVar":
       return type;
@@ -196,13 +268,19 @@ function openAt(
  * The general form. `openMany` is this with a rule that only looks up, which is
  * every caller that has nothing to learn on the way.
  */
-export function openWith(type: Type, rule: OpenRule): Type {
+export function openWith<M = never>(
+  type: TypeMaybe<M>,
+  rule: OpenRule<M>,
+): TypeMaybe<M> {
   return openAt(type, 0, rule, "covariant");
 }
 
 /** Instantiate a binder's variables, `BVar j` taking `replacements[j]`. */
-export function openMany(type: Type, replacements: readonly Type[]): Type {
-  return openWith(type, (index) => {
+export function openMany<M = never>(
+  type: TypeMaybe<M>,
+  replacements: readonly TypeMaybe<M>[],
+): TypeMaybe<M> {
+  return openWith<M>(type, (index) => {
     const replacement = replacements[index];
     // Every caller opens a binder at its own arity, so a miss is a checker bug
     // rather than a program error -- and answering `TBad` would hide it, that
@@ -218,19 +296,23 @@ export function openMany(type: Type, replacements: readonly Type[]): Type {
 }
 
 /** Sugar for a single-variable binder. */
-export function open(type: Type, replacement: Type): Type {
+export function open<M = never>(
+  type: TypeMaybe<M>,
+  replacement: TypeMaybe<M>,
+): TypeMaybe<M> {
   return openMany(type, [replacement]);
 }
 
-function closeAt(
-  type: Type,
+function closeAt<M>(
+  type: TypeMaybe<M>,
   depth: number,
   mark: number,
-): Type {
+): TypeMaybe<M> {
   switch (type.kind) {
     case "TUnknown":
     case "TNever":
     case "TBad":
+    case "TMissing":
     case "BVar":
     case "EVar":
       return type;
@@ -267,7 +349,10 @@ function closeAt(
  * exactly what it pushed at `mark`, and an `FVar` names a type variable, never
  * one of the term variables a caller may have pushed on top of the group.
  */
-export function closeFrom(type: Type, mark: number): Type {
+export function closeFrom<M = never>(
+  type: TypeMaybe<M>,
+  mark: number,
+): TypeMaybe<M> {
   return closeAt(type, 0, mark);
 }
 
@@ -286,11 +371,18 @@ export function closeFrom(type: Type, mark: number): Type {
  * `truncate` to `mark` may mention a level `>= mark`. It is also exactly the
  * escape check `setSolution` needs, so both rest on one traversal.
  */
-export function isClosed(type: Type, levels: number, depth = 0): boolean {
+export function isClosed<M>(
+  type: TypeMaybe<M>,
+  levels: number,
+  depth = 0,
+): boolean {
   switch (type.kind) {
     case "TUnknown":
     case "TNever":
     case "TBad":
+    // A missing part binds nothing and names nothing, so it is closed under
+    // anything -- it is a leaf that happens to have no content at all.
+    case "TMissing":
       return true;
     case "BVar":
       return type.index < depth;
@@ -314,10 +406,10 @@ export function isClosed(type: Type, levels: number, depth = 0): boolean {
  * Whether two lists relate elementwise. Separate from any one relation because
  * the length check and the missing-element guard are the same every time.
  */
-export function allPairs(
-  left: readonly Type[],
-  right: readonly Type[],
-  relate: (a: Type, b: Type) => boolean,
+export function allPairs<A, B>(
+  left: readonly A[],
+  right: readonly B[],
+  relate: (a: A, b: B) => boolean,
 ): boolean {
   return left.length === right.length && left.every((item, i) => {
     const other = right[i];
@@ -326,11 +418,17 @@ export function allPairs(
 }
 
 /** Alpha-equivalence, free because bound variables are indices. */
-export function alphaEq(left: Type, right: Type): boolean {
+export function alphaEq<M>(
+  left: TypeMaybe<M>,
+  right: TypeMaybe<M>,
+): boolean {
   switch (left.kind) {
     case "TUnknown":
     case "TNever":
     case "TBad":
+    // Two missing parts are equal as *patterns*, which says nothing about the
+    // types that will fill them. Only a pattern is ever compared this way.
+    case "TMissing":
       return right.kind === left.kind;
     case "BVar":
       return right.kind === "BVar" && left.index === right.index;
@@ -355,10 +453,15 @@ export function alphaEq(left: Type, right: Type): boolean {
   }
 }
 
-function toStringAt(type: Type, names: readonly string[]): string {
+function toStringAt<M>(
+  type: TypeMaybe<M>,
+  names: readonly string[],
+): string {
   switch (type.kind) {
     case "TUnknown":
       return "unknown";
+    case "TMissing":
+      return "?";
     case "TNever":
       return "never";
     case "TBad":
@@ -401,6 +504,6 @@ function toStringAt(type: Type, names: readonly string[]): string {
 }
 
 /** Render using the name hints carried on binders. */
-export function typeToString(type: Type): string {
+export function typeToString<M>(type: TypeMaybe<M>): string {
   return toStringAt(type, []);
 }
