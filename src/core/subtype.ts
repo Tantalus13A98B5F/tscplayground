@@ -236,28 +236,34 @@ export class Subtyper {
    * Mutual subtyping: what an invariant position demands. A datatype argument
    * today, a reference cell later -- one answer, so the two cannot drift.
    *
-   * `alphaEq` first, and it is not a gamble. Only two things are equivalent
-   * here without being alpha-equivalent, and neither is really a type: `TBad`,
-   * which relates to everything because a report already stands, and an
-   * unsolved EVar, which records a bound instead of answering -- so
-   * `Ref[?a] <: Ref[Int]` has to reach `#subtype` twice to leave ?a bounded on
-   * both sides. Everything built over those inherits it. Between types the
-   * author actually wrote, mutual subtyping *is* alpha equivalence: the
-   * variance rules take arrows and datatypes apart componentwise, and at the
-   * leaves a variable is only equivalent to itself, since nothing promotes back
-   * to a variable from its bound.
+   * `alphaEq` first, as a fast path and nothing more: it answers "yes" or says
+   * nothing, so the relation still decides every pair it turns down. It earns
+   * its walk because skipping it costs `2^depth` on a nest compared with
+   * itself -- each level would relate its pair twice.
    *
-   * So the test fails only where a hole or an error marker stands in the way,
-   * which is exactly where the two relations are needed for their effects. It
-   * costs one extra walk there, bounded by the smaller type; skipping it costs
-   * `2^depth` on every nest compared with itself, since each level would relate
-   * its pair twice.
+   * It is not a decision procedure for this, and the difference is wider than
+   * holes. `TBad` relates to everything because a report already stands, and an
+   * unsolved EVar records a bound instead of answering -- so `Ref[?a] <:
+   * Ref[Int]` has to reach `#subtype` twice to leave ?a bounded on both sides.
+   * But bottom makes it wider still: a variable bounded by `never` promotes to
+   * it, and `never` is under everything, so such a variable is equivalent to
+   * `never` and to every other one of its kind. Two names the author wrote
+   * apart can be the same type, and only the relation sees it.
    */
   #equiv(s: Type, t: Type): Verdict {
     if (alphaEq(s, t)) return "yes";
     const there = this.#subtype(s, t);
     if (there !== "yes") return there;
     return this.#subtype(t, s);
+  }
+
+  /**
+   * Elementwise equivalence of two argument lists. The lattice wants a boolean
+   * where `#subtype` wants a verdict: "exhausted" there means the two could not
+   * be shown equal, which is what the caller does with "no" as well.
+   */
+  #equivArgs(s: readonly Type[], t: readonly Type[]): boolean {
+    return allPairs(s, t, (a, b) => this.#equiv(a, b) === "yes");
   }
 
   #subtypeFun(
@@ -498,10 +504,11 @@ export class Subtyper {
 
     // Datatypes are nominal and their arguments invariant, so there is no
     // structure left to walk: either the two are the same type or they have
-    // nothing above them but top. This is the one place a lattice operation
-    // falls back on alpha-equality, and the only place it can.
+    // nothing above them but top. Invariance asks `#equiv` and not `alphaEq`,
+    // since a `never`-bounded variable is equivalent to types it is not
+    // spelled like -- and the probe keeps that question from recording.
     if (s.kind === "TData" && t.kind === "TData") {
-      return s.name === t.name && allPairs(s.args, t.args, alphaEq)
+      return s.name === t.name && this.#equivArgs(s.args, t.args)
         ? s
         : TUnknown;
     }
@@ -549,12 +556,10 @@ export class Subtyper {
       return this.#latticeFun(s, t, false) ?? TNever;
     }
 
-    // Dual to `#join`: invariance leaves alpha-equality as the only question
-    // to ask about two datatypes, and nothing below.
+    // Dual to `#join`: invariance leaves equivalence as the only question to
+    // ask about two datatypes, and nothing below.
     if (s.kind === "TData" && t.kind === "TData") {
-      return s.name === t.name && allPairs(s.args, t.args, alphaEq)
-        ? s
-        : TNever;
+      return s.name === t.name && this.#equivArgs(s.args, t.args) ? s : TNever;
     }
 
     if (s.kind === "EVar" && t.kind === "EVar" && s.level === t.level) return s;
