@@ -36,6 +36,7 @@ import {
   closeFrom,
   EVar,
   FVar,
+  impossible,
   type Level,
   openMany,
   openWith,
@@ -45,22 +46,6 @@ import {
   type Type,
   typeToString,
 } from "./types.ts";
-
-/**
- * Say that a case cannot arise, and fail loudly if it does.
- *
- * For the index lookups the type checker cannot see through: two lists built to
- * the same length, or an opening reaching no index its binder did not bind.
- * `?? TBad` would satisfy the compiler equally, and that is the objection --
- * `TBad` means *an error was reported here*, and spending it on a case where
- * none was leaves the reader unable to tell the two apart.
- *
- * Returns `never`, so it composes with `??` at any type without a type
- * argument to keep in step.
- */
-function impossible(what: string): never {
-  throw new Error(`${what}: a case that cannot arise, did`);
-}
 
 export class Checker {
   readonly declarations = new Declarations();

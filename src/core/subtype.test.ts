@@ -1,6 +1,6 @@
 import { expect } from "@std/expect";
 import { Context } from "./context.ts";
-import { Subtyper } from "./subtype.ts";
+import { type Cast, Subtyper } from "./subtype.ts";
 import {
   BVar,
   EVar,
@@ -11,11 +11,25 @@ import {
   TBad,
   TData,
   TFun,
+  TMissing,
   TNever,
   TUnknown,
   type Type,
+  type TypePattern,
   typeToString,
 } from "./types.ts";
+
+const ListP = (arg: TypePattern) => TData(mkDataName("List"), [arg]);
+const fnP = (params: readonly TypePattern[], result: TypePattern) =>
+  TFun([], params, result);
+
+/**
+ * A cast's answer, or `<none>` when it declined -- which reads better in a
+ * table of results than the `<bad>` that stands in for it.
+ */
+function castToString(cast: Cast): string {
+  return cast.verdict === "yes" ? typeToString(cast.type) : "<none>";
+}
 
 const Bool = TData(mkDataName("Bool"));
 const Int = TData(mkDataName("Int"));
@@ -522,4 +536,269 @@ Deno.test("an EVar of an enclosing batch is an ordinary dependency", () => {
 
   expect(sub.isSubtype(EVar(outer, "A"), EVar(inner, "B"))).toBe("yes");
   expect(context.evarAt(inner).lower.map(typeToString)).toEqual(["?A"]);
+});
+
+Deno.test("a missing part takes whatever the type has there", () => {
+  const { sub } = fixture();
+  expect(castToString(sub.upcast(Bool, TMissing))).toBe("Bool");
+  expect(castToString(sub.downcast(Bool, TMissing))).toBe("Bool");
+  expect(castToString(sub.exactcast(Bool, TMissing))).toBe("Bool");
+});
+
+Deno.test("a written pattern matches only itself, and the direction decides", () => {
+  const { sub } = fixture();
+  // `Bool <: unknown`, so `unknown` is reachable going up but not down.
+  expect(castToString(sub.upcast(Bool, TUnknown))).toBe("unknown");
+  expect(castToString(sub.downcast(Bool, TUnknown))).toBe("<none>");
+  expect(castToString(sub.downcast(TUnknown, Bool))).toBe("Bool");
+  expect(castToString(sub.upcast(Bool, Int))).toBe("<none>");
+});
+
+Deno.test("a cast fills a function pointwise, flipping at the parameters", () => {
+  const { sub } = fixture();
+  const idish = fn([Bool], Bool);
+  expect(castToString(sub.upcast(idish, fnP([TMissing], TMissing))))
+    .toBe("Bool -> Bool");
+  // Nothing on the left, so the pattern alone decides: least going up means
+  // the smallest result and -- parameters being contravariant -- the largest
+  // parameter.
+  expect(castToString(sub.upcast(TNever, fnP([TMissing], TMissing))))
+    .toBe("unknown -> never");
+  expect(castToString(sub.downcast(TUnknown, fnP([TMissing], TMissing))))
+    .toBe("never -> unknown");
+});
+
+Deno.test("an invariant cast is not either of the other two", () => {
+  // The case that makes the third direction necessary. A datatype argument is
+  // invariant, so recursing into it may not move -- but it must still recurse,
+  // since the argument pattern has a missing part to fill from the type.
+  const { sub } = fixture();
+  const listOfId = List(fn([Bool], Bool));
+  expect(castToString(sub.downcast(listOfId, ListP(fnP([TMissing], Bool)))))
+    .toBe("List[Bool -> Bool]");
+  expect(castToString(sub.upcast(listOfId, ListP(fnP([Bool], TMissing)))))
+    .toBe("List[Bool -> Bool]");
+  // Written and disagreeing: invariance has nowhere to go.
+  expect(castToString(sub.upcast(listOfId, ListP(fnP([TMissing], Int)))))
+    .toBe("<none>");
+});
+
+Deno.test("an invariant missing part costs the verdict, not the answer", () => {
+  // Nothing is greatest among the types a `List` can be of, so an extreme
+  // lifted into one has to invent the argument. The shape is still built and
+  // handed back -- so a `match` on it has a datatype to work with -- but it is
+  // a stand-in, and must not read as a success.
+  const { sub } = fixture();
+  const lifted = sub.upcast(TNever, ListP(TMissing));
+  expect(lifted.verdict).toBe("no");
+  expect(typeToString(lifted.type)).toBe("List[<bad>]");
+
+  // Nested, the walk fills the rest of the shape rather than stopping at the
+  // first invented argument.
+  const nested = sub.upcast(TNever, ListP(ListP(TMissing)));
+  expect(nested.verdict).toBe("no");
+  expect(typeToString(nested.type)).toBe("List[List[<bad>]]");
+
+  // With every argument written there is nothing to invent, so the same lift
+  // is an answer.
+  expect(castToString(sub.downcast(TUnknown, ListP(Bool)))).toBe("List[Bool]");
+  expect(castToString(sub.upcast(TNever, ListP(Bool)))).toBe("List[Bool]");
+});
+
+Deno.test("a variable stands aside for its bound going up, and not down", () => {
+  const { context, sub } = fixture();
+  const X = context.pushTypeVar(fn([Bool], Bool), "X");
+  const x = FVar(X, "X");
+  expect(castToString(sub.upcast(x, fnP([TMissing], TMissing))))
+    .toBe("Bool -> Bool");
+  // Nothing structural sits under a variable, so there is no answer below it
+  // -- and inventing one from the pattern would build a type not under `X`.
+  expect(castToString(sub.downcast(x, fnP([TMissing], TMissing))))
+    .toBe("<none>");
+  expect(castToString(sub.exactcast(x, fnP([TMissing], TMissing))))
+    .toBe("<none>");
+  // Itself, whichever way.
+  expect(castToString(sub.downcast(x, TMissing))).toBe("X");
+});
+
+Deno.test("an unbounded variable has no function above it either", () => {
+  const { context, sub } = fixture();
+  const X = context.pushTypeVar(TUnknown, "X");
+  expect(castToString(sub.upcast(FVar(X, "X"), fnP([TMissing], TMissing))))
+    .toBe("<none>");
+});
+
+Deno.test("a bad type satisfies any demand", () => {
+  // A report already stands, so nothing here is failed a second time.
+  const { sub } = fixture();
+  expect(castToString(sub.upcast(TBad, ListP(TMissing)))).toBe("List[<bad>]");
+  expect(castToString(sub.downcast(TBad, fnP([Bool], TMissing))))
+    .toBe("Bool -> <bad>");
+});
+
+Deno.test("a cast is shape-exact, so arity is part of the pattern", () => {
+  const { sub } = fixture();
+  expect(castToString(sub.upcast(fn([Bool], Bool), fnP([TMissing], TMissing))))
+    .toBe("Bool -> Bool");
+  expect(
+    castToString(
+      sub.upcast(fn([Bool], Bool), fnP([TMissing, TMissing], TMissing)),
+    ),
+  ).toBe("<none>");
+  expect(castToString(sub.upcast(List(Bool), ListP(TMissing))))
+    .toBe("List[Bool]");
+  expect(castToString(sub.upcast(Bool, ListP(TMissing)))).toBe("<none>");
+});
+
+Deno.test("a declined cast answers with the shape that was asked for", () => {
+  // Total, the way the relation is -- and the shape survives, so a `match` on
+  // the answer still has a datatype to check its arms against. `<bad>` stands
+  // only where the pattern said nothing, and cannot go on to be blamed.
+  const { sub } = fixture();
+  const declined = sub.upcast(Bool, ListP(TMissing));
+  expect(declined.verdict).toBe("no");
+  expect(typeToString(declined.type)).toBe("List[<bad>]");
+
+  // A pattern written in full leaves nothing to fill: this is exactly what
+  // `check` does today by returning its expected type after reporting.
+  const mismatch = sub.upcast(Bool, Int);
+  expect(mismatch.verdict).toBe("no");
+  expect(typeToString(mismatch.type)).toBe("Int");
+
+  // Deeper failures rebuild at the top, rather than handing up the fragment
+  // that failed.
+  const inner = sub.upcast(fn([Bool], Bool), fnP([Bool], ListP(TMissing)));
+  expect(inner.verdict).toBe("no");
+  expect(typeToString(inner.type)).toBe("Bool -> List[<bad>]");
+});
+
+Deno.test("a bad type answers with the demanded shape too", () => {
+  const { sub } = fixture();
+  const cast = sub.upcast(TBad, ListP(TMissing));
+  expect(cast.verdict).toBe("yes");
+  expect(typeToString(cast.type)).toBe("List[<bad>]");
+});
+
+Deno.test("a cast out of fuel says so, rather than reporting a mismatch", () => {
+  // The distinction the whole `Verdict` exists for: a spent tank is the
+  // checker's limit, and calling it a mismatch would blame the program.
+  const { context } = fixture();
+  const starved = new Subtyper(context, 0);
+  expect(starved.upcast(Bool, Bool).verdict).toBe("exhausted");
+});
+
+Deno.test("a quantified parameter is opened, so its bound can be read", () => {
+  // Without opening, the result stands at a `BVar`, which has no bound -- so a
+  // pattern asking it for a shape could never be answered however tightly the
+  // binder bounded it. Opened, it promotes the way any variable does.
+  const { sub } = fixture();
+  const idish = fn([Bool], Bool);
+  const type = TFun([mkTypeParamInfo("Y", idish)], [Bool], BVar(0));
+  const pattern = TFun(
+    [mkTypeParamInfo("X", idish)],
+    [Bool],
+    fnP([TMissing], TMissing),
+  );
+  expect(castToString(sub.upcast(type, pattern)))
+    .toBe("[X <: Bool -> Bool](Bool) -> Bool -> Bool");
+});
+
+Deno.test("a part that cannot be cast costs itself and not its siblings", () => {
+  // Nothing fails outright, so the walk carries on and keeps what it found:
+  // the parameter is the shape that was asked for, and the result beside it is
+  // still the real answer rather than collateral.
+  const { sub } = fixture();
+  const partial = sub.upcast(fn([Bool], Bool), fnP([Int], TMissing));
+  expect(partial.verdict).toBe("no");
+  expect(typeToString(partial.type)).toBe("Int -> Bool");
+});
+
+Deno.test("a variable pattern is answered, not promoted past", () => {
+  // Promotion supplies a shape, so it has no business in front of a leaf: the
+  // relation answers those and promotes on its own, and it knows `X <: X`,
+  // which promoting here would lose. Over-exposing loses every pair whose
+  // answer is the variable itself.
+  const { context, sub } = fixture();
+  const X = FVar(context.pushTypeVar(Bool, "X"), "X");
+  const Y = FVar(context.pushTypeVar(X, "Y"), "Y");
+  expect(castToString(sub.upcast(X, X))).toBe("X");
+  expect(castToString(sub.upcast(Y, X))).toBe("X");
+  expect(castToString(sub.downcast(X, X))).toBe("X");
+  // An unbounded variable would promote straight to top, so this is the case
+  // that fails loudest without the guard.
+  const U = FVar(context.pushTypeVar(TUnknown, "U"), "U");
+  expect(castToString(sub.upcast(U, U))).toBe("U");
+  // Still promoted when a shape really is wanted.
+  const F = FVar(context.pushTypeVar(fn([Bool], Bool), "F"), "F");
+  expect(castToString(sub.upcast(F, fnP([TMissing], TMissing))))
+    .toBe("Bool -> Bool");
+});
+
+Deno.test("a cast that succeeds is related to its input, always", () => {
+  // The property the direction *means*, checked over a grid rather than by
+  // choosing examples: an answer going up must sit above what it came from,
+  // one going down below it, and an invariant one on both sides. This is what
+  // catches a rule that moves `type` where it may not -- the shape of the
+  // over-exposure bug, whatever form it takes next.
+  //
+  // Unsolved EVars are left out: they answer by mode rather than by structure,
+  // so a grid says more about `probe` than about the cast.
+  const { context, sub } = fixture();
+  const X = FVar(context.pushTypeVar(Bool, "X"), "X");
+  const U = FVar(context.pushTypeVar(TUnknown, "U"), "U");
+  const F = FVar(context.pushTypeVar(fn([Bool], Bool), "F"), "F");
+
+  const types: readonly Type[] = [
+    TUnknown,
+    TNever,
+    TBad,
+    X,
+    U,
+    F,
+    Bool,
+    fn([Bool], Bool),
+    List(Bool),
+    TFun([mkTypeParamInfo("A", TUnknown)], [BVar(0)], BVar(0)),
+  ];
+  const patterns: readonly TypePattern[] = [
+    TMissing,
+    TUnknown,
+    TNever,
+    TBad,
+    X,
+    Bool,
+    Int,
+    fnP([TMissing], TMissing),
+    fnP([Bool], TMissing),
+    ListP(TMissing),
+    TFun([mkTypeParamInfo("A", TUnknown)], [TMissing], TMissing),
+  ];
+
+  let succeeded = 0;
+  for (const type of types) {
+    for (const pattern of patterns) {
+      // Nothing demanded, and nothing already blamed, must never decline.
+      expect(sub.upcast(type, TMissing).type).toBe(type);
+      expect(sub.upcast(TBad, pattern).verdict).toBe("yes");
+
+      const up = sub.upcast(type, pattern);
+      if (up.verdict === "yes") {
+        succeeded++;
+        expect(sub.isSubtype(type, up.type)).toBe("yes");
+      }
+      const down = sub.downcast(type, pattern);
+      if (down.verdict === "yes") {
+        succeeded++;
+        expect(sub.isSubtype(down.type, type)).toBe("yes");
+      }
+      const exact = sub.exactcast(type, pattern);
+      if (exact.verdict === "yes") {
+        succeeded++;
+        expect(sub.isSubtype(type, exact.type)).toBe("yes");
+        expect(sub.isSubtype(exact.type, type)).toBe("yes");
+      }
+    }
+  }
+  // A grid that stopped relating anything would pass vacuously.
+  expect(succeeded).toBeGreaterThan(100);
 });
