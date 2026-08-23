@@ -43,9 +43,12 @@ position with no coercion -- which is the direction that matters, since
 subtyping and constraint solving take complete types only.
 
 The reverse does not narrow. Excluding `kind === "TMissing"` does not change the
-type argument, so "walked it, found none, treat it as complete" needs one
-validated cast at a chokepoint, the way `assertClosed` already works. Budget
-exactly one.
+type argument, so "walked it, found none, treat it as complete" needs a
+validated cast, the way `assertClosed` already works: `assertComplete`. It is
+not one chokepoint but a handful, and they are all the same thing -- the steps
+that still relate two types through subtyping rather than through a cast. They
+go away with step 5, and the count is the honest measure of how much of the old
+relation is left.
 
 ## 2. Matching, and the two casts
 
@@ -67,8 +70,11 @@ pattern matches only what is alpha-equal to it, so `check(e, P)` on a complete
 nothing, so `infer(e)` is `check(e, TMissing)`. The two modes are one procedure,
 parameterized by how much is known.
 
-Variance lives in the two casts, which find the nearest matching type in a
-direction. Both are partial, and failing _is_ the error:
+Variance lives in the casts, which find the nearest matching type in a
+direction. They are total -- like subtyping, which reports rather than fails --
+and answer with a verdict beside the type. They collect constraints, never
+probe: a cast is something a checking rule _asks_, and what it learns on the way
+is exactly what the relation it replaces used to record.
 
     downcast(T, P)  the greatest S <: T matching P
     upcast(T, P)    the least    S :> T matching P
@@ -159,17 +165,31 @@ inherits whatever the join can do.
   aliases, thread them through every signature, and do _not_ add `TMissing` yet.
   Pure retype: suite unchanged, differential harness identical. Landing the
   mechanical churn on its own is what keeps the next diffs readable.
-- **3. The casts.** Add `TMissing`, implement `upcast`/`downcast` beside
-  `#join`/`#meet`, unit-tested directly. Nothing calls them.
-- **4. Merge `check` and `infer`.** One procedure over a pattern. Abstraction
-  gets its invariant and its error. Behavior changes here.
+- **3. The casts.** Done. `TMissing`, and `upcast`/`downcast`/`exactcast` beside
+  `#join`/`#meet`, unit-tested directly.
+- **4. Merge `check` and `infer`.** Done. One procedure over a pattern, with
+  `infer(e) = check(e, TMissing)` and the answer being the type the term has
+  rather than the pattern it was asked for. Abstraction is one rule,
+  `#abstract`, taking each part from the pattern where it has one; a parameter
+  with neither annotation nor supplied type is the error. `match` joins its arms
+  and coerces after, which is §5 falling out rather than being written. The
+  suite is unchanged -- the two regressions step 0 measured belong to step 5,
+  since an argument's pattern is still an EVar-bearing complete type. What did
+  change is that an annotation wider than the pattern is now merged rather than
+  refused, the merge being a downcast: `fn (x: unknown) -> x` checks at
+  `(Bool) -> Bool`, which it has.
 - **5. Application on missing parts.** Patterns replace EVars in parameter
   types; constraints move to step 4 above.
-- **6. Delete.** `EVar` out of `Type`, and with it `EVarMode`, `probe`, `apply`,
+- **6. Delete.** Including `#subsume`: what is left of it relates two written
+  types -- a bound against a bound, a type argument against its bound -- and
+  those are casts against a complete pattern, once nothing else is left to
+  break. `EVar` out of `Type`, and with it `EVarMode`, `probe`, `apply`,
   `#assertUnsolved`, `interdependent`. Constraints live in the context, indexed
   by binder position. Separate commit, so the deletion reads as one.
 
-Steps 2 and 3 are additive and safe. Step 4 is the commitment point.
+Steps 2 and 3 were additive and safe. Step 4 was the commitment point, and it
+came through without moving the suite -- the behavior it commits to is not paid
+for until step 5 puts patterns where the EVars are.
 
 ## Open
 

@@ -52,6 +52,7 @@ import {
   TData,
   TFun,
   type Type,
+  type TypeMaybe,
 } from "./types.ts";
 
 /**
@@ -516,13 +517,21 @@ export class Context {
    * Termination rests on the escape check in `setSolution`: a solution only
    * mentions EVars to its left, so the chain strictly decreases in level.
    */
-  apply(type: Type): Type {
+  /**
+   * Patterns and not only types, for one reason: a coercion that fails prints
+   * what was wanted, and what was wanted may hold both a solved EVar and a
+   * missing part. A missing part is a leaf here like any other -- there is
+   * nothing in it to substitute into -- so this stays a walk over types that
+   * happens to admit them, rather than an operation on patterns.
+   */
+  apply<M>(type: TypeMaybe<M>): TypeMaybe<M> {
     switch (type.kind) {
       case "TUnknown":
       case "TNever":
       case "TBad":
       case "BVar":
       case "FVar":
+      case "TMissing":
         return type;
       case "EVar": {
         // One `undefined` now, and it means the ordinary thing: unsolved. The

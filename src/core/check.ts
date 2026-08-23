@@ -27,23 +27,28 @@ import {
   type Param,
   type Program,
   type TermNode,
+  type TypeParam,
 } from "../syntax/ast.ts";
 import { Context } from "./context.ts";
 import { type CtorInfo, Declarations } from "./declarations.ts";
 import { ctorFieldsAt, Elaborator } from "./elaborate.ts";
-import { Subtyper, type Verdict } from "./subtype.ts";
+import { castComplete, Subtyper, type Verdict } from "./subtype.ts";
 import {
   closeFrom,
   EVar,
   FVar,
   impossible,
   type Level,
+  mkLevel,
   openMany,
   openWith,
   TBad,
   TFun,
+  TMissing,
   TNever,
+  TUnknown,
   type Type,
+  type TypePattern,
   typeToString,
 } from "./types.ts";
 
@@ -78,7 +83,7 @@ export class Checker {
   #reportVerdict(
     verdict: Verdict,
     actual: Type,
-    expected: Type,
+    expected: TypePattern,
     at: Position,
   ): void {
     const found = typeToString(this.context.apply(actual));
@@ -108,19 +113,46 @@ export class Checker {
     }
   }
 
-  /** `actual <: expected`, reporting if not. */
-  #subsume(actual: Type, expected: Type, at: Position): void {
-    const verdict = this.subtyper.isSubtype(actual, expected);
-    if (verdict !== "yes") this.#reportVerdict(verdict, actual, expected, at);
+  /**
+   * What a term of type `actual` is, seen at `expected`: the least supertype
+   * of the one matching the other, reported once if there is none.
+   *
+   * This is what a checking rule returns, and it replaces subsuming and then
+   * handing back the expected type. On a type written in full the two agree --
+   * a complete pattern matches only itself, so the answer *is* the expected
+   * type and the question is exactly `actual <: expected`. The difference is
+   * that a pattern need not be written in full, and then the answer is the
+   * expected type's shape with the term's own content in its missing parts.
+   *
+   * This is nearly the only way a type meets an expected one. What is left
+   * beside it is a written type argument against its declared bound, which is
+   * a relation rather than a coercion and asks `isSubtype` directly.
+   */
+  #coerce(actual: Type, expected: TypePattern, at: Position): Type {
+    const cast = this.subtyper.upcast(actual, expected);
+    if (cast.verdict !== "yes") {
+      this.#reportVerdict(cast.verdict, actual, expected, at);
+    }
+    return cast.type;
   }
 
   // ---------------------------------------------------------------- checking
 
-  check(term: TermNode, expected: Type): Type {
+  /**
+   * Check a term against what is known of its type, and answer with the type
+   * it has. One procedure: `expected` is a *pattern*, so it may say everything
+   * about the type, nothing at all, or -- once applications propagate them --
+   * anything in between. Inference is the case where it says nothing.
+   *
+   * The answer is neither the pattern nor the term's own type in general, but
+   * the pattern's shape with the term's content in its missing parts, which is
+   * what `#coerce` produces. Where the pattern is complete the two coincide.
+   */
+  check(term: TermNode, expected: TypePattern): Type {
     switch (term.kind) {
-      // The forms with a checking rule of their own: each pushes the expected
-      // type *inward* rather than inferring and comparing at the end, which is
-      // the only way an unannotated parameter ever gets a type.
+      // The forms with a rule of their own: each pushes the pattern *inward*
+      // rather than synthesizing and comparing at the end, which is the only
+      // way an unannotated parameter ever gets a type.
       case "Abs":
         return this.#checkAbs(term, expected);
       case "Match":
@@ -129,85 +161,180 @@ export class Checker {
         return this.#checkLet(term, expected);
       case "App":
         return this.#checkApp(term, expected);
-      default: {
-        this.#subsume(this.infer(term), expected, term.at);
-        return expected;
-      }
+      // The two forms with nothing to push inward: a name already has a type
+      // and a type application already says what it is. They synthesize and
+      // the pattern is applied afterwards -- which, against `TMissing`, is
+      // what makes this the inference case.
+      case "Var":
+        return this.#coerce(this.#inferVar(term), expected, term.at);
+      case "TypeApp":
+        return this.#coerce(this.#inferTypeApp(term), expected, term.at);
     }
   }
 
+  /** Check against nothing, which is to synthesize. */
+  infer(term: TermNode): Type {
+    return this.check(term, TMissing);
+  }
+
+  /**
+   * A lambda, against whatever the pattern says of it.
+   *
+   * The pattern is taken as written -- not exposed. A rigid variable bounded
+   * by an arrow is not an arrow: nothing has type `X <: (Bool) -> Bool` but an
+   * `X`, so promoting to the bound would accept any function of that shape
+   * where an `X` was asked for. Anything but a literal arrow, or one
+   * quantifying a different number of variables, demands nothing of the parts;
+   * the lambda is then built on its own and related at the end like any other
+   * term.
+   *
+   * Every part is taken from the pattern where it has one and from the term
+   * otherwise, and the coercion at the end is what makes the answer the type
+   * that was asked for. Nothing in between relates anything: a disagreement
+   * with the pattern is not a parameter's mistake or a bound's, it is the
+   * lambda having a type other than the one wanted, and that is said once.
+   */
   #checkAbs(
     term: Extract<TermNode, { kind: "Abs" }>,
-    expected: Type,
+    expected: TypePattern,
   ): Type {
-    // Taken as written -- not exposed. A rigid variable bounded by an arrow is
-    // not an arrow: nothing has type `X <: (Bool) -> Bool` but an `X`, so
-    // promoting to the bound would accept any function of that shape where an
-    // `X` was asked for. Anything but a literal arrow falls through to
-    // infer-and-subsume below, which relates the two in the sound direction.
-    const wanted = expected;
-    if (
-      wanted.kind !== "TFun" ||
-      wanted.typeParams.length !== term.typeParams.length
-    ) {
-      // Not a function, or not one quantifying the same variables, so there is
-      // nothing to push inward. Inferring instead reports the mismatch *and*
-      // any error in the body.
-      this.#subsume(this.infer(term), expected, term.at);
-      return expected;
-    }
+    const wanted = expected.kind === "TFun" &&
+        expected.typeParams.length === term.typeParams.length
+      ? expected
+      : undefined;
 
-    // A parameter list of the wrong length is still pushed inward, the way a
-    // pattern binding too many fields is. The count is the mistake, and the
-    // types of the parameters that do line up are known -- so reporting it and
-    // going on says it once, where inferring instead would tell the author to
-    // annotate every parameter whose type the expected type just supplied.
-    if (wanted.params.length !== term.params.length) {
-      this.#report(
-        `expected ${wanted.params.length} parameter${
-          wanted.params.length === 1 ? "" : "s"
-        }, found ${term.params.length}`,
-        term.at,
+    const type = this.context.inScope((mark) => {
+      // Decided before any of them is in scope, the way the parameters below
+      // are: bounds are parallel, so one may name an enclosing binder but
+      // never a member of its own group.
+      const binders = this.elaborator.bindTypeParams(
+        term.typeParams,
+        term.typeParams.map((declared, j) =>
+          this.#boundType(
+            declared,
+            // Top where there is no pattern, which is what an unbounded type
+            // parameter means anyway. This is the one place the two rules
+            // differ, and it is the whole of the difference: a bound left
+            // unsaid has a sound reading and a parameter type does not.
+            wanted?.typeParams[j]?.bound ?? TUnknown,
+          )
+        ),
       );
-    }
-
-    this.context.inScope(() => {
-      // The expected type's bounds are what the body may assume.
-      const opened = wanted.typeParams.map((binder, j) => {
-        const declared = term.typeParams[j];
-        const name = declared === undefined
-          ? binder.hint
-          : bindingHint(declared.name);
-        // Only a written name can clash; a hint borrowed from the expected
-        // type is not a binding anyone wrote.
-        if (declared !== undefined) {
-          this.elaborator.reportDeclaredName(declared.name);
-        }
-        if (declared?.bound !== undefined) {
-          // Contravariant: a lambda may promise less of its type parameter
-          // than the expected type does, never more.
-          const written = this.elaborator.elaborateType(declared.bound);
-          this.#subsume(binder.bound, written, declared.at);
-        }
-        return FVar(this.context.pushTypeVar(binder.bound, name), name);
-      });
-
-      const params = wanted.params.map((param) => openMany(param, opened));
-      const result = openMany(wanted.result, opened);
+      // One variable pushed per binder, in order, so the group occupies
+      // exactly the levels from the mark on.
+      const opened = binders.map((binder, j) =>
+        FVar(mkLevel(mark + j), binder.hint)
+      );
 
       this.#reportDuplicateBinders(
         term.params.map((param) => param.name),
         "parameter list",
       );
+      // Every parameter is settled before any name is pushed, so one list
+      // binds simultaneously: an annotation may not see a name its own list
+      // binds, and `fn [A](A: A, y: A)` resolves both `A`s to the type
+      // variable.
+      //
+      // One per parameter the *term* wrote, whatever the pattern's arity. The
+      // count is a disagreement with the pattern like any other, and the
+      // coercion is what says it -- there is no shaping here to keep it from
+      // being said twice.
+      const params = term.params.map((param, j) =>
+        this.#paramType(
+          param,
+          // A parameter the pattern does not reach is one the pattern says
+          // nothing about, which is what a missing part means -- so it is
+          // asked for like any other: taken from the annotation if there is
+          // one, and reported if there is not. Standing `<bad>` here instead
+          // would say something was supplied when nothing was.
+          wanted === undefined
+            ? TMissing
+            : openMany(wanted.params[j] ?? TMissing, opened),
+        )
+      );
       for (const [j, param] of term.params.entries()) {
-        // `TBad` for a parameter the expected type does not have: that is the
-        // count just reported, and a bad type keeps the body checkable rather
-        // than failing again at every use of the extra parameter.
-        this.#bindParam(param, params[j] ?? TBad);
+        this.#pushBinding(
+          param.name,
+          params[j] ?? impossible("one type per written parameter"),
+        );
       }
-      this.check(term.body, result);
+
+      // Applied before closing: an EVar solved inside the body must be gone
+      // before the entry holding its solution is truncated away.
+      const result = this.context.apply(this.check(
+        term.body,
+        openMany(wanted?.result ?? TMissing, opened),
+      ));
+
+      // Closing the parts at the mark is what turns level `mark + j` back
+      // into `BVar j`.
+      return TFun(
+        binders,
+        params.map((param) => closeFrom(param, mark)),
+        closeFrom(result, mark),
+      );
     });
-    return expected;
+    this.context.assertClosed("function", [type]);
+    return this.#coerce(type, expected, term.at);
+  }
+
+  /**
+   * One type parameter's bound: what is written if anything is, else what the
+   * pattern supplies if that is complete, else `<bad>` and the error.
+   *
+   * A bound could be weakened instead -- assuming less of a type variable is
+   * always safe, so a missing one could quietly become `unknown` and only an
+   * invariant position would ever be reported. That is more precise and worse:
+   * two positions that read the same in the source would answer differently
+   * for a reason an author cannot see. One rule, said once, is easier to
+   * predict than two rules that agree most of the time.
+   */
+  #boundType(declared: TypeParam, supplied: TypePattern): Type {
+    if (declared.bound !== undefined) {
+      return this.elaborator.elaborateType(declared.bound);
+    }
+    const filled = castComplete(supplied);
+    if (filled.verdict !== "yes") {
+      const name = bindingHint(declared.name);
+      this.#report(
+        `cannot infer a bound for ${name}: write it, or use this function ` +
+          `where its bounds are known`,
+        declared.name.at,
+        name.length,
+      );
+    }
+    return filled.type;
+  }
+
+  /**
+   * One parameter's type, by the same rule, and the reason it is spelled out
+   * twice rather than shared: the two differ only in their words, and a
+   * function taking a message is a worse way to say that than two rules
+   * standing side by side.
+   *
+   * What is written wins whole and unconditionally, including where it
+   * disagrees with the pattern. The body is typed against what the author
+   * wrote, and the disagreement is the lambda's type not being the one asked
+   * for, which the coercion at `#checkAbs` says once and in full. An earlier
+   * version related the two here and recovered with the pattern's shape, which
+   * bought a message at the parameter and paid for it by quietly discarding
+   * the annotation -- the one thing this rule promises to keep.
+   */
+  #paramType(param: Param, supplied: TypePattern): Type {
+    if (param.annotation !== undefined) {
+      return this.elaborator.elaborateType(param.annotation);
+    }
+    const filled = castComplete(supplied);
+    if (filled.verdict !== "yes") {
+      const name = bindingHint(param.name);
+      this.#report(
+        `cannot infer a type for ${name}: annotate it, or use this function ` +
+          `where its parameter types are known`,
+        param.name.at,
+        name.length,
+      );
+    }
+    return filled.type;
   }
 
   /**
@@ -239,44 +366,21 @@ export class Checker {
     }
   }
 
-  /** Bind one parameter, preferring its annotation where it has one. */
-  #bindParam(param: Param, fromContext: Type): void {
-    let type = fromContext;
-    if (param.annotation !== undefined) {
-      const written = this.elaborator.elaborateType(param.annotation);
-      // The annotation must accept everything the caller may pass.
-      this.#subsume(fromContext, written, param.at);
-      type = written;
-    }
-    this.#pushBinding(param.name, type);
-  }
-
-  #checkLet(term: Extract<TermNode, { kind: "Let" }>, expected: Type): Type {
-    this.context.inScope(() => {
+  #checkLet(
+    term: Extract<TermNode, { kind: "Let" }>,
+    expected: TypePattern,
+  ): Type {
+    const result = this.context.inScope(() => {
       this.#pushBinding(term.name, this.#letBinding(term));
-      this.check(term.body, expected);
+      return this.context.apply(this.check(term.body, expected));
     });
-    return expected;
+    // With no dependent types a term variable cannot appear in a type, so a
+    // `let` body's type never mentions the binding -- but say so out loud.
+    this.context.assertClosed("let", [result]);
+    return result;
   }
 
-  // --------------------------------------------------------------- inference
-
-  infer(term: TermNode): Type {
-    switch (term.kind) {
-      case "Var":
-        return this.#inferVar(term);
-      case "Abs":
-        return this.#inferAbs(term);
-      case "App":
-        return this.#inferApp(term);
-      case "TypeApp":
-        return this.#inferTypeApp(term);
-      case "Let":
-        return this.#inferLet(term);
-      case "Match":
-        return this.#inferMatch(term);
-    }
-  }
+  // --------------------------------------------------------------- synthesis
 
   #inferVar(term: Extract<TermNode, { kind: "Var" }>): Type {
     const found = this.context.lookupTerm(term.name.text);
@@ -287,54 +391,6 @@ export class Checker {
       term.name.text.length,
     );
     return TBad;
-  }
-
-  #inferAbs(term: Extract<TermNode, { kind: "Abs" }>): Type {
-    const type = this.context.inScope((mark) => {
-      const binders = this.elaborator.bindTypeParams(term.typeParams);
-
-      const params = term.params.map((param) => {
-        if (param.annotation !== undefined) {
-          return this.elaborator.elaborateType(param.annotation);
-        }
-        // Inference has nothing to draw on -- and never invents an EVar for it,
-        // since a parameter's type is not something local inference guesses.
-        this.#report(
-          `cannot infer a type for ${bindingHint(param.name)}: annotate it, ` +
-            `or use this function where its parameter types are known`,
-          param.name.at,
-          bindingHint(param.name).length,
-        );
-        return TBad;
-      });
-      this.#reportDuplicateBinders(
-        term.params.map((param) => param.name),
-        "parameter list",
-      );
-      for (const [j, param] of term.params.entries()) {
-        // Built from `term.params` just above, so there is one for each.
-        this.#pushBinding(
-          param.name,
-          params[j] ?? impossible("one type per written parameter"),
-        );
-      }
-
-      // Applied before closing: an EVar solved inside the body must be gone
-      // before the entry holding its solution is truncated away.
-      const result = this.context.apply(this.infer(term.body));
-
-      return TFun(
-        binders,
-        params.map((param) => closeFrom(param, mark)),
-        closeFrom(result, mark),
-      );
-    });
-    this.context.assertClosed("function", [type]);
-    return type;
-  }
-
-  #inferApp(term: Extract<TermNode, { kind: "App" }>): Type {
-    return this.#applyCall(term, undefined);
   }
 
   /**
@@ -351,15 +407,14 @@ export class Checker {
    */
   #checkApp(
     term: Extract<TermNode, { kind: "App" }>,
-    expected: Type,
+    expected: TypePattern,
   ): Type {
-    this.#subsume(this.#applyCall(term, expected), expected, term.at);
-    return expected;
+    return this.#coerce(this.#applyCall(term, expected), expected, term.at);
   }
 
   #applyCall(
     term: Extract<TermNode, { kind: "App" }>,
-    expected: Type | undefined,
+    expected: TypePattern,
   ): Type {
     const callee = this.subtyper.expose(this.infer(term.callee));
     if (callee.kind !== "TFun") {
@@ -442,7 +497,16 @@ export class Checker {
       // weaker anyway -- they are all joined at once. The verdict is dropped
       // because the types it would name still hold EVars; the subsumption in
       // `#checkApp` asks again once they are solved, and reports there.
-      if (expected !== undefined) this.subtyper.isSubtype(result, expected);
+      if (expected.kind !== "TMissing") {
+        // The widest type the pattern admits, which is what a pattern says as
+        // an upper bound: a missing part constrains nothing, so it becomes the
+        // extreme for its polarity and the written parts do the constraining
+        // on their own. Against a complete pattern this is the pattern itself.
+        this.subtyper.isSubtype(
+          result,
+          this.subtyper.downcast(TUnknown, expected).type,
+        );
+      }
 
       this.#solveEVars(levels, term.at);
       return this.context.apply(result);
@@ -552,11 +616,14 @@ export class Checker {
 
     for (const [j, binder] of callee.typeParams.entries()) {
       // The arity mismatch above returns, so there is an argument for each.
-      this.#subsume(
-        args[j] ?? impossible("the arity mismatch above returns"),
-        binder.bound,
-        term.at,
-      );
+      // A relation and not a coercion: an explicit type argument is a choice,
+      // with nothing missing to fill and nowhere to move it to. The only
+      // question is whether it is admissible.
+      const arg = args[j] ?? impossible("the arity mismatch above returns");
+      const verdict = this.subtyper.isSubtype(arg, binder.bound);
+      if (verdict !== "yes") {
+        this.#reportVerdict(verdict, arg, binder.bound, term.at);
+      }
     }
     // The quantifier is discharged, so what is left is a plain arrow.
     return TFun(
@@ -581,46 +648,37 @@ export class Checker {
     return this.context.apply(this.infer(term.bound));
   }
 
-  #inferLet(term: Extract<TermNode, { kind: "Let" }>): Type {
-    const result = this.context.inScope(() => {
-      this.#pushBinding(term.name, this.#letBinding(term));
-      return this.context.apply(this.infer(term.body));
-    });
-    // With no dependent types a term variable cannot appear in a type, so a
-    // `let` body's type never mentions the binding -- but say so out loud.
-    this.context.assertClosed("let", [result]);
-    return result;
-  }
-
   // ------------------------------------------------------------------- match
 
-  #inferMatch(term: Extract<TermNode, { kind: "Match" }>): Type {
-    const scrutinee = this.subtyper.expose(this.infer(term.scrutinee));
-    // Every arm is inferred on its own and the results joined, so no arm is
-    // privileged by position. With no arms at all the join is `never`, which
-    // is right: a match on an uninhabited scrutinee returns nothing.
-    return this.#armTypes(term, scrutinee, undefined)
-      .reduce((left, right) => this.subtyper.join(left, right), TNever);
-  }
-
+  /**
+   * Every arm is checked against the same pattern and the results joined, so
+   * no arm is privileged by position. With no arms at all the join is `never`,
+   * which is right: a match on an uninhabited scrutinee returns nothing.
+   *
+   * Joining and *then* coercing is what lets a missing part be filled by the
+   * arms rather than guessed ahead of them: only the arms have a witness for
+   * it. Sound because the join is above every arm and the coercion only goes
+   * further up, and least because the coercion is.
+   */
   #checkMatch(
     term: Extract<TermNode, { kind: "Match" }>,
-    expected: Type,
+    expected: TypePattern,
   ): Type {
     const scrutinee = this.subtyper.expose(this.infer(term.scrutinee));
-    this.#armTypes(term, scrutinee, expected);
-    return expected;
+    const joined = this.#armTypes(term, scrutinee, expected)
+      .reduce((left, right) => this.subtyper.join(left, right), TNever);
+    return this.#coerce(joined, expected, term.at);
   }
 
   /**
-   * Check every arm -- against `expected` if there is one, otherwise inferring
-   * each for the caller to join. Also settles exhaustiveness, which one-level
-   * patterns make a set difference rather than a decision procedure.
+   * Check every arm against the pattern, for the caller to join. Also settles
+   * exhaustiveness, which one-level patterns make a set difference rather than
+   * a decision procedure.
    */
   #armTypes(
     term: Extract<TermNode, { kind: "Match" }>,
     scrutinee: Type,
-    expected: Type | undefined,
+    expected: TypePattern,
   ): Type[] {
     const datatype = scrutinee.kind === "TData"
       ? this.declarations.datatypeOf(scrutinee.name)
@@ -671,15 +729,13 @@ export class Checker {
     arm: MatchArm,
     owner: string | undefined,
     args: readonly Type[],
-    expected: Type | undefined,
+    expected: TypePattern,
   ): Type {
     const type = this.context.inScope(() => {
       if (arm.pattern.kind === "PCtor") {
         this.#bindPattern(arm.pattern, owner, args);
       }
-      return expected === undefined
-        ? this.context.apply(this.infer(arm.body))
-        : (this.check(arm.body, expected), expected);
+      return this.context.apply(this.check(arm.body, expected));
     });
     this.context.assertClosed("match arm", [type]);
     return type;

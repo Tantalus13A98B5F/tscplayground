@@ -170,10 +170,19 @@ export class Elaborator {
    * namespace and nothing shadows them, so such a parameter would be
    * unreachable, and silently, `#elaborateName` asking the context first.
    */
-  bindTypeParams(params: readonly TypeParam[]): TypeParamInfo[] {
-    const bounds = params.map((param) =>
-      param.bound === undefined ? TUnknown : this.elaborateType(param.bound)
-    );
+  bindTypeParams(
+    params: readonly TypeParam[],
+    decided?: readonly Type[],
+  ): TypeParamInfo[] {
+    // Bounds already decided, where the caller has more to go on than what is
+    // written -- a checking context supplying one an author left out. Deciding
+    // is the caller's whole business then, including which of the two wins, so
+    // nothing here looks at `param.bound` in that case. What stays here either
+    // way is the group: parallel elaboration, and the names.
+    const bounds = decided ??
+      params.map((param) =>
+        param.bound === undefined ? TUnknown : this.elaborateType(param.bound)
+      );
 
     const seen = new Set<string>();
     return params.map((param, j) => {
