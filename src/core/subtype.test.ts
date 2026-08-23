@@ -636,6 +636,30 @@ Deno.test("a bad type satisfies any demand", () => {
     .toBe("Bool -> <bad>");
 });
 
+Deno.test("a parameter list of the wrong length costs its own positions", () => {
+  // Arity is a disagreement at the positions that are not shared, not a wall.
+  // The answer has the pattern's arity -- the caller asked for that shape and
+  // reads the parts off it -- and the parts that do line up keep their real
+  // answers, which is the rule the rest of the walk follows.
+  const { sub } = fixture();
+  const tooFew = sub.upcast(fn([Bool], Bool), fnP([Bool, Bool], TMissing));
+  expect(tooFew.verdict).toBe("no");
+  expect(typeToString(tooFew.type)).toBe("(Bool, Bool) -> Bool");
+
+  const tooMany = sub.upcast(fn([Bool, Bool], Bool), fnP([Bool], TMissing));
+  expect(tooMany.verdict).toBe("no");
+  expect(typeToString(tooMany.type)).toBe("Bool -> Bool");
+
+  // Quantifying a different number of variables is a wall, though: the two
+  // parameter lists stand under different binders, so their positions do not
+  // correspond and neither can be read in the other's scope.
+  const quantified = sub.upcast(
+    fn([Bool], Bool),
+    TFun([mkTypeParamInfo("A", TUnknown)], [TMissing], TMissing),
+  );
+  expect(quantified.verdict).toBe("no");
+});
+
 Deno.test("a cast is shape-exact, so arity is part of the pattern", () => {
   const { sub } = fixture();
   expect(castToString(sub.upcast(fn([Bool], Bool), fnP([TMissing], TMissing))))

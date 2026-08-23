@@ -582,21 +582,44 @@ Deno.test("an arity error does not also report an uninferable type argument", ()
 });
 
 Deno.test("a lambda of the wrong arity is still checked inward", () => {
-  // The count is the mistake. Inferring instead would ask the author to
-  // annotate parameters whose types the expected type had just supplied.
+  // The parameters that line up still take their types from the expected
+  // type: inferring instead would ask the author to annotate every one of
+  // them. What is left over is `<bad>`, so the count shows in the shape and
+  // nothing is reported at the extra parameter's uses.
   const [, ...tooMany] = run(
     ...BOOL,
     "let f : (Bool) -> Bool = fn (x, y) -> x;",
     "f",
   );
-  expect(tooMany).toEqual(["expected 1 parameter, found 2"]);
+  expect(tooMany).toEqual([
+    "cannot infer a type for y: annotate it, or use this function where " +
+    "its parameter types are known",
+    "expected Bool -> Bool, found (Bool, <bad>) -> Bool",
+  ]);
 
+  // Annotated, the extra parameter has a type and only the count is left --
+  // which is why the pattern says *nothing* about a position it does not
+  // reach rather than saying `<bad>`. Standing `<bad>` there would claim the
+  // parameter had been supplied when nothing supplied it.
+  const [, ...annotated] = run(
+    ...BOOL,
+    "let f : (Bool) -> Bool = fn (x, y: Bool) -> x;",
+    "f",
+  );
+  expect(annotated).toEqual([
+    "expected Bool -> Bool, found (Bool, Bool) -> Bool",
+  ]);
+
+  // A parameter the term never wrote is filled from the expected type, so the
+  // count is again the whole of what differs.
   const [, ...tooFew] = run(
     ...BOOL,
     "let f : (Bool, Bool) -> Bool = fn (x) -> x;",
     "f",
   );
-  expect(tooFew).toEqual(["expected 2 parameters, found 1"]);
+  expect(tooFew).toEqual([
+    "expected (Bool, Bool) -> Bool, found Bool -> Bool",
+  ]);
 });
 
 Deno.test("a lambda checked against a non-function is inferred instead", () => {
@@ -605,4 +628,30 @@ Deno.test("a lambda checked against a non-function is inferred instead", () => {
   const [, ...messages] = run(...BOOL, "let f : Bool = fn (x) -> x;", "f");
   expect(messages.length).toBe(2);
   expect(messages[1]).toContain("expected Bool, found");
+});
+
+Deno.test("an annotation is what the body is typed against, not the pattern", () => {
+  // The written type wins outright: the pattern is consulted only for whether
+  // the annotation accepts what a caller may pass, and `unknown` does. So `x`
+  // is an `unknown` inside the body, and the one thing wrong with this lambda
+  // is its result -- said once, where it happens.
+  const [, ...wider] = run(
+    ...BOOL,
+    "let f : (Bool) -> Bool = fn (x: unknown) -> x;",
+    "f",
+  );
+  expect(wider).toEqual(["expected Bool, found unknown"]);
+
+  // Narrower is not the parameter's own error either. The annotation stands,
+  // the body is typed against it, and what is wrong is the type the lambda
+  // ends up with -- said once, in full, by the coercion at the lambda.
+  const [, ...narrower] = run(
+    ...LIST,
+    ...BOOL,
+    "let g : (List[Bool]) -> unknown = fn (x: Bool) -> x;",
+    "g",
+  );
+  expect(narrower).toEqual([
+    "expected List[Bool] -> unknown, found Bool -> unknown",
+  ]);
 });

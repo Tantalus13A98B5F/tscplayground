@@ -94,7 +94,7 @@ const castFound = (type: Type): Cast => ({ type, verdict: "yes" });
  * time wherever the choice turned out wrong. What it costs instead is the
  * verdict, which is the caller's to report.
  */
-function castComplete(pattern: TypePattern): Cast {
+export function castComplete(pattern: TypePattern): Cast {
   switch (pattern.kind) {
     case "TMissing":
       return { type: TBad, verdict: "no" };
@@ -726,13 +726,13 @@ export class Subtyper {
    * the content, and the cast is the nearest thing that is both.
    */
   upcast(type: Type, pattern: TypePattern): Cast {
-    return this.#query("probe", () => this.#cast(type, pattern, "covariant"));
+    return this.#query("collect", () => this.#cast(type, pattern, "covariant"));
   }
 
   /** The greatest subtype of `type` matching `pattern`. Dual to `upcast`. */
   downcast(type: Type, pattern: TypePattern): Cast {
     return this.#query(
-      "probe",
+      "collect",
       () => this.#cast(type, pattern, "contravariant"),
     );
   }
@@ -752,7 +752,7 @@ export class Subtyper {
    * held a missing part, which is the case that matters.
    */
   exactcast(type: Type, pattern: TypePattern): Cast {
-    return this.#query("probe", () => this.#cast(type, pattern, "invariant"));
+    return this.#query("collect", () => this.#cast(type, pattern, "invariant"));
   }
 
   /**
@@ -772,17 +772,6 @@ export class Subtyper {
     // already decided.
     this.#assertUnsolved(type);
 
-    // A report already stands, so a bad type satisfies any demand -- and it
-    // answers with the demanded shape for the same reason a declined cast
-    // does. A tree is never failed twice for one mistake. Before the switch
-    // because it holds whatever was asked for.
-    //
-    // Only the type is taken from `castComplete`, never its verdict: filling a
-    // missing part here invents nothing, since what stands there is already
-    // bad. That is the whole difference from lifting an extreme, where the
-    // same filling is a choice and does cost the verdict.
-    if (type.kind === "TBad") return castFound(castComplete(pattern).type);
-
     // Three kinds of demand, and the pattern is what says which. Nothing is
     // read off `type` until the demand is known, which is what keeps a rule
     // meant for one kind from running in front of another.
@@ -798,10 +787,19 @@ export class Subtyper {
       case "TFun": {
         const head = this.#castHead(type, pattern, dir);
         const from = head.type;
+        // Quantifying a different number of variables is a different shape,
+        // and there is nothing to walk into: the two parameter lists stand
+        // under different binders, so their positions do not correspond and
+        // one cannot even be read in the other's scope.
+        //
+        // A different number of *parameters* is not like that. Those live
+        // under the same binders, so the positions that are shared correspond
+        // and can be cast; the mismatch costs the ones that are not, the same
+        // way every other disagreement in this walk costs its own part.
+        // `#castFun` answers with the pattern's arity and says `no`.
         if (
           from.kind !== "TFun" ||
-          from.typeParams.length !== pattern.typeParams.length ||
-          from.params.length !== pattern.params.length
+          from.typeParams.length !== pattern.typeParams.length
         ) {
           return castFailed(pattern, "no");
         }
@@ -889,6 +887,19 @@ export class Subtyper {
     pattern: Extract<TypePattern, { kind: "TFun" | "TData" }>,
     dir: CastDirection,
   ): Cast {
+    // A report already stands, so a bad type has whatever shape is demanded --
+    // a third way of standing aside, beside promotion and lifting an extreme,
+    // and it belongs here with them rather than in front of the walk. It is
+    // needed only where a shape is demanded, which is exactly where this is
+    // reached: a demanded leaf goes to the relation, which knows `<bad>` on
+    // its own and carries it to whatever the leaf constrains, so one mistake
+    // does not become two.
+    //
+    // Only the type is taken, never the verdict: filling a missing part from
+    // something already bad invents nothing. That is the whole difference from
+    // lifting an extreme, where the same filling is a choice and does cost the
+    // verdict.
+    if (type.kind === "TBad") return castFound(castComplete(pattern).type);
     if (type.kind === "FVar" && dir === "covariant") {
       return this.#castHead(
         this.context.upperBoundAt(type.level),
@@ -959,9 +970,20 @@ export class Subtyper {
         FVar(this.context.pushTypeVar(binder.bound, binder.hint), binder.hint)
       );
 
+      // The pattern's arity, which is what was asked for: a position the
+      // pattern wants and `type` does not have is filled from the pattern
+      // alone, one `type` has and the pattern does not is dropped, and either
+      // costs the verdict.
+      if (type.params.length !== pattern.params.length) verdict = "no";
       const params: Type[] = [];
       for (const [i, want] of pattern.params.entries()) {
-        const mine = type.params[i] ?? impossible("a parameter per parameter");
+        const mine = type.params[i];
+        if (mine === undefined) {
+          verdict = "no";
+          // Already in the binder's own scope, having never been opened.
+          params.push(castComplete(want).type);
+          continue;
+        }
         const param = this.#cast(
           openMany(mine, opened),
           openMany<number>(want, opened),
