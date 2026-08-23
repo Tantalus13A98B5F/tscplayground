@@ -14,19 +14,15 @@
  *
  * Mutable, and deliberately so: the checker threads one context through the
  * whole run, and scopes end by truncation. There is no marker entry -- a saved
- * `size` *is* the marker, exact where a search for a marker entry could come up
- * empty.
+ * `size` *is* the marker.
  *
  * Truncation reuses levels, so anything outliving a scope must have been closed
- * or substituted first. That is a checker invariant, not a hope: `assertClosed`
- * checks it at every exit, and turns what would be a silent alias into a loud
- * failure.
+ * or substituted first. `assertClosed` checks that at every exit.
  *
- * Reads by level are total, and writes too. A level comes from a `push` or off
- * a node the checker built, so one naming nothing -- or naming an entry of the
- * wrong kind -- is a checker bug, and these throw rather than returning an
- * `undefined` a caller would have to invent an answer for. Resolving a *name*
- * is the other question, and that one may legitimately come back empty.
+ * Reads and writes by level are total. A level comes from a `push` or off a
+ * node the checker built, so one naming nothing -- or naming an entry of the
+ * wrong kind -- is a checker bug and throws. Resolving a *name* is the other
+ * question, and that one may legitimately come back empty.
  *
  * One namespace across all of it. A term variable, a constructor, and a type
  * variable of the same name shadow each other rather than coexisting, so the
@@ -57,17 +53,13 @@ import {
 /**
  * `X <: bound` -- rigid, never solved.
  *
- * `name` is load-bearing where `TypeParamInfo.hint` is decoration, and is
- * not spent by the time an entry gets here: elaboration is not a pass that runs
- * to completion first. A type written inside a term -- a parameter's
- * annotation, a bound on a `fn`'s own type parameter -- is elaborated when
- * checking reaches it, against this context, because the binder it sits
- * under is only in scope then. So `lookupTypeVar` resolves against these
- * names for as long as checking runs.
+ * `name` is load-bearing where `TypeParamInfo.hint` is decoration. Elaboration
+ * is not a pass that runs to completion first -- a type written inside a term
+ * is elaborated when checking reaches it, against this context -- so
+ * `lookupTypeVar` resolves against these names for as long as checking runs.
  *
  * `undefined` where nothing will ever resolve one: the variables subtyping
- * opens a pair of quantifiers under, and the wildcard `_`. Those are reached
- * from an `FVar` that already carries the level. Nameless and not
+ * opens a pair of quantifiers under, and the wildcard `_`. Nameless and not
  * `name: ""`, so the type says which entries can be looked up.
  */
 export type TypeVarEntry = {
@@ -85,17 +77,13 @@ export type TypeVarEntry = {
  * Every recorded bound is already avoided -- closed by this EVar's `batch` --
  * so `setSolution` can never be handed something out of scope.
  *
- * Most of this entry is written after it is pushed, and read once the batch is
+ * Most of this entry is written after it is pushed and read once the batch is
  * solved: `lower` and `upper` grow, `polarity` combines, `reported` latches.
- * `solution` is the exception, written once -- so it is `readonly` and solving
- * replaces the entry. A guardrail, not a guarantee: it catches an assignment
- * written by someone who missed `setSolution`, and TypeScript drops the
- * modifier the moment the entry is read at a type that lacks it.
+ * `solution` is written once, so it is `readonly` and solving replaces the
+ * entry -- a guardrail against an assignment that missed `setSolution`.
  *
  * `hint` and not `name`: an EVar is reached from an `FVar` carrying its level,
- * never by name, so this is what a diagnostic prints and nothing else. The
- * node carries its own copy with a `?` on the front, since printing a type has
- * no context to ask.
+ * never by name, so this is what a diagnostic prints and nothing else.
  */
 export type EVarEntry = {
   readonly kind: "EVar";
@@ -105,21 +93,16 @@ export type EVarEntry = {
    * worth, and the unit `Subtyper.withEVars` decides at once.
    *
    * Carried because a constraint may not mention *any* EVar of its own batch,
-   * not merely one to its right. Leftward looks harmless -- the solver goes
-   * ascending, so `?a` would be decided before `?b` reads it -- but the choice
-   * it makes for `?a` is made by polarity in the *result type* alone, blind to
-   * `?a` standing inside `?b`'s pending bounds. A principal choice there can
-   * still be the wrong one here, and the failure surfaces as a bound conflict
-   * on `?b` that names nothing the author wrote. Refusing the dependency keeps
-   * every batch a set of independent variables, which is the condition under
-   * which per-variable polarity is the whole story.
+   * not merely one to its right. Leftward looks harmless, the solver going
+   * ascending, but `?a`'s choice is made by polarity in the *result type*
+   * alone, blind to `?a` standing inside `?b`'s pending bounds. Refusing the
+   * dependency keeps every batch a set of independent variables, which is the
+   * condition under which per-variable polarity is the whole story.
    *
-   * The batch and not the whole context, though nothing tells the two apart
-   * any more: `withEVars` is called only once every argument has been
-   * checked, so two batches never overlap and every EVar in reach is a
-   * sibling. Stated as the batch's rule because that is the rule -- what makes
-   * a dependency unseeable is polarity being read off one result type, and
-   * that is a property of the group deciding together.
+   * Stated as the batch's rule even though nothing tells batch from context
+   * apart any more -- `withEVars` runs only once every argument is checked, so
+   * two batches never overlap -- because the group deciding together is what
+   * makes the dependency unseeable.
    */
   readonly batch: number;
   readonly lower: Type[];
@@ -128,26 +111,17 @@ export type EVarEntry = {
    * How this EVar occurs in the type its application hands back, which is what
    * decides between its two bounds.
    *
-   * On the entry and not in a table beside it, because a batch belongs to one
-   * application and that application has one result type -- so there is exactly
-   * one such fact per variable, the same as its bounds. Recorded by the opening
-   * that puts the variable into that result, `#applyCall` being the only place
-   * either happens.
-   *
-   * `none` until noted, and `none` forever for a variable the result never
-   * mentions. The two are the same answer: nothing downstream can tell which
-   * bound such a variable took. Like `lower` and `upper`, it is provisional
-   * until the batch is solved and meant to be read then.
+   * Recorded by the opening that puts the variable into that result. `none`
+   * until noted, and `none` forever for a variable the result never mentions:
+   * the two are the same answer, since nothing downstream can tell which bound
+   * such a variable took.
    */
   polarity: Polarity;
   /**
    * Whether a constraint refused as interdependent already accounts for this
-   * EVar.
-   *
-   * Without it such a variable is indistinguishable from one nothing ever tried
-   * to constrain, and the solver reports a second time that it cannot be
-   * inferred. That is one mistake told twice, and the second telling names a
-   * type parameter where the first named the thing the author wrote.
+   * EVar. Without it such a variable looks like one nothing ever tried to
+   * constrain, and the solver tells the same mistake a second time, naming a
+   * type parameter where the first telling named what the author wrote.
    */
   reported: boolean;
   readonly solution?: Type;
@@ -164,9 +138,9 @@ export type TermVarEntry = {
 export type Entry = TypeVarEntry | EVarEntry | TermVarEntry;
 
 /**
- * What resolving a name yields, the two halves not being peers: the level is
- * the binding's *identity*, the entry merely what sits there. `E` narrows it,
- * so `lookupTerm` reaches a `type` without a second test.
+ * What resolving a name yields: the level is the binding's *identity*, the
+ * entry what sits there. `E` narrows it, so `lookupTerm` reaches a `type`
+ * without a second test.
  */
 export type Binding<E extends Entry = Entry> = {
   readonly level: Level;
@@ -180,10 +154,8 @@ export class Context {
    * Every named entry's levels, innermost last, so resolving a name is the top
    * of its stack rather than a scan back through the whole context.
    *
-   * Nothing persistent is needed to survive `truncate`: truncation knows
-   * exactly which entries it drops, and pops them on the way out. Each is
-   * pushed once and popped at most once, so this costs O(1) amortised per
-   * binding where a resolution alone used to cost O(size).
+   * Truncation knows exactly which entries it drops and pops them on the way
+   * out, so nothing persistent is needed: O(1) amortised per binding.
    */
   readonly #levelsByName = new Map<string, Level[]>();
 
@@ -196,9 +168,8 @@ export class Context {
   }
 
   /**
-   * The entries, for tests and diagnostics. `readonly` covers the array only --
-   * its length and which entries are in it -- so what stops a caller writing
-   * through one is that entry's own fields, nothing here.
+   * The entries, for tests and diagnostics. `readonly` covers the array only,
+   * so what stops a caller writing through an entry is that entry's own fields.
    */
   get entries(): readonly Entry[] {
     return this.#entries;
@@ -234,9 +205,8 @@ export class Context {
    * A whole batch of EVars at once -- one per type parameter of the callee
    * being instantiated, which is the only place they arise.
    *
-   * The group is pushed together so that `batch` cannot be got wrong: it is the
-   * size before the first, so every member agrees on where the group starts,
-   * where a mark passed in by a caller could drift from the pushes it describes.
+   * Pushed together so `batch` cannot be got wrong: it is the size before the
+   * first, so every member agrees on where the group starts.
    */
   pushEVarBatch(hints: readonly string[]): Level[] {
     const batch = this.size;
@@ -254,13 +224,10 @@ export class Context {
   }
 
   /**
-   * A batch of one, which is what a lone EVar is: its batch begins at its own
-   * level, so it has no siblings to be refused a dependency on. Two of these
-   * are two batches, not one -- an argument list's worth must go through
-   * `pushEVarBatch` to be a batch.
+   * A batch of one: its batch begins at its own level, so it has no siblings
+   * to be refused a dependency on. Two of these are two batches, not one.
    *
-   * Only tests reach for this. The checker instantiates a whole callee or
-   * nothing.
+   * Only tests reach for this; the checker instantiates a whole callee.
    */
   pushEVar(hint: string): Level {
     const [level] = this.pushEVarBatch([hint]);
@@ -269,12 +236,9 @@ export class Context {
   }
 
   /**
-   * The entry at `level`. Total: a level is only ever obtained from a `push`
-   * or carried on a node the checker built, so one that names nothing -- or
-   * names an entry of the wrong kind -- is a checker bug, and reads by level
-   * say so rather than handing back an `undefined` a caller has to invent an
-   * answer for. Resolving a *name* is the question that may legitimately come
-   * back empty; `lookup` is where that is asked.
+   * The entry at `level`. Total: a level comes from a `push` or off a node the
+   * checker built, so naming nothing -- or an entry of the wrong kind -- is a
+   * checker bug. `lookup` is where a question may come back empty.
    */
   #entryAt<K extends Entry["kind"]>(
     level: Level,
@@ -302,11 +266,9 @@ export class Context {
   /**
    * The EVar at `level`, or `undefined` if the level holds something else.
    *
-   * The one read here that is allowed to come back empty, and the reason is
-   * that an `FVar` no longer says which it names. A rigid type variable and an
-   * EVar share the level space -- they always did, since scoping compares them
-   * against each other -- so what used to be two node kinds is one node and
-   * this question. Every rule that treats a variable as rigid asks it first;
+   * The one read by level allowed to come back empty, because an `FVar` does
+   * not say which kind it names -- rigid variables and EVars share the level
+   * space. Every rule that treats a variable as rigid asks this first;
    * `evarAt` stays total for the callers that already know.
    */
   evarOrUndefined(level: Level): EVarEntry | undefined {
@@ -324,14 +286,11 @@ export class Context {
    * by `level` -- since an EVar's constraints may only mention what stands to
    * its left, exactly as its eventual solution must.
    *
-   * The bar is the *batch*, not the level. Between the two stand only this
-   * EVar's own siblings -- a batch is pushed contiguously -- so the two bars
-   * agree on every type variable and differ on exactly one thing: a sibling.
-   * See `EVarEntry.batch` for why a sibling is refused even leftward.
-   *
-   * A caller is expected to have decided that already, and to have reported it
-   * as `interdependent` where it is the program's doing. Reaching here with one
-   * is a checker bug, so this throws.
+   * The bar is the *batch*, not the level: between the two stand only this
+   * EVar's siblings, and a sibling is refused even leftward (see
+   * `EVarEntry.batch`). A caller decides that first and reports it as
+   * `interdependent` where it is the program's doing, so reaching here with
+   * one is a checker bug and throws.
    */
   addConstraint(level: Level, side: "lower" | "upper", type: Type): void {
     const entry = this.evarAt(level);
@@ -397,19 +356,14 @@ export class Context {
    * Run `body` in a scope of its own, handing it the mark and truncating to it
    * however the body leaves -- returning or throwing.
    *
-   * The `finally` is not there to make a throw recoverable. Everything thrown
-   * in this checker is a bug, and the run is over. It is there so that the bug
-   * reported is the first one: a scope abandoned mid-flight leaves entries
-   * standing that the next `assertClosed` would trip over, and *that* failure
-   * is what would surface, naming a scope with nothing wrong with it.
+   * The `finally` does not make a throw recoverable; everything thrown here is
+   * a bug and the run is over. It is so that the bug reported is the *first*
+   * one: a scope abandoned mid-flight leaves entries standing that the next
+   * `assertClosed` would trip over, naming a scope with nothing wrong with it.
    *
-   * Being one form also makes the pairing visible. A mark taken and truncated
-   * fifty lines apart is a pairing only a reader keeps track of.
-   *
-   * Close inside, assert outside. `mark` is the scope's own business, so what
-   * the body hands back is already abstracted over it and nothing downstream
-   * needs the number; the assertion then reads against the context as it
-   * stands, which is what `assertClosed` asks about.
+   * Close inside, assert outside. What the body hands back is already
+   * abstracted over `mark`, so the assertion reads against the context as it
+   * stands.
    */
   inScope<T>(body: (mark: number) => T): T {
     const mark = this.size;
@@ -423,14 +377,11 @@ export class Context {
   /**
    * Assert that `types` are closed under the context *as it now stands* -- the
    * scope-exit check, to be asked once a scope has ended. No mark to pass: the
-   * watermark a survivor must sit under is `size`, and the context is the one
-   * that knows it. A caller repeating its own `mark` here could only repeat it
-   * wrongly.
+   * watermark a survivor must sit under is `size`.
    *
    * `depth` is not decoration. What outlives a scope is usually something the
-   * scope was just abstracted *into*, so a constructor's fields legitimately
-   * carry `BVar j` for each of the datatype's parameters and must be checked at
-   * `depth = arity`. Only a self-contained type checks at zero.
+   * scope was just abstracted *into*, so a constructor's fields carry `BVar j`
+   * per datatype parameter and must be checked at `depth = arity`.
    *
    * A failure is a checker bug, not a program error, so it throws rather than
    * joining the diagnostics.
@@ -451,12 +402,8 @@ export class Context {
    * every read by level -- and total in a second sense: an unbounded variable
    * stores `TUnknown`, so there is no "no bound" answer either.
    *
-   * Named for the side it takes, leaving room for a lower bound to be added
-   * beside it under its own name. `boundOf` would then name neither.
-   *
-   * Not to be confused with `Subtyper.solveUpperBoundOf`, which is about a
-   * different thing: the meet of an EVar's collected upper constraints. This
-   * one reads a binder, that one solves.
+   * Not `Subtyper.solveUpperBoundOf`, which meets an EVar's collected upper
+   * constraints. This one reads a binder, that one solves.
    */
   upperBoundAt(level: Level): Type {
     return this.#entryAt(level, "TypeVar").bound;
@@ -501,11 +448,8 @@ export class Context {
    * `isClosed(type, level)`. No separate occurs check, that being the same
    * question about one level.
    *
-   * Throws rather than reporting, for the reason the reads do. Solving twice,
-   * solving a level that holds no EVar, and solving to something that escapes
-   * are all checker bugs -- the solver decides each EVar once, at a point it
-   * chose, from bounds `addConstraint` already checked. A returned failure
-   * would only be a failure every caller ignored.
+   * Throws rather than reporting: solving twice, solving a level holding no
+   * EVar, and solving to something that escapes are all checker bugs.
    */
   setSolution(level: Level, type: Type): void {
     const entry = this.evarAt(level);
@@ -525,17 +469,14 @@ export class Context {
    * Apply the context as a substitution: replace every solved EVar by its
    * solution.
    *
-   * Called from exactly one place, the end of `Subtyper.withEVars`, and that
-   * is the whole of an EVar's life: a batch is pushed, two relations record
-   * against it, it is solved, and this is what carries the answers out.
-   * Nothing upstream needs it, because nothing upstream holds a type that
-   * names one -- checking an argument, closing a lambda, joining a `match`'s
-   * arms are all EVar-free.
+   * Called from exactly one place, the end of `Subtyper.withEVars`, which is
+   * the whole of an EVar's life: a batch is pushed, two relations record
+   * against it, it is solved, and this carries the answers out. Nothing
+   * upstream holds a type naming one.
    *
-   * One pass, no chain to follow. A solution is built from recorded bounds,
-   * `#constrain` refuses a bound mentioning any EVar of the batch, and there is
-   * no other batch to mention: an argument is checked before its callee's
-   * variables exist, so two batches never overlap.
+   * One pass, no chain to follow: a solution is built from recorded bounds,
+   * `#constrain` refuses a bound mentioning any EVar of the batch, and two
+   * batches never overlap.
    */
   apply(type: Type): Type {
     switch (type.kind) {

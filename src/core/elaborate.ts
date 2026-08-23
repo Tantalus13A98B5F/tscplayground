@@ -160,15 +160,13 @@ export class Elaborator {
    * group is in scope, so a bound may name an enclosing binder but never a
    * member of its own group.
    *
-   * The three steps are one call because a lambda's type parameters and a
-   * function type's are the same group under the same rules. Split, each side
-   * elaborated the bounds and built the binders for itself, and only the
-   * middle step -- the one with the reporting in it -- was ever shared.
+   * One call for a lambda's type parameters and a function type's alike, being
+   * the same group under the same rules.
    *
    * Reported here: a name used twice within the group, and one a declaration
    * already holds. The second is not a courtesy -- declarations are the other
    * namespace and nothing shadows them, so such a parameter would be
-   * unreachable, and silently, `#elaborateName` asking the context first.
+   * unreachable, and silently.
    */
   bindTypeParams(
     params: readonly TypeParam[],
@@ -176,9 +174,9 @@ export class Elaborator {
   ): TypeParamInfo[] {
     // Bounds already decided, where the caller has more to go on than what is
     // written -- a checking context supplying one an author left out. Deciding
-    // is the caller's whole business then, including which of the two wins, so
-    // nothing here looks at `param.bound` in that case. What stays here either
-    // way is the group: parallel elaboration, and the names.
+    // is then the caller's whole business, including which of the two wins, so
+    // `param.bound` is not consulted. What stays either way is the group:
+    // parallel elaboration, and the names.
     const bounds = decided ??
       params.map((param) =>
         param.bound === undefined ? TUnknown : this.elaborateType(param.bound)
@@ -225,15 +223,14 @@ export class Elaborator {
    *
    * The first takes a datatype's name and arity, an alias whole, *in source
    * order* -- so the first declaration of a name keeps it whichever kind it
-   * was. Sweeping the kinds separately would blame every clash on the alias.
-   * The price: an alias sees only what precedes it, which is the rule that
-   * already ruled out recursion among aliases.
+   * was. The price is that an alias sees only what precedes it, which is what
+   * rules out recursion among aliases.
    *
    * The second elaborates constructor fields against the complete signature
    * table, so a field may name its own datatype or one declared below. No
    * shortlist of winners is needed: `initCtors` refuses a name the first pass
-   * gave an alias, and one whose constructors are already in. A loser is still
-   * elaborated -- bad types inside it are reported -- but has nowhere to land.
+   * gave away. A loser is still elaborated -- bad types inside it are reported
+   * -- but has nowhere to land.
    */
   elaborateDeclarations(decls: readonly TypeDecl[]): void {
     for (const decl of decls) {
@@ -282,9 +279,8 @@ export class Elaborator {
       this.#bindPlainParams(decl.typeParams);
 
       // Uniqueness is *within* one datatype: `ctorOf` asks the scrutinee's own
-      // datatype for its `Nil`, so two may each have one. `flatMap` so a
-      // duplicate drops out rather than leaving a hole -- and dropping it, not
-      // the name, keeps a later `| Nil ->` from being a second, quieter error.
+      // datatype for its `Nil`, so two may each have one. The duplicate drops
+      // out and the name stays, so a later `| Nil ->` is not a second error.
       const seen = new Set<string>();
       return decl.ctors.flatMap((ctor): CtorInfo[] => {
         if (seen.has(ctor.name.text)) {
@@ -310,7 +306,6 @@ export class Elaborator {
 
     // The arity is a *binder depth*: a field sits under a binder no type node
     // materialises, so a depth-zero check would call every field ill-formed.
-    // Asked on the way out, so what is asserted is what `Declarations` gets.
     this.context.assertClosed(
       `datatype ${decl.name.text}`,
       ctors.flatMap((ctor) => ctor.fields),
@@ -365,16 +360,14 @@ export class Elaborator {
  * `MkPair : [A, B](A, B) -> Pair[A, B]`, and `True : Bool`.
  *
  * Derived rather than stored, so a constructor's function type and the field
- * types its patterns take apart cannot drift. `fields` are already closed over
- * the datatype's parameters, and they sit directly under this binder, so they
- * need no shifting.
+ * types its patterns take apart cannot drift. `fields` are already closed
+ * over the datatype's parameters and sit directly under this binder.
  *
  * A constructor with no fields of a datatype with no parameters is a *value*:
- * there is nothing to apply and nothing to instantiate, so `True` rather than
- * `True()`. Both conditions are needed. `Nil` of `List[A]` still has a type
- * argument to fix, and `[A]List[A]` is a quantifier over a non-function --
- * which the value restriction rules out -- so it stays `[A]() -> List[A]` and
- * is written `Nil[Bool]()`.
+ * nothing to apply and nothing to instantiate, so `True` rather than
+ * `True()`. Both conditions are needed -- `Nil` of `List[A]` still has a type
+ * argument to fix, and the value restriction rules out `[A]List[A]`, so it
+ * stays `[A]() -> List[A]` and is written `Nil[Bool]()`.
  */
 export function constructorType(
   datatype: DatatypeInfo,
