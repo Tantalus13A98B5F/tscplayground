@@ -52,7 +52,6 @@ import {
   TData,
   TFun,
   type Type,
-  type TypeMaybe,
 } from "./types.ts";
 
 /**
@@ -93,15 +92,17 @@ export type TypeVarEntry = {
  * written by someone who missed `setSolution`, and TypeScript drops the
  * modifier the moment the entry is read at a type that lacks it.
  *
- * `hint` and not `name`: an EVar is reached from an `EVar` node carrying its
- * level, never by name, so this is what a diagnostic prints and nothing else.
+ * `hint` and not `name`: an EVar is reached from an `FVar` carrying its level,
+ * never by name, so this is what a diagnostic prints and nothing else. The
+ * node carries its own copy with a `?` on the front, since printing a type has
+ * no context to ask.
  */
 export type EVarEntry = {
   readonly kind: "EVar";
   readonly hint: string;
   /**
    * Where the group this EVar was created with begins -- one argument list's
-   * worth, and the unit `#solveEVars` decides at once.
+   * worth, and the unit `Subtyper.withEVars` decides at once.
    *
    * Carried because a constraint may not mention *any* EVar of its own batch,
    * not merely one to its right. Leftward looks harmless -- the solver goes
@@ -113,9 +114,12 @@ export type EVarEntry = {
    * every batch a set of independent variables, which is the condition under
    * which per-variable polarity is the whole story.
    *
-   * Only within a batch. An EVar of an *enclosing* argument list is already
-   * solved or will be solved later by its own batch, and depending on one is
-   * ordinary -- it is how a bare lambda's parameter type gets fixed.
+   * The batch and not the whole context, though nothing tells the two apart
+   * any more: `withEVars` is called only once every argument has been
+   * checked, so two batches never overlap and every EVar in reach is a
+   * sibling. Stated as the batch's rule because that is the rule -- what makes
+   * a dependency unseeable is polarity being read off one result type, and
+   * that is a property of the group deciding together.
    */
   readonly batch: number;
   readonly lower: Type[];
@@ -127,7 +131,7 @@ export type EVarEntry = {
    * On the entry and not in a table beside it, because a batch belongs to one
    * application and that application has one result type -- so there is exactly
    * one such fact per variable, the same as its bounds. Recorded by the opening
-   * that puts the variable into that result, `#inferApp` being the only place
+   * that puts the variable into that result, `#applyCall` being the only place
    * either happens.
    *
    * `none` until noted, and `none` forever for a variable the result never
@@ -137,9 +141,8 @@ export type EVarEntry = {
    */
   polarity: Polarity;
   /**
-   * Whether something already reported accounts for this EVar: a constraint
-   * refused as interdependent, or an argument list of the wrong length that
-   * never supplied the constraint it would have.
+   * Whether a constraint refused as interdependent already accounts for this
+   * EVar.
    *
    * Without it such a variable is indistinguishable from one nothing ever tried
    * to constrain, and the solver reports a second time that it cannot be
@@ -255,6 +258,9 @@ export class Context {
    * level, so it has no siblings to be refused a dependency on. Two of these
    * are two batches, not one -- an argument list's worth must go through
    * `pushEVarBatch` to be a batch.
+   *
+   * Only tests reach for this. The checker instantiates a whole callee or
+   * nothing.
    */
   pushEVar(hint: string): Level {
     const [level] = this.pushEVarBatch([hint]);
@@ -291,6 +297,26 @@ export class Context {
   /** The EVar at `level`. Total, so the level must name one. */
   evarAt(level: Level): EVarEntry {
     return this.#entryAt(level, "EVar");
+  }
+
+  /**
+   * The EVar at `level`, or `undefined` if the level holds something else.
+   *
+   * The one read here that is allowed to come back empty, and the reason is
+   * that an `FVar` no longer says which it names. A rigid type variable and an
+   * EVar share the level space -- they always did, since scoping compares them
+   * against each other -- so what used to be two node kinds is one node and
+   * this question. Every rule that treats a variable as rigid asks it first;
+   * `evarAt` stays total for the callers that already know.
+   */
+  evarOrUndefined(level: Level): EVarEntry | undefined {
+    const entry = this.#entries[level];
+    if (entry === undefined) {
+      throw new Error(
+        `level ${level} names no entry: the context holds ${this.size}`,
+      );
+    }
+    return entry.kind === "EVar" ? entry : undefined;
   }
 
   /**
@@ -496,49 +522,35 @@ export class Context {
   }
 
   /**
-   * Apply the context as a substitution: replace every solved EVar by
-   * its solution, repeatedly, since one solution may mention another.
+   * Apply the context as a substitution: replace every solved EVar by its
+   * solution.
    *
-   * The recursion is load-bearing, and not in the way one batch would suggest.
-   * Within a batch it is dead by construction: a constraint may not mention a
-   * sibling at all, so no solution can name one.
+   * Called from exactly one place, the end of `Subtyper.withEVars`, and that
+   * is the whole of an EVar's life: a batch is pushed, two relations record
+   * against it, it is solved, and this is what carries the answers out.
+   * Nothing upstream needs it, because nothing upstream holds a type that
+   * names one -- checking an argument, closing a lambda, joining a `match`'s
+   * arms are all EVar-free.
    *
-   * Chains come from *nested* argument lists. An inner one is solved while an
-   * outer EVar is still open, and a bare lambda's parameter takes that outer
-   * EVar as its type directly -- so in
-   *
-   *     let id = fn [B](y: B) -> y
-   *     let f = fn [A](g: (A) -> A, a: A) -> g(a)
-   *     f(fn (x) -> id(x), True)
-   *
-   * `?B := ?A` is stored with `?A` unsolved, and only the later `?A := Bool`
-   * makes it a type. One hop, through a batch boundary.
-   *
-   * Termination rests on the escape check in `setSolution`: a solution only
-   * mentions EVars to its left, so the chain strictly decreases in level.
+   * One pass, no chain to follow. A solution is built from recorded bounds,
+   * `#constrain` refuses a bound mentioning any EVar of the batch, and there is
+   * no other batch to mention: an argument is checked before its callee's
+   * variables exist, so two batches never overlap.
    */
-  /**
-   * Patterns and not only types, for one reason: a coercion that fails prints
-   * what was wanted, and what was wanted may hold both a solved EVar and a
-   * missing part. A missing part is a leaf here like any other -- there is
-   * nothing in it to substitute into -- so this stays a walk over types that
-   * happens to admit them, rather than an operation on patterns.
-   */
-  apply<M>(type: TypeMaybe<M>): TypeMaybe<M> {
+  apply(type: Type): Type {
     switch (type.kind) {
       case "TUnknown":
       case "TNever":
       case "TBad":
       case "BVar":
-      case "FVar":
-      case "TMissing":
         return type;
-      case "EVar": {
-        // One `undefined` now, and it means the ordinary thing: unsolved. The
-        // other question -- whether the level holds an EVar at all -- is the
-        // read itself, and it throws rather than answering.
-        const solution = this.evarAt(type.level).solution;
-        return solution === undefined ? type : this.apply(solution);
+      case "FVar": {
+        // A rigid variable substitutes to itself, and an unsolved EVar stands
+        // as it is -- so the level is asked, and both non-answers are the same
+        // answer.
+        const entry = this.evarOrUndefined(type.level);
+        const solution = entry?.solution;
+        return solution ?? type;
       }
       case "TFun":
         return TFun(

@@ -3,7 +3,6 @@ import { Context } from "./context.ts";
 import {
   alphaEq,
   BVar,
-  EVar,
   FVar,
   type Level,
   mkDataName,
@@ -89,7 +88,7 @@ Deno.test("solve rejects a solution mentioning the variable itself", () => {
   const { context, a } = withEVar();
 
   // `?a` is not to the left of itself, so this is the escape check doing it.
-  expect(() => context.setSolution(a, TFun([], [EVar(a, "a")], TUnknown)))
+  expect(() => context.setSolution(a, TFun([], [FVar(a, "a")], TUnknown)))
     .toThrow("escapes");
   expect(context.evarAt(a).solution).toBeUndefined();
 });
@@ -137,21 +136,17 @@ Deno.test("a read by level is total, so a wrong one is a bug and not a value", (
   expect(() => context.evarAt(mkLevel(9))).toThrow("names no entry");
 });
 
-Deno.test("apply follows a chain of solutions", () => {
-  // ?b to the left of ?a, so `?a := ?b` is well scoped.
-  const context = new Context();
-  const b = context.pushEVar("b");
-  const a = context.pushEVar("a");
-  context.setSolution(b, TData(Bool));
-  context.setSolution(a, EVar(b, "b"));
+Deno.test("apply substitutes a solution wherever it stands", () => {
+  const { context, a } = withEVar();
+  context.setSolution(a, TData(Bool));
 
-  const applied = context.apply(TFun([], [EVar(a, "a")], TUnknown));
+  const applied = context.apply(TFun([], [FVar(a, "a")], TUnknown));
   expect(alphaEq(applied, TFun([], [TData(Bool)], TUnknown))).toBe(true);
 });
 
 Deno.test("apply leaves unsolved EVars alone", () => {
   const { context, a } = withEVar();
-  expect(alphaEq(context.apply(EVar(a, "a")), EVar(a, "a"))).toBe(true);
+  expect(alphaEq(context.apply(FVar(a, "a")), FVar(a, "a"))).toBe(true);
 });
 
 Deno.test("truncate ends a scope, keeping what came before it", () => {
