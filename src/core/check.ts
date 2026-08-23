@@ -32,13 +32,16 @@ import {
 import { Context } from "./context.ts";
 import { type CtorInfo, Declarations } from "./declarations.ts";
 import { ctorFieldsAt, Elaborator } from "./elaborate.ts";
-import { castComplete, Subtyper, type Verdict } from "./subtype.ts";
+import {
+  castComplete,
+  Subtyper,
+  type TypeArgFailure,
+  type Verdict,
+} from "./subtype.ts";
 import {
   closeFrom,
-  EVar,
   FVar,
   impossible,
-  type Level,
   mkLevel,
   openMany,
   openWith,
@@ -72,7 +75,7 @@ export class Checker {
   checkProgram(program: Program): Type {
     this.elaborator.elaborateDeclarations(program.decls);
     this.elaborator.seedConstructors();
-    return this.context.apply(this.infer(program.term));
+    return this.infer(program.term);
   }
 
   #report(message: string, at: Position, width = 1): void {
@@ -86,8 +89,8 @@ export class Checker {
     expected: TypePattern,
     at: Position,
   ): void {
-    const found = typeToString(this.context.apply(actual));
-    const wanted = typeToString(this.context.apply(expected));
+    const found = typeToString(actual);
+    const wanted = typeToString(expected);
     switch (verdict) {
       case "yes":
         return;
@@ -259,12 +262,10 @@ export class Checker {
         );
       }
 
-      // Applied before closing: an EVar solved inside the body must be gone
-      // before the entry holding its solution is truncated away.
-      const result = this.context.apply(this.check(
+      const result = this.check(
         term.body,
         openMany(wanted?.result ?? TMissing, opened),
-      ));
+      );
 
       // Closing the parts at the mark is what turns level `mark + j` back
       // into `BVar j`.
@@ -372,7 +373,7 @@ export class Checker {
   ): Type {
     const result = this.context.inScope(() => {
       this.#pushBinding(term.name, this.#letBinding(term));
-      return this.context.apply(this.check(term.body, expected));
+      return this.check(term.body, expected);
     });
     // With no dependent types a term variable cannot appear in a type, so a
     // `let` body's type never mentions the binding -- but say so out loud.
@@ -402,7 +403,7 @@ export class Checker {
    * what lets `empty()` at `List[Bool]` pick `Bool` where inference alone would
    * have nothing to go on.
    *
-   * It is a constraint and not a demand: the result is still subsumed against
+   * It is a constraint and not a demand: the result is still coerced towards
    * it afterwards, on the solved types, which is where a mismatch is reported.
    */
   #checkApp(
@@ -429,165 +430,146 @@ export class Checker {
       return TBad;
     }
 
-    const result = this.context.inScope(() => {
-      // One EVar per type parameter. This is the only place they are created,
-      // and one batch, which is the unit `#solveEVars` decides at once.
-      const levels = this.context.pushEVarBatch(
-        callee.typeParams.map((binder) => binder.hint),
+    // Every argument is checked before a single EVar exists. What it is
+    // checked against hides the type parameters behind missing parts: an
+    // undecided type argument says nothing about an argument's shape, and a
+    // missing part is how a type says nothing. So nothing here can reach an
+    // EVar, and batches cannot nest -- a nested call opens and closes its own
+    // entirely within this loop.
+    const missing = callee.typeParams.map(() => TMissing);
+    const patterns = callee.params.map((param) =>
+      openMany<number>(param, missing)
+    );
+    const actuals = term.args.map((arg, i) =>
+      this.check(arg, patterns[i] ?? TMissing)
+    );
+
+    // An argument list of the wrong length settles the call on its own. What
+    // the type parameters would have been is a question the missing arguments
+    // were going to answer, so there is nothing left to ask and nothing to
+    // suppress afterwards.
+    if (term.args.length !== callee.params.length) {
+      this.#report(
+        `expected ${callee.params.length} argument${
+          callee.params.length === 1 ? "" : "s"
+        }, found ${term.args.length}`,
+        term.at,
       );
-      const evars = callee.typeParams.map((binder, j) =>
-        EVar(levels[j] ?? impossible("a level per type parameter"), binder.hint)
-      );
-      for (const [j, binder] of callee.typeParams.entries()) {
-        // The declared bound is an upper bound like any other, so it takes part
+      return TBad;
+    }
+
+    // The widest type the expected pattern admits, which is what a pattern says
+    // as an upper bound: a missing part constrains nothing, so it becomes the
+    // extreme for its polarity and the written parts do the constraining on
+    // their own. Against a complete pattern this is the pattern itself, and
+    // against `TMissing` it is `unknown`, which constrains nothing at all.
+    const demanded = this.subtyper.downcast(TUnknown, expected).type;
+
+    // What is left is the relating, and that is all the EVars are for: the
+    // complete type each argument came back with against a parameter type over
+    // variables, which is the dependency-free relation LTI is decidable on.
+    const { result, failures } = this.subtyper.withEVars(
+      callee.typeParams.map((binder) => binder.hint),
+      (evars) => {
+        // The declared bound, as a constraint like any other, so it takes part
         // in the `lower <: upper` check rather than being enforced separately.
+        // Asked and not recorded directly: `?A <: unknown` is vacuous and the
+        // relation says so before it reaches the variable, which is exactly
+        // the unbounded case wanting no constraint at all.
         //
         // Bounds are *parallel*: one may name an enclosing binder but never a
-        // member of its own group, so this can never mention a sibling EVar --
-        // which `addConstraint` would refuse.
-        if (binder.bound.kind !== "TUnknown") {
-          const level = levels[j] ??
-            impossible("a level per type parameter");
-          this.context.addConstraint(level, "upper", binder.bound);
+        // member of its own group, so this can never mention a sibling.
+        for (const [j, binder] of callee.typeParams.entries()) {
+          const evar = evars[j] ?? impossible("an EVar per type parameter");
+          this.subtyper.isSubtype(evar, binder.bound);
         }
-      }
 
-      // Opened here, before an argument is looked at: the result does not
-      // depend on them, and opening it is what records each EVar's polarity --
-      // so every entry is fully described from the start rather than gaining a
-      // field partway through. The same type is what the application hands back
-      // once the batch is solved.
-      const result = openWith(callee.result, (j, polarity) => {
-        // Once per occurrence, so a variable standing in two places is noted
-        // twice and the two combine -- which is where `invariant` comes from
-        // when neither occurrence is.
-        this.context.notePolarity(
-          levels[j] ?? impossible("the result binds only this binder"),
-          polarity,
-        );
-        return evars[j] ?? impossible("the result binds only this binder");
-      });
+        // Opened before anything is related: the result does not depend on
+        // what the arguments say, and opening it is what records each EVar's
+        // polarity -- so every entry is fully described from the start rather
+        // than gaining a field partway through.
+        const result = openWith(callee.result, (j, polarity) => {
+          const evar = evars[j] ??
+            impossible("the result binds only this binder");
+          // Once per occurrence, so a variable standing in two places is noted
+          // twice and the two combine -- which is where `invariant` comes from
+          // when neither occurrence is.
+          this.context.notePolarity(evar.level, polarity);
+          return evar;
+        });
 
-      const params = callee.params.map((param) => openMany(param, evars));
-      if (term.args.length !== params.length) {
-        this.#report(
-          `expected ${params.length} argument${
-            params.length === 1 ? "" : "s"
-          }, found ${term.args.length}`,
-          term.at,
-        );
-        // The missing arguments are exactly what would have constrained the
-        // type parameters, so every EVar here is already spoken for. Left
-        // unmarked, a call short one argument reports the arity *and* that some
-        // type parameter could not be inferred -- a consequence, not a second
-        // mistake.
-        for (const level of levels) this.context.noteReported(level);
-      }
+        // Nothing is decided until the whole list is in, so the solution is a
+        // join and not a race, and the order here cannot matter.
+        const params = callee.params.map((param) => openMany(param, evars));
+        for (const [i, actual] of actuals.entries()) {
+          const param = params[i] ?? impossible("arities agree above");
+          // Reported here and not left to the solver. A plain `no` should be
+          // unreachable -- the complete parts of the parameter type are in the
+          // pattern, so the check above has already answered for them, and
+          // what is left is EVar positions, which record rather than refuse.
+          // But `interdependent` and `exhausted` are not that: they are the
+          // relation saying it declined to record, and nothing downstream will
+          // notice, since an EVar it gave up on is marked as already reported.
+          const verdict = this.subtyper.isSubtype(actual, param);
+          if (verdict !== "yes") {
+            const arg = term.args[i] ?? impossible("one actual per argument");
+            this.#reportVerdict(verdict, actual, param, arg.at);
+          }
+        }
 
-      // Left to right, each contributing constraints; nothing is decided until
-      // the whole list is in, so the solution is a join and not a race.
-      for (const [i, arg] of term.args.entries()) {
-        const param = params[i];
-        if (param === undefined) this.infer(arg);
-        else this.check(arg, param);
-      }
+        // The expected type, last: an argument tells us more about a type
+        // argument than the context does, and a constraint arriving later is
+        // not weaker anyway -- they are all joined at once. The verdict is
+        // dropped because the types it would name still hold EVars; the
+        // coercion in `#checkApp` asks again once they are solved.
+        this.subtyper.isSubtype(result, demanded);
+        return result;
+      },
+    );
 
-      // The expected type, last: an argument tells us more about a type
-      // argument than the context does, and a constraint arriving later is not
-      // weaker anyway -- they are all joined at once. The verdict is dropped
-      // because the types it would name still hold EVars; the subsumption in
-      // `#checkApp` asks again once they are solved, and reports there.
-      if (expected.kind !== "TMissing") {
-        // The widest type the pattern admits, which is what a pattern says as
-        // an upper bound: a missing part constrains nothing, so it becomes the
-        // extreme for its polarity and the written parts do the constraining
-        // on their own. Against a complete pattern this is the pattern itself.
-        this.subtyper.isSubtype(
-          result,
-          this.subtyper.downcast(TUnknown, expected).type,
-        );
-      }
-
-      this.#solveEVars(levels, term.at);
-      return this.context.apply(result);
-    });
+    for (const failure of failures) this.#reportTypeArg(failure, term.at);
     this.context.assertClosed("application", [result]);
     return result;
   }
 
   /**
-   * Decide every EVar of one argument list at once, ascending so a later
-   * solution may mention an earlier one.
-   *
-   * The levels are passed rather than scanned for. `#inferApp` created them and
-   * knows exactly which they are, so looking for them again would be asking the
-   * context a question the caller had already answered -- and would have to
-   * treat "not an EVar" as an ordinary answer, which by then it never is.
-   *
-   * Everything else it needs is on the entries: the bounds, and the polarity
-   * `#inferApp` recorded while opening the result. Members of one batch never
-   * depend on each other -- `#constrain` refuses that -- so each is decided on
-   * its own occurrences alone, with no ordering among them to get right.
-   *
-   * Every failure solves to `TBad`. Checking against a bad type always
-   * succeeds, so one uninferable argument does not go on to fail again wherever
-   * the result is used.
+   * Say that a type argument could not be settled. Three reasons, each its own
+   * message: `Subtyper` decides, and has no diagnostics to say it with.
    */
-  #solveEVars(levels: readonly Level[], at: Position): void {
-    for (const level of levels) {
-      const entry = this.context.evarAt(level);
-      if (entry.solution !== undefined) continue;
-
-      // A refused constraint was reported where it was refused, so this one is
-      // bad already and silently: whatever bounds did get through describe a
-      // variable the checker has given up on, and solving from them could only
-      // report the same mistake a second time under a different name.
-      if (entry.reported) {
-        this.context.setSolution(level, TBad);
-        continue;
-      }
-
-      const solved = this.subtyper.solveEVar(level, entry.polarity);
-      switch (solved.kind) {
-        case "solved":
-          // Stored as it stands. A candidate is built from bounds, and a bound
-          // may not mention a sibling, so there is nothing here an `apply`
-          // could substitute -- and a chain through an *enclosing* batch is
-          // resolved when the solution is read, which is what `apply` is for.
-          this.context.setSolution(level, solved.type);
-          break;
-        case "unconstrained":
-          // Bottom would do, and would even be principal. It is refused all the
-          // same: `never` propagates outward as a type the author never wrote
-          // and cannot act on, and the mistake it usually stands for -- an
-          // argument list that says nothing about a type parameter -- is better
-          // named where it happened.
-          this.#report(
-            `cannot infer the type argument ${entry.hint}: ` +
-              `nothing constrains it, so give it explicitly`,
-            at,
-          );
-          this.context.setSolution(level, TBad);
-          break;
-        case "conflict":
-          this.#reportVerdict(solved.verdict, solved.lower, solved.upper, at);
-          this.context.setSolution(level, TBad);
-          break;
-        case "disagrees":
-          // Not "expected X, found Y": both bounds hold, and either would
-          // check. What is missing is a reason to prefer one, which only the
-          // author has.
-          this.#report(
-            `cannot infer the type argument ${entry.hint}: it occurs ` +
-              `invariantly, and the arguments bound it only between ` +
-              `${typeToString(solved.lower)} and ` +
-              `${typeToString(solved.upper)}, so no choice is the general ` +
-              `one; give it explicitly`,
-            at,
-          );
-          this.context.setSolution(level, TBad);
-          break;
-      }
+  #reportTypeArg(failure: TypeArgFailure, at: Position): void {
+    switch (failure.reason.kind) {
+      case "unconstrained":
+        // Bottom would do, and would even be principal. It is refused all the
+        // same: `never` propagates outward as a type the author never wrote and
+        // cannot act on, and the mistake it usually stands for -- an argument
+        // list that says nothing about a type parameter -- is better named
+        // where it happened.
+        this.#report(
+          `cannot infer the type argument ${failure.hint}: ` +
+            `nothing constrains it, so give it explicitly`,
+          at,
+        );
+        return;
+      case "conflict":
+        this.#reportVerdict(
+          failure.reason.verdict,
+          failure.reason.lower,
+          failure.reason.upper,
+          at,
+        );
+        return;
+      case "disagrees":
+        // Not "expected X, found Y": both bounds hold, and either would check.
+        // What is missing is a reason to prefer one, which only the author has.
+        this.#report(
+          `cannot infer the type argument ${failure.hint}: it occurs ` +
+            `invariantly, and the arguments bound it only between ` +
+            `${typeToString(failure.reason.lower)} and ` +
+            `${typeToString(failure.reason.upper)}, so no choice is the ` +
+            `general one; give it explicitly`,
+          at,
+        );
+        return;
     }
   }
 
@@ -645,7 +627,7 @@ export class Checker {
       this.check(term.bound, ascribed);
       return ascribed;
     }
-    return this.context.apply(this.infer(term.bound));
+    return this.infer(term.bound);
   }
 
   // ------------------------------------------------------------------- match
@@ -735,7 +717,7 @@ export class Checker {
       if (arm.pattern.kind === "PCtor") {
         this.#bindPattern(arm.pattern, owner, args);
       }
-      return this.context.apply(this.check(arm.body, expected));
+      return this.check(arm.body, expected);
     });
     this.context.assertClosed("match arm", [type]);
     return type;

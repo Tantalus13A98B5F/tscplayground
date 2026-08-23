@@ -54,17 +54,17 @@ Deno.test("application instantiates a polymorphic callee", () => {
   );
 });
 
-Deno.test("a solution may name an EVar of an enclosing argument list", () => {
-  // The inner list solves while `?A` is still open, and the bare lambda's `x`
-  // has exactly `?A` for its type -- so `?B := ?A` is stored unsolved, and only
-  // the outer `?A := Bool` finishes it. This is what `Context.apply` recurses
-  // for; resolving one level deep would leave `?B` standing here.
+Deno.test("a nested application is solved before the outer one begins", () => {
+  // `id(x)` is checked while `f`'s type parameters do not yet exist: an
+  // argument's pattern hides them behind missing parts, and the batch is
+  // pushed only for the relating that follows. So `?B` is solved and gone
+  // before `?A` is created, and no solution ever names an EVar.
   expect(
     typeOf(
       ...BOOL,
       "let id = fn [B](y: B) -> y",
       "let f = fn [A](g: (A) -> A, a: A) -> g(a)",
-      "f(fn (x) -> id(x), True)",
+      "f(fn (x: Bool) -> id(x), True)",
     ),
   ).toBe("Bool");
 });
@@ -158,36 +158,53 @@ Deno.test("an invariant occurrence is not settled by a bound from one side", () 
   expect(messages[0]).toContain("occurs invariantly");
 });
 
-Deno.test("a bare lambda in the same list binds to the EVar itself", () => {
-  // Better than the Scala rule requires: the parameter is bound to `?A`
-  // directly, so as long as the body never needs its *structure*, the
-  // constraint from the other argument settles it afterwards. Argument order
-  // does not matter either, since nothing is solved until the list is done.
+Deno.test("a bare lambda in the same list has no type to take", () => {
+  // What an argument is checked against hides the type parameters behind
+  // missing parts, so `(A) -> A` arrives as `(?) -> ?` and `y` is told
+  // nothing. The constraint from the other argument cannot help: it is
+  // collected after this argument has already had to be checked.
+  for (
+    const call of [
+      "both(True, fn (y) -> y)",
+      "both(fn (y) -> y, True)",
+    ]
+  ) {
+    const decl = call.startsWith("both(True")
+      ? "let both = fn [A](x: A, f: (A) -> A) -> f(x);"
+      : "let both = fn [A](f: (A) -> A, x: A) -> f(x);";
+    const [, ...messages] = run(...BOOL, decl, call);
+    expect(messages.length).toBe(1);
+    expect(messages[0]).toContain("cannot infer a type for y");
+  }
+
+  // Annotated, in either order, and nothing else has changed.
   expect(
     typeOf(
       ...BOOL,
       "let both = fn [A](x: A, f: (A) -> A) -> f(x);",
-      "both(True, fn (y) -> y)",
+      "both(True, fn (y: Bool) -> y)",
     ),
   ).toBe("Bool");
   expect(
     typeOf(
       ...BOOL,
       "let both = fn [A](f: (A) -> A, x: A) -> f(x);",
-      "both(fn (y) -> y, True)",
+      "both(fn (y: Bool) -> y, True)",
     ),
   ).toBe("Bool");
 });
 
 Deno.test("a bare lambda that destructures needs a later list", () => {
-  // The boundary: `match` has to know the scrutinee's datatype, and `?A` is
-  // not one yet. This is where an earlier parameter list is required.
+  // Reported at the parameter now rather than at the `match`: there is no
+  // type to destructure because there was none to begin with. One message
+  // either way, and it names the thing the author can fix.
   const [, ...messages] = run(
     ...BOOL,
     "let both = fn [A](x: A, f: (A) -> A) -> f(x);",
     "both(True, fn (y) -> match y with | True -> False | False -> True)",
   );
-  expect(messages).toEqual(["cannot match on ?A: it is not a datatype"]);
+  expect(messages.length).toBe(1);
+  expect(messages[0]).toContain("cannot infer a type for y");
 
   // Staged over two lists, the same body is fine -- `A` given explicitly,
   // since it occurs invariantly in what the first list returns.
@@ -504,18 +521,18 @@ Deno.test("a declared bound is checked against what the arguments demand", () =>
   expect(messages[0]).toContain("Int");
 });
 
-Deno.test("two type parameters of one call may not depend on each other", () => {
-  // `?A <: ?B` is a dependency within one batch, which polarity cannot see:
-  // the selection for `?A` reads the result type alone. Refused, and reported
-  // once -- `?B` does not go on to complain that nothing constrained it.
-  const [type, ...messages] = run(
-    ...BOOL,
-    "let both = fn [A, B](x: A, f: (A) -> B) -> f(x);",
-    "both(True, fn (y) -> y)",
-  );
-  expect(type).toBe("<bad>");
-  expect(messages.length).toBe(1);
-  expect(messages[0]).toContain("depends on another type argument");
+Deno.test("two type parameters of one call no longer depend on each other", () => {
+  // This used to be refused as `?A <: ?B`, a dependency within one batch that
+  // polarity cannot see. Constraints are now collected between the *complete*
+  // type an argument came back with and the parameter type, so `?B := Bool`
+  // arrives ground and there is no dependency to refuse.
+  expect(
+    typeOf(
+      ...BOOL,
+      "let both = fn [A, B](x: A, f: (A) -> B) -> f(x);",
+      "both(True, fn (y: Bool) -> y)",
+    ),
+  ).toBe("Bool");
 });
 
 Deno.test("staging the same call in two lists is inferred", () => {
@@ -558,21 +575,23 @@ Deno.test("the same value is judged the same written inline or bound", () => {
   expect(inline.slice(1)).toEqual(bound.slice(1));
 });
 
-Deno.test("a refused dependency is reported once, on both variables", () => {
-  // `?A <: ?B` is refused, and `?A` is left with nothing. Marking only `?B`
-  // would report a second time that `A` could not be inferred.
+Deno.test("an unannotated lambda argument is reported once, not per variable", () => {
+  // `(A) -> B` arrives as `(?) -> ?`, so `y` has nothing -- one message, at
+  // the parameter. Neither `A` nor `B` goes on to complain separately that
+  // nothing constrained it: that is this same mistake under another name.
   const [, ...messages] = run(
     ...BOOL,
     "let both = fn [A, B](f: (A) -> B) -> f;",
     "both(fn (y) -> y)",
   );
   expect(messages.length).toBe(1);
-  expect(messages[0]).toContain("depends on another type argument");
+  expect(messages[0]).toContain("cannot infer a type for y");
 });
 
-Deno.test("an arity error does not also report an uninferable type argument", () => {
-  // The missing argument is what would have constrained `B`, so saying so
-  // again under another name is one mistake told twice.
+Deno.test("an arity error settles the call, and nothing is inferred after it", () => {
+  // No type arguments are asked for at all: the missing argument is what would
+  // have constrained `B`, so there is nothing left to ask. Saying so again
+  // under another name would be one mistake told twice.
   const [, ...messages] = run(
     ...BOOL,
     "let f = fn [A, B](x: A, y: B) -> x;",

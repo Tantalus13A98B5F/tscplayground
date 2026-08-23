@@ -17,15 +17,19 @@ missing parts.
 ## What this buys
 
 If constraints are only ever generated between a complete synthesized type and a
-parameter type over abstract variables, then no EVar appears in any type that
-flows anywhere. These all go:
+parameter type over abstract variables, then an EVar appears in no type that
+flows anywhere -- only in the two the checker relates on purpose. These all go:
 
-- the `EVar` case of `Type`, and with it `#assertUnsolved`, `Context.apply`, and
-  `expose`'s EVar handling
+- the `EVar` case of `Type`. A variable is an `FVar` naming a level, and the
+  entry there says whether it is rigid or still being inferred
 - `EVarMode`, and the whole `probe`/`collect` split -- `probe` exists only
   because `#join`/`#meet` walk types that might hold an EVar and must not
-  record; with none in `Type` there is nothing to record
-- the `interdependent` verdict and `noteReported`
+  record; the lattice is never handed one, so there is nothing to stop
+- every `Context.apply` but the one that carries a batch's answers out
+
+What survives, and should: `#assertUnsolved`, `expose`'s refusal to promote an
+EVar, `interdependent` and `noteReported`. Constraint collection is where an
+EVar is still real, and those are what it needs.
 
 That deletion is the point. The rest is how to get there.
 
@@ -43,12 +47,11 @@ position with no coercion -- which is the direction that matters, since
 subtyping and constraint solving take complete types only.
 
 The reverse does not narrow. Excluding `kind === "TMissing"` does not change the
-type argument, so "walked it, found none, treat it as complete" needs a
-validated cast, the way `assertClosed` already works: `assertComplete`. It is
-not one chokepoint but a handful, and they are all the same thing -- the steps
-that still relate two types through subtyping rather than through a cast. They
-go away with step 5, and the count is the honest measure of how much of the old
-relation is left.
+type argument, so "walked it, found none, treat it as complete" is a walk that
+has to fill what it finds -- and filling a missing part is what a cast does. So
+there is no separate `assertComplete`: `castComplete` is the one hole-
+elimination walk, and a second one cannot exist without the two disagreeing
+about what was invented.
 
 ## 2. Matching, and the two casts
 
@@ -72,9 +75,9 @@ parameterized by how much is known.
 
 Variance lives in the casts, which find the nearest matching type in a
 direction. They are total -- like subtyping, which reports rather than fails --
-and answer with a verdict beside the type. They collect constraints, never
-probe: a cast is something a checking rule _asks_, and what it learns on the way
-is exactly what the relation it replaces used to record.
+and answer with a verdict beside the type. They collect constraints like the
+relation does -- a cast is something a checking rule _asks_, and what it learns
+on the way is exactly what the relation it replaces used to record.
 
     downcast(T, P)  the greatest S <: T matching P
     upcast(T, P)    the least    S :> T matching P
@@ -178,14 +181,95 @@ inherits whatever the join can do.
   change is that an annotation wider than the pattern is now merged rather than
   refused, the merge being a downcast: `fn (x: unknown) -> x` checks at
   `(Bool) -> Bool`, which it has.
-- **5. Application on missing parts.** Patterns replace EVars in parameter
-  types; constraints move to step 4 above.
-- **6. Delete.** Including `#subsume`: what is left of it relates two written
-  types -- a bound against a bound, a type argument against its bound -- and
-  those are casts against a complete pattern, once nothing else is left to
-  break. `EVar` out of `Type`, and with it `EVarMode`, `probe`, `apply`,
-  `#assertUnsolved`, `interdependent`. Constraints live in the context, indexed
-  by binder position. Separate commit, so the deletion reads as one.
+- **5. Application on missing parts.** Done. Each parameter type is opened
+  twice: once with `TMissing` for its type parameters, which is what the
+  argument is checked against, and once with the EVars, which is what the
+  complete type coming back is then related to. Constraints are collected
+  between two ground types, which is the property §1 says LTI rests on and we
+  had broken. The relation's verdict is reported: a plain `no` is unreachable
+  there, the pattern having already answered for every complete part, but
+  `interdependent` and `exhausted` are the relation declining to record, and the
+  EVar it gave up on is marked as reported, so nothing downstream would. The
+  cost step 0 measured is paid here and nowhere else: a bare lambda in the same
+  argument list now asks for an annotation, in three tests. What it bought is
+  `interdependent` becoming unreachable in practice --
+  `both[A, B](True, fn (y: Bool) -> y)` was refused and now infers, since
+  `?B := Bool` arrives already solved rather than as `?A <: ?B`.
+- **6. `EVar` out of `Type`.** Done, but not as written above. "Constraints live
+  in the context, indexed by binder position" was the wrong shape: an index is
+  relative, so the relation would have had to carry a binder and a depth. A
+  level is absolute, and type variables and EVars already share the level space
+  -- so an EVar is simply an `FVar`, and the entry at that level says which kind
+  it is. The node's `kind` was a second copy of an answer the context already
+  held.
+
+  What that costs: `FVar` no longer licenses promotion on sight. Exposure,
+  `#join`'s standing-aside, `#meet`'s dual, `#avoid`'s widening, and
+  `#castHead`'s covariant promotion all ask `#rigid` first, because an EVar has
+  constraints where a rigid variable has a declared bound. Six places, all
+  adjacent to a rule that already had to distinguish them.
+
+  What carries the rest of the deletion is not the node but an invariant about
+  the _entry_: **an EVar entry is short-lived, and inside its window only two
+  types name one.** A batch is pushed in `#applyCall`, the two
+  constraint-collecting relations record against it -- an argument against its
+  parameter, the result against the expected type -- it is solved, and it is
+  gone. Everything else in that window is EVar-free by construction: patterns
+  hide the type parameters behind missing parts, arguments come back complete, a
+  recorded bound has been avoided already.
+
+  So:
+
+  - **`EVarMode` and `probe` go.** They existed to stop `#join`/`#meet`
+    recording on an operand. The lattice joins a `match`'s arms and the bounds a
+    batch collected, and neither can name an EVar -- so there is nothing to
+    stop. Recording is now unconditional, gated by reaching an EVar at all.
+  - **`Context.apply` has one caller**, the end of `#applyCall`. The other seven
+    -- closing a lambda, a `let` body, a `match` arm, the program's result, both
+    sides of a printed verdict -- were substituting into types that cannot hold
+    an EVar. Verified by removing them: the suite does not move. It takes a
+    `Type` rather than a pattern now, for the same reason.
+  - **`interdependent` stays**, and earns it: constraint collection is exactly
+    where a sibling or an escaping variable can still turn up.
+
+  Then the invariant was made structural rather than argued. **Arguments are
+  checked before the batch is pushed**, so there is a stretch of `#applyCall`
+  where no EVar exists at all, and the EVars are created only for the relating
+  that follows. That has a consequence worth naming: **batches never overlap**.
+  A nested application opens and closes its own entirely inside the argument
+  loop, so a constraint mentioning an EVar can only mean a sibling, and there is
+  no "enclosing batch" case left anywhere.
+
+  **`Subtyper.withEVars` owns the batch and nothing else** -- the scope, one
+  EVar per hint, solving, and the substitution that carries the answers out. Not
+  even the declared bounds: a bound is a constraint like any other, and
+  `#applyCall` records it by asking `?A <: bound` the way it asks everything
+  else, which also makes the unbounded case fall out rather than be excluded --
+  `?A <: unknown` is vacuous and the relation says so before it reaches the
+  variable. What the call _does_ with its variables stays in `#applyCall` too:
+  which types to open, where the polarity lies, what to relate. `#solveEVars`
+  moved in, leaving `#reportTypeArg` behind, since the three failures differ
+  only in what to _say_.
+
+  Arity stopped being part of this. An argument list of the wrong length now
+  settles the call on its own -- report, and `<bad>` -- rather than
+  instantiating a batch and then suppressing everything it concluded. The
+  suppression was `abandon`, and it was really the admission that a wrong arity
+  and an uninferable type argument had been made one thing when they are two.
+
+  With that, the assertions guarding what can no longer happen go too:
+  `#assertUnsolved` at the relation's head and the cast's, and
+  `#unsolvedEVarsFrom`'s throw on a solved EVar. Solving happens after the last
+  constraint and the scope drops immediately after, so a solved EVar is never
+  standing where anything looks. `Context.apply` stops recursing for the same
+  reason -- a solution is built from bounds that cannot name an EVar, and there
+  is no second batch to name.
+
+  `setSolution`'s checks stay: those are about _scope_, which is avoidance's
+  business and still subtle.
+- **7. `#subsume`.** What is left of it relates two written types -- a bound
+  against a bound, a type argument against its bound -- and those are casts
+  against a complete pattern, once nothing else is left to break.
 
 Steps 2 and 3 were additive and safe. Step 4 was the commitment point, and it
 came through without moving the suite -- the behavior it commits to is not paid

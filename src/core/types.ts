@@ -22,9 +22,12 @@
  * no allocator: the next one is the context's size. Type variables and EVars
  * share the space, because scoping compares the two against each other: a
  * solution may only mention what stands to its left, whichever kind that is.
- * So one level names one entry, and the entry's kind says which it is -- ask
- * `Context.upperBoundAt` or `evarAt`, each of which asks and narrows at once,
- * and neither of which answers: a level naming the wrong kind is a bug.
+ *
+ * Sharing the space is why they share a node. An `FVar` names a level and
+ * nothing more; whether that level holds a rigid variable or one still being
+ * inferred is the entry's business, asked through `Context.evarOrUndefined`.
+ * A `kind` on the node would have been a second copy of that answer, and two
+ * copies of one fact can disagree.
  */
 export type Level = number & { readonly __brand: "Level" };
 export type DataName = string & { readonly __brand: "DataName" };
@@ -87,7 +90,6 @@ export type TypeMaybe<M> =
   | { readonly kind: "TBad" } // failure to resolve, can be used arbitrarily
   | { readonly kind: "BVar"; readonly index: number }
   | { readonly kind: "FVar"; readonly level: Level; readonly hint: string }
-  | { readonly kind: "EVar"; readonly level: Level; readonly hint: string }
   /**
    * `[b0 <: B0, ..] (params) -> result`, uncurried and possibly polymorphic.
    * Arity is part of the type, so `(A, B) -> C` and `A -> B -> C` are unrelated.
@@ -124,12 +126,11 @@ export function BVar(index: number): Type {
   return { kind: "BVar", index };
 }
 
-export function FVar(level: Level, hint: string): Type {
+export function FVar(
+  level: Level,
+  hint: string,
+): Extract<Type, { kind: "FVar" }> {
   return { kind: "FVar", level, hint };
-}
-
-export function EVar(level: Level, hint: string): Type {
-  return { kind: "EVar", level, hint };
 }
 
 /**
@@ -199,9 +200,10 @@ export function bothPolarities(left: Polarity, right: Polarity): Polarity {
  * A rule rather than an array because the two things a caller may want at a
  * variable's position are both things an array cannot express: the replacement
  * may depend on the polarity of the position, and reaching one may be worth
- * recording. `#inferApp` does the second -- it learns each EVar's polarity in
+ * recording. `#applyCall` does the second -- it learns each EVar's polarity in
  * the result while putting it there, rather than walking the answer again to
- * ask -- and a substitution that reads the first is what this is shaped for.
+ * ask -- and a substitution that reads the first is what this is
+ * shaped for.
  *
  * Called once per *occurrence*, so a variable appearing twice is offered twice,
  * at each polarity it stands in. A rule that records has to combine them; one
@@ -233,7 +235,6 @@ function openAt<M>(
     case "TBad":
     case "TMissing":
     case "FVar":
-    case "EVar":
       return type;
     case "BVar":
       // Bound by a binder inside the one being opened: leave it alone.
@@ -303,6 +304,12 @@ export function open<M = never>(
   return openMany(type, [replacement]);
 }
 
+/**
+ * An EVar is an `FVar` like any other here, so one at or past the mark would be
+ * captured into the binder rather than left standing. Nothing reaches this with
+ * one: `withEVars` decides every member of its batch -- to `TBad` where it
+ * cannot -- and the application substitutes them away before its scope exits.
+ */
 function closeAt<M>(
   type: TypeMaybe<M>,
   depth: number,
@@ -314,7 +321,6 @@ function closeAt<M>(
     case "TBad":
     case "TMissing":
     case "BVar":
-    case "EVar":
       return type;
     case "FVar": {
       const at = type.level - mark;
@@ -387,7 +393,6 @@ export function isClosed<M>(
     case "BVar":
       return type.index < depth;
     case "FVar":
-    case "EVar":
       return type.level < levels;
     case "TFun": {
       // Bounds are parallel, so they stay at `depth`; only what the binder
@@ -434,8 +439,6 @@ export function alphaEq<M>(
       return right.kind === "BVar" && left.index === right.index;
     case "FVar":
       return right.kind === "FVar" && left.level === right.level;
-    case "EVar":
-      return right.kind === "EVar" && left.level === right.level;
     case "TFun":
       // `hint` is for printing only, so not compared.
       return right.kind === "TFun" &&
@@ -471,8 +474,6 @@ function toStringAt<M>(
       return names[type.index] ?? `?${type.index}`;
     case "FVar":
       return type.hint;
-    case "EVar":
-      return `?${type.hint}`;
     case "TFun": {
       const hints = type.typeParams.map((b) => b.hint);
       // Bounds are parallel, so they read in the *enclosing* scope.

@@ -8,19 +8,31 @@
  * That third answer is load-bearing: reporting "gave up" as "these types are
  * unrelated" would blame the program for the checker's limit.
  *
+ * An EVar is not a node here. A variable is an `FVar` naming a level, and the
+ * entry at that level says whether it is rigid -- a declared bound, never
+ * solved -- or one still being inferred. Every rule that would read a bound
+ * has to ask, which is what `#rigid` is for: promotion, exposure, and
+ * avoidance are all things only a rigid variable admits.
+ *
  * The relation is not a predicate. Meeting an unsolved EVar records a
  * constraint on it, so `isSubtype` mutates the context. Nothing is solved on
- * sight, though -- bounds accumulate, and the checker's `#solveEVars` calls
- * `solveEVar` here once the whole batch is in, which is why no operation ever
- * has to be undone.
+ * sight, though -- bounds accumulate, and `withEVars` solves the whole batch
+ * once the last one is in, which is why no operation ever has to be undone.
  *
  * `join` and `meet` do not, and are the only operations here that can be read
  * as plain questions. They are structural: heads that cannot be ordered by
  * looking at them settle for top or bottom, and only a variable -- whose order
- * lives in its bound, not its head -- is worth asking the relation about. That
- * ask runs in `probe` mode, where an unsolved EVar answers instead of
- * recording; taking the LUB of a `match`'s arms would otherwise pick up a
- * constraint from whichever side happened to be tested first.
+ * lives in its bound, not its head -- is worth asking the relation about.
+ *
+ * They record nothing, and not because they are asked in some careful way:
+ * they are never handed a type that names an EVar. An EVar entry is
+ * short-lived, standing only across `#applyCall`, and inside that window the
+ * only types naming one are the two the checker relates on purpose -- an
+ * argument against its parameter, and the result against the expected type.
+ * Everything else there is EVar-free by construction: patterns hide the type
+ * parameters behind missing parts, arguments come back complete, and a
+ * recorded bound has been avoided already. So the lattice joins a `match`'s
+ * arms and the bounds a batch collected, and neither can reach one.
  */
 
 import type { Context } from "./context.ts";
@@ -29,7 +41,6 @@ import {
   alphaEq,
   BVar,
   closeFrom,
-  EVar,
   flip,
   FVar,
   impossible,
@@ -177,22 +188,6 @@ function bothVerdicts(left: Verdict, right: Verdict): Verdict {
 export type Verdict = "yes" | "no" | "exhausted" | "interdependent";
 
 /**
- * What the relation does when it reaches an unsolved EVar.
- *
- * `collect` is the relation proper: the EVar takes a bound instead of an
- * answer, which is how an argument list says what a type parameter must be.
- * `probe` asks without writing, and answers `no` for "not known to hold" --
- * there is no bound to consult on a variable nothing has decided yet.
- *
- * Only the lattice probes. It is asked as a question, and an answer that
- * silently constrained one of its operands would depend on which side it tried
- * first. `no` there costs precision and never soundness: the caller widens to
- * top or narrows to bottom, where the relation proper would have accepted a
- * wrong program.
- */
-export type EVarMode = "collect" | "probe";
-
-/**
  * Steps allowed per top-level query. A real signature needs a handful; this is
  * bounded well below the call stack, since exhaustion has to be *reported* and
  * a stack overflow cannot be.
@@ -219,17 +214,11 @@ function completeLeaf(
       return BVar(pattern.index);
     case "FVar":
       return FVar(pattern.level, pattern.hint);
-    case "EVar":
-      return EVar(pattern.level, pattern.hint);
   }
 }
 
 export class Subtyper {
   #fuel: number;
-
-  /** What the relation does with an unsolved EVar; see `EVarMode`. Set by the
-   * public entry points, which are the only places that know why they ask. */
-  #mode: EVarMode = "collect";
 
   /** `budget` is injectable so a test can reach exhaustion without a type
    * deep enough to trouble the stack on its way there. */
@@ -247,71 +236,61 @@ export class Subtyper {
    * as one; it says nothing in reverse, so a checking rule's expected type must
    * be taken as written, and there is nothing here for it to call.
    *
-   * No substitution on the way. Nothing this class is handed mentions a solved
-   * EVar -- see `#constrain` -- so following one would be a step that never
-   * happens, and `#assertUnsolved` says so rather than quietly taking it.
+   * No substitution on the way. A solved EVar cannot be reached from anywhere:
+   * `withEVars` solves the batch after the last constraint is in and drops
+   * the scope immediately after, so a solved one is never standing where
+   * anything can look at it.
+   *
+   * Rigid variables only. An EVar is a variable too, but exposing one would
+   * read a bound it has not got: what it has is constraints, and a shape it
+   * has not been given yet is not one it can be made to stand aside for.
    */
   expose(type: Type): Type {
     let current = type;
-    this.#assertUnsolved(current);
-    while (current.kind === "FVar") {
+    while (this.#rigid(current)) {
       current = this.context.upperBoundAt(current.level);
-      this.#assertUnsolved(current);
     }
     return current;
   }
 
   /**
-   * A solved EVar standing where the relation can see it is a checker bug: the
-   * one place they are solved applies and truncates immediately afterwards, so
-   * what escapes is the solution and never the variable.
+   * Is this variable one still being inferred?
    *
-   * The head alone, which is where dispatch happens. Anything deeper is reached
-   * by a recursive call that asks again, or by `#unsolvedEVarsFrom`, which asks
-   * about a whole type at once.
+   * Every rule that reads a variable's *bound* has to ask. A rigid variable
+   * has a declared bound and standing aside for it is sound upward; an EVar
+   * has constraints instead, and no value yet -- promoting one would read a
+   * bound it does not have and throw. So `FVar` alone never licenses
+   * promotion, and `#rigid` is what does.
    */
-  #assertUnsolved(type: Type): void {
-    if (type.kind !== "EVar") return;
-    const entry = this.context.evarAt(type.level);
-    if (entry.solution !== undefined) {
-      throw new Error(
-        `?${entry.hint} is solved, but reached the relation unsubstituted`,
-      );
-    }
+  #isEVar(level: Level): boolean {
+    return this.context.evarOrUndefined(level) !== undefined;
+  }
+
+  /** A variable that may stand aside for its declared bound. */
+  #rigid(type: Type): type is Extract<Type, { kind: "FVar" }> {
+    return type.kind === "FVar" && !this.#isEVar(type.level);
   }
 
   /** Does `left <: right` hold? Resets the fuel, so this is a *top-level* ask. */
   isSubtype(left: Type, right: Type): Verdict {
-    return this.#query("collect", () => this.#subtype(left, right));
+    return this.#query(() => this.#subtype(left, right));
   }
 
   /**
-   * Begin a top-level query: a fresh tank, and a mode for the whole of it.
+   * Begin a top-level query: a fresh tank.
    *
    * The fuel is per query, not per call, so everything reachable from one ask
    * shares a budget -- including the relation tests the lattice runs. The
    * `#`-prefixed workers never reset, or a nested test would hand the outer
-   * query a fresh tank and defeat the counter. The mode is restored rather
-   * than set, so a query nested inside another leaves it as it found it.
+   * query a fresh tank and defeat the counter.
    */
-  #query<T>(mode: EVarMode, run: () => T): T {
-    const outer = this.#mode;
+  #query<T>(run: () => T): T {
     this.#fuel = this.budget;
-    this.#mode = mode;
-    try {
-      return run();
-    } finally {
-      this.#mode = outer;
-    }
+    return run();
   }
 
   #subtype(s: Type, t: Type): Verdict {
     if (this.#fuel-- <= 0) return "exhausted";
-    // Dispatch reads these two heads, so this is where the invariant is asked
-    // about: what stands here has to be a variable still open, not the shadow
-    // of one already decided.
-    this.#assertUnsolved(s);
-    this.#assertUnsolved(t);
 
     // Top and bottom, whatever stands opposite: vacuous either way, so nothing
     // is learned and nothing is recorded -- in particular no constraint against
@@ -336,18 +315,22 @@ export class Subtyper {
     // would leave it unconstrained, and the checker would then report that it
     // could not infer a type argument -- blaming the program a second time for
     // an error already reported.
-    if (s.kind === "EVar" && t.kind === "EVar" && s.level === t.level) {
-      return "yes";
-    }
-    // Only `collect` records. A probe drops through: nothing may be written,
-    // and a variable nothing has decided yet holds no bound to read, so it
-    // takes its answer from the rules below, which decline it.
-    if (this.#mode === "collect") {
-      if (s.kind === "EVar" && (t.kind !== "EVar" || s.level > t.level)) {
+    //
+    // Recording is not conditional on a mode, because reaching an EVar at all
+    // is conditional on there being one. Only the two constraint-collecting
+    // asks in `#applyCall` are handed a type that names one, and the lattice
+    // is never one of them: it joins a `match`'s arms and the bounds already
+    // recorded, all of which are complete and EVar-free.
+    const tEVar = t.kind === "FVar" && this.#isEVar(t.level)
+      ? t.level
+      : undefined;
+    if (s.kind === "FVar" && this.#isEVar(s.level)) {
+      if (s.level === tEVar) return "yes";
+      if (tEVar === undefined || s.level > tEVar) {
         return this.#constrain(s.level, "upper", t);
       }
-      if (t.kind === "EVar") return this.#constrain(t.level, "lower", s);
     }
+    if (tEVar !== undefined) return this.#constrain(tEVar, "lower", s);
 
     // A bad type stands for a report already made, so it relates to anything.
     // Letting it fail here would blame the program twice for one mistake.
@@ -358,7 +341,7 @@ export class Subtyper {
     // An unbounded variable promotes to `unknown`, which the top rule above
     // has already turned down for this `t` -- so the recursion answers "no"
     // there, and nothing here has to.
-    if (s.kind === "FVar") {
+    if (this.#rigid(s)) {
       // The same variable, before promoting: `X <: X` holds by reflexivity, and
       // going to the bound would lose it -- nothing relates `X`'s bound back to
       // `X`, so the recursion would answer "no" for a pair that plainly holds.
@@ -470,12 +453,9 @@ export class Subtyper {
    * side: a lower bound may only be widened, an upper bound only narrowed.
    */
   #constrain(level: Level, side: "lower" | "upper", type: Type): Verdict {
-    // No `apply` first. Nothing reaching here can mention a *solved* EVar, and
-    // `#unsolvedEVarsFrom` says so rather than trusting it: a bound is closed
-    // by its batch, so it cannot name a sibling at all; an enclosing batch is
-    // solved strictly after this one finishes; and a nested application applies
-    // and truncates before it returns anything. Substituting first would have
-    // been a no-op that hid all three.
+    // No `apply` first. A batch is solved only after the last constraint is
+    // in, so nothing reaching here can mention a *solved* EVar and
+    // substituting would be a no-op that hid the fact.
     const batch = this.context.evarAt(level).batch;
 
     // Interdependence is decided over the whole type, before any widening, and
@@ -526,18 +506,11 @@ export class Subtyper {
       case "TNever":
       case "TBad":
       case "BVar":
-      case "FVar":
         return [];
-      case "EVar": {
-        const entry = this.context.evarAt(type.level);
-        if (entry.solution !== undefined) {
-          throw new Error(
-            `?${entry.hint} is solved, but stands in a type being ` +
-              `constrained: it should have been substituted away`,
-          );
-        }
-        return type.level >= from ? [type.level] : [];
-      }
+      case "FVar":
+        return type.level >= from && this.#isEVar(type.level)
+          ? [type.level]
+          : [];
       case "TFun":
         return [
           ...type.typeParams.flatMap((b) =>
@@ -572,13 +545,11 @@ export class Subtyper {
         return type;
       case "FVar": {
         if (type.level < levels) return type;
-        // Upward, a variable's declared bound is the nearest thing it is
-        // known to sit under; downward there is no lower bound to appeal to,
-        // so bottom is all that is left.
-        if (dir === "down") return TNever;
-        return this.#avoid(this.context.upperBoundAt(type.level), levels, dir);
-      }
-      case "EVar":
+        // An EVar out of scope is the interdependent case, and the two kinds
+        // of variable part here: a rigid one has a declared bound to widen to,
+        // an EVar has no value yet, so nothing can be said in terms of it and
+        // widening to top would silently throw the constraint away.
+        //
         // Unreachable from `#constrain`, which rejects a type mentioning an
         // unsolved EVar from the batch onward before any of this runs -- a
         // stricter bar, the batch beginning at or before `levels`. Kept because
@@ -586,11 +557,13 @@ export class Subtyper {
         // without looking, so an EVar inside an invariant argument would be
         // dropped silently rather than reaching this branch at all. That is the
         // hole the pre-pass exists to cover, and this is what it would cost.
-        //
-        // An unsolved EVar out of scope is the interdependent case: its
-        // solution is not known yet, so no bound can be given in terms of it,
-        // and widening to top would silently throw the constraint away.
-        return type.level < levels ? type : undefined;
+        if (this.#isEVar(type.level)) return undefined;
+        // Upward, a variable's declared bound is the nearest thing it is
+        // known to sit under; downward there is no lower bound to appeal to,
+        // so bottom is all that is left.
+        if (dir === "down") return TNever;
+        return this.#avoid(this.context.upperBoundAt(type.level), levels, dir);
+      }
       case "TData": {
         // Arguments are invariant, so neither direction may touch them. If one
         // mentions something out of scope, the whole type collapses.
@@ -625,7 +598,7 @@ export class Subtyper {
    * there is no union type, so an inexact answer has to be the sound one.
    */
   join(left: Type, right: Type): Type {
-    return this.#query("probe", () => this.#join(left, right));
+    return this.#query(() => this.#join(left, right));
   }
 
   #join(s: Type, t: Type): Type {
@@ -641,10 +614,10 @@ export class Subtyper {
     // recursion walks down the context and stops. One against itself joins
     // there, which also keeps an unbounded variable off the walk to `unknown`.
     if (s.kind === "FVar" && t.kind === "FVar" && s.level === t.level) return s;
-    if (s.kind === "FVar" && (t.kind !== "FVar" || s.level > t.level)) {
+    if (this.#rigid(s) && (!this.#rigid(t) || s.level > t.level)) {
       return this.#join(this.context.upperBoundAt(s.level), t);
     }
-    if (t.kind === "FVar") {
+    if (this.#rigid(t)) {
       return this.#join(s, this.context.upperBoundAt(t.level));
     }
 
@@ -657,25 +630,23 @@ export class Subtyper {
     // structure left to walk: either the two are the same type or they have
     // nothing above them but top. Invariance asks `#equiv` and not `alphaEq`,
     // since a `never`-bounded variable is equivalent to types it is not
-    // spelled like -- and the probe keeps that question from recording.
+    // spelled like. Nothing is recorded, there being no EVar to record on.
     if (s.kind === "TData" && t.kind === "TData") {
       return s.name === t.name && this.#equivArgs(s.args, t.args)
         ? s
         : TUnknown;
     }
 
-    // An unsolved EVar joins with itself and nothing else: it stands for a type
-    // not yet chosen, and no bound of it may be read here -- this is where
-    // `probe` declines. A `BVar` is likewise only itself, though no binder is
-    // open at this point for one to escape from.
-    if (s.kind === "EVar" && t.kind === "EVar" && s.level === t.level) return s;
+    // A `BVar` is only itself, though no binder is open at this point for one
+    // to escape from. An unsolved EVar is the same, and is answered above by
+    // the rule that joins any variable with itself.
     if (s.kind === "BVar" && t.kind === "BVar" && s.index === t.index) return s;
     return TUnknown;
   }
 
   /** Greatest lower bound. Falls back to `never`, dual to `join`. */
   meet(left: Type, right: Type): Type {
-    return this.#query("probe", () => this.#meet(left, right));
+    return this.#query(() => this.#meet(left, right));
   }
 
   #meet(s: Type, t: Type): Type {
@@ -687,8 +658,8 @@ export class Subtyper {
     // Downward a variable may not stand aside for its bound: nothing says the
     // bound sits under it, so meeting there would invent a subtype. All that
     // can be said is whether the variable is already below the other, which is
-    // a question for the relation -- asked in `probe`, so the other operand
-    // picks up no constraint from having been tested.
+    // a question for the relation. Asking it writes nothing: neither operand
+    // can name an EVar, or the lattice would not have been handed them.
     //
     // Asked once, and of the same side `#join` promotes. Only a variable can
     // sit under a variable, since nothing else reaches one from below; and of
@@ -696,10 +667,10 @@ export class Subtyper {
     // the other direction is the question whose answer is already known, and
     // one against itself is an answer without asking.
     if (s.kind === "FVar" && t.kind === "FVar" && s.level === t.level) return s;
-    if (s.kind === "FVar" && (t.kind !== "FVar" || s.level > t.level)) {
+    if (this.#rigid(s) && (!this.#rigid(t) || s.level > t.level)) {
       return this.#subtype(s, t) === "yes" ? s : TNever;
     }
-    if (t.kind === "FVar") {
+    if (this.#rigid(t)) {
       return this.#subtype(t, s) === "yes" ? t : TNever;
     }
 
@@ -713,7 +684,6 @@ export class Subtyper {
       return s.name === t.name && this.#equivArgs(s.args, t.args) ? s : TNever;
     }
 
-    if (s.kind === "EVar" && t.kind === "EVar" && s.level === t.level) return s;
     if (s.kind === "BVar" && t.kind === "BVar" && s.index === t.index) return s;
     return TNever;
   }
@@ -726,15 +696,12 @@ export class Subtyper {
    * the content, and the cast is the nearest thing that is both.
    */
   upcast(type: Type, pattern: TypePattern): Cast {
-    return this.#query("collect", () => this.#cast(type, pattern, "covariant"));
+    return this.#query(() => this.#cast(type, pattern, "covariant"));
   }
 
   /** The greatest subtype of `type` matching `pattern`. Dual to `upcast`. */
   downcast(type: Type, pattern: TypePattern): Cast {
-    return this.#query(
-      "collect",
-      () => this.#cast(type, pattern, "contravariant"),
-    );
+    return this.#query(() => this.#cast(type, pattern, "contravariant"));
   }
 
   /**
@@ -752,7 +719,7 @@ export class Subtyper {
    * held a missing part, which is the case that matters.
    */
   exactcast(type: Type, pattern: TypePattern): Cast {
-    return this.#query("collect", () => this.#cast(type, pattern, "invariant"));
+    return this.#query(() => this.#cast(type, pattern, "invariant"));
   }
 
   /**
@@ -767,10 +734,6 @@ export class Subtyper {
    */
   #cast(type: Type, pattern: TypePattern, dir: CastDirection): Cast {
     if (this.#fuel-- <= 0) return castFailed(pattern, "exhausted");
-    // Same invariant the relation asks about, and for the same reason: what
-    // stands here has to be a variable still open, not the shadow of one
-    // already decided.
-    this.#assertUnsolved(type);
 
     // Three kinds of demand, and the pattern is what says which. Nothing is
     // read off `type` until the demand is known, which is what keeps a rule
@@ -900,7 +863,7 @@ export class Subtyper {
     // lifting an extreme, where the same filling is a choice and does cost the
     // verdict.
     if (type.kind === "TBad") return castFound(castComplete(pattern).type);
-    if (type.kind === "FVar" && dir === "covariant") {
+    if (this.#rigid(type) && dir === "covariant") {
       return this.#castHead(
         this.context.upperBoundAt(type.level),
         pattern,
@@ -1091,7 +1054,6 @@ export class Subtyper {
   solveLowerBoundOf(level: Level): Type {
     const entry = this.context.evarAt(level);
     return this.#query(
-      "probe",
       () => entry.lower.reduce((a, b) => this.#join(a, b), TNever),
     );
   }
@@ -1101,7 +1063,6 @@ export class Subtyper {
   solveUpperBoundOf(level: Level): Type {
     const entry = this.context.evarAt(level);
     return this.#query(
-      "probe",
       () => entry.upper.reduce((a, b) => this.#meet(a, b), TUnknown),
     );
   }
@@ -1184,7 +1145,88 @@ export class Subtyper {
       type: entry.lower.length > 0 ? lower : upper,
     };
   }
+
+  /**
+   * Push one EVar behind each of `hints`, run `body` over them, then solve the
+   * batch and substitute the answers into the type it returned.
+   *
+   * The scope and the variables, and nothing else -- not even their declared
+   * bounds, which are a constraint like any other and are the caller's to
+   * record. What the call *does* with them belongs to the caller too: which
+   * types to open, where the polarity lies, what to relate. This owns the part
+   * a caller could get wrong, that a batch is pushed together, decided
+   * together, and gone before anything outside can see it.
+   *
+   * That last part is the invariant the rest of the file rests on. Nothing
+   * outside this method holds a type naming an EVar, which is what lets the
+   * relation record without asking whether it is allowed to, and the lattice
+   * join without checking its operands.
+   *
+   * Batches never nest. A nested application is checked before `body` runs --
+   * an argument's pattern hides the type parameters rather than naming them --
+   * so a constraint mentioning an EVar can only mean a sibling.
+   *
+   * Reporting is the caller's: a failure names a type argument but no position,
+   * and `Subtyper` has no diagnostics.
+   */
+  withEVars(
+    hints: readonly string[],
+    body: (evars: readonly EVarRef[]) => Type,
+  ): { result: Type; failures: readonly TypeArgFailure[] } {
+    return this.context.inScope(() => {
+      const levels = this.context.pushEVarBatch(hints);
+      // `?A`, not `A`. The hint is print-only, and an EVar is an ordinary
+      // `FVar` naming a level the context holds an EVar at -- so the `?` a
+      // diagnostic shows has to be put on here, at the one place that knows.
+      const evars = hints.map((hint, j) =>
+        FVar(levels[j] ?? impossible("a level per hint"), `?${hint}`)
+      );
+
+      const result = body(evars);
+
+      const failures: TypeArgFailure[] = [];
+      for (const level of levels) {
+        const entry = this.context.evarAt(level);
+        // A refused constraint was reported where it was refused, so this one
+        // is bad already and silently: whatever bounds did get through describe
+        // a variable the checker has given up on, and solving from them could
+        // only report the same mistake a second time under a different name.
+        if (entry.reported) {
+          this.context.setSolution(level, TBad);
+          continue;
+        }
+        const solved = this.solveEVar(level, entry.polarity);
+        if (solved.kind === "solved") {
+          this.context.setSolution(level, solved.type);
+          continue;
+        }
+        // Every failure solves to `TBad`. Checking against a bad type always
+        // succeeds, so one type argument nobody could infer does not go on to
+        // fail again wherever the result is used.
+        failures.push({ hint: entry.hint, reason: solved });
+        this.context.setSolution(level, TBad);
+      }
+
+      return { result: this.context.apply(result), failures };
+    });
+  }
 }
+
+/**
+ * An EVar as a type: an `FVar` whose level the context holds an EVar at. The
+ * `level` is what a caller needs to say anything about it -- its polarity, in
+ * practice -- and is why this is not just `Type`.
+ */
+export type EVarRef = Extract<Type, { kind: "FVar" }>;
+
+/**
+ * A type argument the batch could not settle, and why. Carries the hint so a
+ * message can name it; the position belongs to the caller.
+ */
+export type TypeArgFailure = {
+  readonly hint: string;
+  readonly reason: Exclude<EVarSolution, { kind: "solved" }>;
+};
 
 /**
  * What solving one EVar came to. Three of the four are the checker declining,
