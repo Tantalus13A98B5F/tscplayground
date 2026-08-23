@@ -6,14 +6,13 @@
  *
  * `TFun` is the only binder: quantification fuses into the arrow, so there is no
  * bare `forall`. Binders are n-ary and simultaneous -- the j-th variable is
- * `BVar j`, no telescope reversal. `params` and `result` sit inside the binder;
- * bounds are *parallel*, outside it, so a bound may name an enclosing binder but
- * never one of its own group.
+ * `BVar j`. `params` and `result` sit inside the binder; bounds are *parallel*,
+ * outside it, so a bound may name an enclosing binder but never one of its own
+ * group.
  *
  * Variance lives here too, and opening is where it is read: a rule is told the
- * polarity of every position it fills, so a caller learns where a variable
- * stood without walking the answer again. `isClosed` threads `depth` the same
- * way, and `Subtyper`'s avoidance flips direction at the same places -- three
+ * polarity of every position it fills. `isClosed` threads `depth` the same way,
+ * and `Subtyper`'s avoidance flips direction at the same places -- three
  * traversals that have to agree about what a position is.
  */
 
@@ -26,8 +25,6 @@
  * Sharing the space is why they share a node. An `FVar` names a level and
  * nothing more; whether that level holds a rigid variable or one still being
  * inferred is the entry's business, asked through `Context.evarOrUndefined`.
- * A `kind` on the node would have been a second copy of that answer, and two
- * copies of one fact can disagree.
  */
 export type Level = number & { readonly __brand: "Level" };
 export type DataName = string & { readonly __brand: "DataName" };
@@ -35,16 +32,10 @@ export type DataName = string & { readonly __brand: "DataName" };
 export const mkLevel = (n: number): Level => n as Level;
 
 /**
- * Say that a case cannot arise, and fail loudly if it does.
- *
- * For the index lookups the type checker cannot see through: two lists built to
- * the same length, or an opening reaching no index its binder did not bind.
- * `?? TBad` would satisfy the compiler equally, and that is the objection --
- * `TBad` means *an error was reported here*, and spending it on a case where
- * none was leaves the reader unable to tell the two apart.
- *
- * Returns `never`, so it composes with `??` at any type without a type
- * argument to keep in step.
+ * Say that a case cannot arise, and fail loudly if it does. For the index
+ * lookups the type checker cannot see through: two lists built to the same
+ * length, or an opening reaching no index its binder did not bind. Not `TBad`,
+ * which means *an error was reported here* and would hide the bug.
  */
 export function impossible(what: string): never {
   throw new Error(`${what}: a case that cannot arise, did`);
@@ -64,10 +55,9 @@ export type TypeParamInfoMaybe<M> = {
 export type TypeParamInfo = TypeParamInfoMaybe<never>;
 
 /**
- * The `TMissing` case, present only when `M` is inhabited. The conditional is
- * distributive, and distributing over `never` yields `never` -- so the case is
- * not merely uninhabitable at `TypeMaybe<never>`, it is *gone*, and a walk over
- * a complete type neither needs an arm for it nor is allowed one.
+ * The `TMissing` case, present only when `M` is inhabited. Distributing over
+ * `never` yields `never`, so at `TypeMaybe<never>` the case is *gone*: a walk
+ * over a complete type neither needs an arm for it nor is allowed one.
  */
 type MissingPart<M> = M extends never ? never
   : { readonly kind: "TMissing" };
@@ -77,12 +67,9 @@ type MissingPart<M> = M extends never ? never
  * whether a missing part is possible, and the two instantiations are the names
  * anyone reads: `Type` and `TypePattern`.
  *
- * Since arrays here are `readonly` and so covariant, a complete type flows into
- * a pattern position with no coercion, which is the direction that matters --
- * subtyping and constraint solving take complete types only, and the compiler
- * is what says so. The reverse does not narrow: excluding `kind === "TMissing"`
- * does not change the parameter, so going from a pattern to a type is a walk
- * and a checked cast, not a test.
+ * Arrays here are `readonly` and so covariant, so a complete type flows into a
+ * pattern position with no coercion. The reverse does not narrow: going from a
+ * pattern to a type is a walk and a checked cast, not a test.
  */
 export type TypeMaybe<M> =
   | { readonly kind: "TUnknown" } // Top
@@ -134,10 +121,8 @@ export function FVar(
 }
 
 /**
- * Pass an empty `typeParams` for the monomorphic arrow.
- *
- * Generic in `M` so that building from patterns gives a pattern and building
- * from types gives a type, without two constructors that differ only there.
+ * Pass an empty `typeParams` for the monomorphic arrow. Generic in `M` so that
+ * building from patterns gives a pattern and from types gives a type.
  */
 export function TFun<M = never>(
   typeParams: readonly TypeParamInfoMaybe<M>[],
@@ -169,8 +154,7 @@ export type Polarity = "none" | "covariant" | "contravariant" | "invariant";
 
 /**
  * `flip` at the type level, so a caller that started from a narrower set of
- * polarities gets one back. A cast travels in a direction and has to keep
- * knowing it is not `none`.
+ * polarities gets one back -- a cast has to keep knowing it is not `none`.
  */
 export type Flip<P extends Polarity> = P extends "covariant" ? "contravariant"
   : P extends "contravariant" ? "covariant"
@@ -195,19 +179,12 @@ export function bothPolarities(left: Polarity, right: Polarity): Polarity {
 
 /**
  * What an opening puts in a bound variable's place, told the index and *where
- * it stands*.
- *
- * A rule rather than an array because the two things a caller may want at a
- * variable's position are both things an array cannot express: the replacement
- * may depend on the polarity of the position, and reaching one may be worth
- * recording. `#applyCall` does the second -- it learns each EVar's polarity in
- * the result while putting it there, rather than walking the answer again to
- * ask -- and a substitution that reads the first is what this is
- * shaped for.
+ * it stands*. A rule rather than an array so the replacement may depend on the
+ * polarity, and so reaching a position can be recorded: `#applyCall` learns
+ * each EVar's polarity in the result while putting it there.
  *
  * Called once per *occurrence*, so a variable appearing twice is offered twice,
- * at each polarity it stands in. A rule that records has to combine them; one
- * that only replaces need not care.
+ * at each polarity it stands in. A rule that records has to combine them.
  */
 export type OpenRule<M = never> = (
   index: number,
@@ -219,9 +196,9 @@ export type OpenRule<M = never> = (
  * parameters the same way, so instantiating a constructor and a quantifier are
  * one operation.
  *
- * `here` is the polarity of the position being rebuilt, threaded exactly as
- * `isClosed` threads `depth` -- and flipped at the same places `#avoid` swaps
- * direction on, which is what keeps the two agreeing about what a position is.
+ * `here` is the polarity of the position being rebuilt, flipped at the same
+ * places `#avoid` swaps direction on -- the two have to agree about what a
+ * position is.
  */
 function openAt<M>(
   type: TypeMaybe<M>,
@@ -264,10 +241,8 @@ function openAt<M>(
 }
 
 /**
- * Open a binder by rule, reading the whole type as a covariant position.
- *
- * The general form. `openMany` is this with a rule that only looks up, which is
- * every caller that has nothing to learn on the way.
+ * Open a binder by rule, reading the whole type as a covariant position. The
+ * general form; `openMany` is this with a rule that only looks up.
  */
 export function openWith<M = never>(
   type: TypeMaybe<M>,
@@ -284,8 +259,7 @@ export function openMany<M = never>(
   return openWith<M>(type, (index) => {
     const replacement = replacements[index];
     // Every caller opens a binder at its own arity, so a miss is a checker bug
-    // rather than a program error -- and answering `TBad` would hide it, that
-    // being the one type checking against anything.
+    // rather than a program error.
     if (replacement === undefined) {
       throw new Error(
         `open: BVar ${index} of this binder, but only ` +
@@ -346,14 +320,12 @@ function closeAt<M>(
 
 /**
  * Abstract every level at or above `mark` into a binder, `mark + j` becoming
- * `BVar j`. A scope is always a contiguous run of context entries, so this
- * needs no set of identities and no membership test -- and being one call over
- * the whole group, it cannot collapse the group onto a single index the way an
- * iterated single-variable close would.
+ * `BVar j`. A scope is always a contiguous run of context entries, so this needs no set
+ * of identities and no membership test, and one call over the whole group
+ * cannot collapse it onto a single index the way an iterated close would.
  *
- * No count, because there is nothing above the group to spare: a caller closes
- * exactly what it pushed at `mark`, and an `FVar` names a type variable, never
- * one of the term variables a caller may have pushed on top of the group.
+ * No count: a caller closes exactly what it pushed at `mark`, and an `FVar`
+ * names a type variable, never a term variable pushed on top of the group.
  */
 export function closeFrom<M = never>(
   type: TypeMaybe<M>,
@@ -368,14 +340,13 @@ export function closeFrom<M = never>(
  * and every `BVar` index `< depth`, counting inward as binders are entered.
  *
  * One predicate rather than two because the two bounds are never independent.
- * The interesting uses need a non-zero `depth`: a constructor's fields are
- * stored closed over its datatype's parameters, so checking one means asking
- * for `levels = 0, depth = arity`, which a bare "locally closed" check -- fixed
- * at depth zero -- cannot express.
+ * A non-zero `depth` is what a constructor's fields need: they are stored
+ * closed over their datatype's parameters, so checking one asks for
+ * `levels = 0, depth = arity`.
  *
- * At `depth = 0` this is the scope-exit assertion: nothing surviving a
- * `truncate` to `mark` may mention a level `>= mark`. It is also exactly the
- * escape check `setSolution` needs, so both rest on one traversal.
+ * At `depth = 0` this is the scope-exit assertion -- nothing surviving a
+ * `truncate` to `mark` may mention a level `>= mark` -- and equally the escape
+ * check `setSolution` needs.
  */
 export function isClosed<M>(
   type: TypeMaybe<M>,

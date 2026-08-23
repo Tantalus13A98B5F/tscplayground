@@ -34,8 +34,8 @@ export type DatatypeInfo = {
   readonly params: readonly string[];
   /**
    * Filled by the second pass, so these two are assignable where the rest of
-   * the entry is fixed at declaration. The array itself stays immutable -- the
-   * field is replaced, never pushed to.
+   * the entry is fixed at declaration. The array itself is replaced, never
+   * pushed to.
    */
   ctors: readonly CtorInfo[];
   /**
@@ -84,9 +84,8 @@ export class Declarations {
 
   /**
    * Claim a name for a datatype signature, answering where it was already
-   * declared if it was. Refusing here rather than trusting the caller to ask
-   * first is what makes "the first declaration keeps the name" a property of
-   * the table instead of a convention.
+   * declared if it was. Refused here rather than by the caller, so that "the
+   * first declaration keeps the name" is a property of the table.
    */
   addDatatype(info: DatatypeInfo): Position | undefined {
     const previous = this.declaredAt(info.name);
