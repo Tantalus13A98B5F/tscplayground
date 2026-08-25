@@ -33,20 +33,27 @@
  * been avoided already.
  */
 
-import type { Context } from "./context.ts";
+import {
+  type Diagnostic,
+  type Position,
+  reportError,
+  reportWarning,
+} from "../diagnostics/diagnostic.ts";
+import type { Context, EVarEntry } from "./context.ts";
 import {
   allPairs,
   alphaEq,
-  BVar,
   closeFrom,
+  completeLeafPattern,
+  completePattern,
+  type Direction,
   flip,
   FVar,
+  type FVarRef,
   impossible,
   isClosed,
-  type Level,
   mkTypeParamInfo,
   openMany,
-  type Polarity,
   TBad,
   TData,
   TFun,
@@ -55,128 +62,44 @@ import {
   type Type,
   type TypeParamInfo,
   type TypePattern,
+  typeToString,
+  type Variance,
 } from "./types.ts";
 
 /**
- * Which way a cast travels, and so which relation it has to satisfy.
- * `Polarity` without `none`: every position a cast reaches is one it answers
- * for. Named after polarities rather than "up"/"down" so the cast shares
- * `flip` with `openAt` -- the fourth traversal that has to agree with the
- * other three about what a position is.
+ * What a top-level ask came to: it holds, it does not, or -- `undefined` --
+ * the checker declined to decide and wants its own message.
+ *
+ * The relation's answer, and only the relation's: asking whether one type is
+ * under another is a question with an answer, where a cast is a *rewriting*,
+ * and every way one can decline is a fact about a part it reports on the spot.
+ *
+ * The third case cannot be folded into `true` the way `TBad` folds a reported
+ * mistake into the relation. That works because the marker rides in the type,
+ * where everything downstream can still see it; a relation has no such
+ * carrier, and `solveEVar` is the caller that proves it -- it answers `TBad`
+ * on exhaustion, which it can only do because the verdict reached it.
+ *
+ * Only the boundary is three-valued. Inside, a relation answers `boolean` and
+ * exhaustion unwinds as an exception, so no interior test can mistake a spent
+ * tank for a mismatch.
  */
-export type CastDirection = Exclude<Polarity, "none">;
+export type Verdict = boolean | undefined;
 
 /**
- * A cast's answer. Total, the way the relation is total: there is always a
- * type, and the verdict says whether it was found or stood in.
+ * Thrown when the fuel runs out, caught by `Subtyper.#query`.
  *
- * `TBad` stands in and matches every pattern, so the postcondition -- what
- * comes back has the shape that was asked for -- holds whatever happened. The
- * verdict is separate because a cast declines for the same three reasons the
- * relation does.
+ * An exception and not an answer: exhaustion is a property of the whole query,
+ * not of the pair being compared, so there is nothing a caller could
+ * *locally* do with it. Returned, it had to be threaded through every
+ * combination, and `#join` and `#meet` both read it as "unrelated" and settled
+ * for an extreme -- a definite answer manufactured from a limit.
  */
-export type Cast = {
-  readonly type: Type;
-  readonly verdict: Verdict;
-};
-
-const castFound = (type: Type): Cast => ({ type, verdict: "yes" });
-
-/**
- * A pattern read back as a type, `<bad>` standing wherever it said nothing,
- * and a verdict saying whether it had to stand anywhere. One walk, because the
- * shape is the same either way: building it and asking what had to be invented
- * are the same question.
- *
- * Keeping the shape is the point: `List[<bad>]` is still a datatype, so a
- * `match` on it can be checked for membership and exhaustiveness where a bare
- * `<bad>` could only be waved through.
- *
- * Nothing is *asserted* by the parts it invents -- `<bad>` relates to anything
- * and none of them can go on to be blamed -- which is what separates this from
- * choosing an arbitrary type. What it costs is the verdict, the caller's to
- * report.
- */
-export function castComplete(pattern: TypePattern): Cast {
-  switch (pattern.kind) {
-    case "TMissing":
-      return { type: TBad, verdict: "no" };
-    case "TFun": {
-      let verdict: Verdict = "yes";
-      const typeParams: TypeParamInfo[] = [];
-      for (const binder of pattern.typeParams) {
-        const bound = castComplete(binder.bound);
-        verdict = bothVerdicts(verdict, bound.verdict);
-        typeParams.push(mkTypeParamInfo(binder.hint, bound.type));
-      }
-      const params: Type[] = [];
-      for (const param of pattern.params) {
-        const built = castComplete(param);
-        verdict = bothVerdicts(verdict, built.verdict);
-        params.push(built.type);
-      }
-      const result = castComplete(pattern.result);
-      verdict = bothVerdicts(verdict, result.verdict);
-      return { type: TFun(typeParams, params, result.type), verdict };
-    }
-    case "TData": {
-      let verdict: Verdict = "yes";
-      const args: Type[] = [];
-      for (const arg of pattern.args) {
-        const built = castComplete(arg);
-        verdict = bothVerdicts(verdict, built.verdict);
-        args.push(built.type);
-      }
-      return { type: TData(pattern.name, args), verdict };
-    }
-    default:
-      return castFound(completeLeaf(pattern));
+class FuelExhausted extends Error {
+  constructor() {
+    super("subtyping fuel exhausted");
   }
 }
-
-/**
- * The extreme in a direction: the largest type going down, the smallest going
- * up. Invariant has none, which is why `#castHead` cannot lift a datatype the
- * way it lifts a function.
- */
-const extremeFor = (dir: CastDirection): Type =>
-  dir === "contravariant" ? TUnknown : TNever;
-
-/**
- * A cast that declined, still answering with the shape that was asked for. The
- * verdict is the caller's, since a part may decline for a reason `castComplete`
- * never sees -- a spent fuel tank, or a relation that gave up.
- */
-const castFailed = (pattern: TypePattern, verdict: Verdict): Cast => ({
-  type: castComplete(pattern).type,
-  verdict,
-});
-
-/**
- * Two verdicts about parts of one question. Every part has to hold, so the
- * least willing answer wins: a part that is definitely wrong settles it, and a
- * limit reached elsewhere is reported only when nothing was actually wrong.
- */
-const VERDICT_ORDER: readonly Verdict[] = [
-  "yes",
-  "exhausted",
-  "interdependent",
-  "no",
-];
-
-function bothVerdicts(left: Verdict, right: Verdict): Verdict {
-  return VERDICT_ORDER.indexOf(left) >= VERDICT_ORDER.indexOf(right)
-    ? left
-    : right;
-}
-
-/**
- * `no` means the program is wrong; `exhausted` and `interdependent` mean the
- * checker declined to decide, and each wants its own message. Only `yes`
- * succeeds, so callers testing a relation -- `join` does -- treat the rest
- * alike without ever mistaking a limit for a mismatch.
- */
-export type Verdict = "yes" | "no" | "exhausted" | "interdependent";
 
 /**
  * Steps allowed per top-level query. A real signature needs a handful; this is
@@ -185,36 +108,53 @@ export type Verdict = "yes" | "no" | "exhausted" | "interdependent";
  */
 const FUEL = 2000;
 
-/**
- * A leaf pattern read back as a type. Nothing in a leaf *could* be missing,
- * but the parameter does not narrow, so this is one honest switch rather than
- * a cast.
- */
-function completeLeaf(
-  pattern: Exclude<TypePattern, { kind: "TFun" | "TData" | "TMissing" }>,
-): Type {
-  switch (pattern.kind) {
-    case "TUnknown":
-      return TUnknown;
-    case "TNever":
-      return TNever;
-    case "TBad":
-      return TBad;
-    case "BVar":
-      return BVar(pattern.index);
-    case "FVar":
-      return FVar(pattern.level, pattern.hint);
-  }
-}
-
 export class Subtyper {
   #fuel: number;
 
-  /** `budget` is injectable so a test can reach exhaustion without a type
-   * deep enough to trouble the stack on its way there. */
-  constructor(readonly context: Context, readonly budget: number = FUEL) {
+  /**
+   * Where to say whatever gets said, installed by `#query` and by `withEVars`
+   * -- a batch's own position, narrowed to one argument's or one cast's for
+   * the length of that ask. Ambient because the sites that record sit under
+   * recursions no position could be threaded through: `#constrain` under the
+   * relation, `#castFailed` under the cast.
+   *
+   * Undefined is a real state and not a missing one: an ask that passes no
+   * position is a *query* about two types, with no program behind it to blame.
+   * The cast family reads it that way and stays silent; the recording sites
+   * under the relation cannot be reached without one, and say so.
+   */
+  #at: Position | undefined;
+
+  /**
+   * What the avoidance in progress had to give up on, drained by `#constrain`
+   * once it knows which variable and which side to name. Scoped to one
+   * `#avoid` call the way the fuel is scoped to one query -- set before, read
+   * and cleared after, so there is never a moment where it holds a leftover.
+   */
+  #collapses: { readonly part: Type; readonly to: Type }[] = [];
+
+  /**
+   * `diagnostics` is the checker's own array, shared rather than copied, the
+   * way the elaborator shares it: what is recorded here is said here.
+   *
+   * Not the answers -- a `Verdict` goes back as a value, since only the caller
+   * knows whether `no` is a failure or information. These are the *mutations*:
+   * a bound widened, a constraint refused, an EVar settled. Those happened
+   * whatever the ask was for, and whether each is sound is known here and
+   * nowhere else, so the severity is decided here too.
+   *
+   * `budget` is injectable so a test can reach exhaustion without a type deep
+   * enough to trouble the stack on its way there.
+   */
+  constructor(
+    readonly context: Context,
+    readonly diagnostics: Diagnostic[] = [],
+    readonly budget: number = FUEL,
+  ) {
     this.#fuel = budget;
   }
+
+  // --------------------------------------------------------------- variables
 
   /**
    * Promote a type variable to its bound repeatedly until what is left is not
@@ -232,7 +172,7 @@ export class Subtyper {
   expose(type: Type): Type {
     let current = type;
     while (this.#rigid(current)) {
-      current = this.context.upperBoundAt(current.level);
+      current = this.#boundOf(current);
     }
     return current;
   }
@@ -242,37 +182,149 @@ export class Subtyper {
    * variable's *bound* has to ask: `FVar` alone never licenses promotion,
    * since an EVar has no bound to promote to.
    */
-  #isEVar(level: Level): boolean {
-    return this.context.evarOrUndefined(level) !== undefined;
+  #isEVar(variable: FVarRef): boolean {
+    return this.context.evarAt(variable) !== undefined;
   }
 
   /** A variable that may stand aside for its declared bound. */
-  #rigid(type: Type): type is Extract<Type, { kind: "FVar" }> {
-    return type.kind === "FVar" && !this.#isEVar(type.level);
-  }
-
-  /** Does `left <: right` hold? Resets the fuel, so this is a *top-level* ask. */
-  isSubtype(left: Type, right: Type): Verdict {
-    return this.#query(() => this.#subtype(left, right));
+  #rigid(type: Type): type is FVarRef {
+    return type.kind === "FVar" && !this.#isEVar(type);
   }
 
   /**
-   * Begin a top-level query: a fresh tank. Fuel is per query, not per call, so
-   * everything reachable from one ask shares a budget. The `#`-prefixed
-   * workers never reset, or a nested test would defeat the counter.
+   * A rigid variable's declared bound. Unbounded stores `TUnknown`, so every
+   * variable `#rigid` admits has one; a level holding an EVar is a caller that
+   * did not ask.
    */
-  #query<T>(run: () => T): T {
-    this.#fuel = this.budget;
-    return run();
+  #boundOf(variable: FVarRef): Type {
+    const entry = this.context.typeVarAt(variable);
+    return (entry ?? impossible("a rigid variable names a type variable"))
+      .bound;
   }
 
-  #subtype(s: Type, t: Type): Verdict {
-    if (this.#fuel-- <= 0) return "exhausted";
+  /** The entry a variable already established to be an EVar names. */
+  #evarOf(variable: FVarRef): EVarEntry {
+    return this.context.evarAt(variable) ??
+      impossible("a variable known to be an EVar names an EVar entry");
+  }
+
+  // ------------------------------------------------------------ the relation
+
+  /**
+   * Does `left <: right` hold? A *top-level* ask: fresh fuel, and `at` says
+   * where anything recorded on the way came from.
+   *
+   * `at` is optional because not every ask has a narrower place to point at
+   * than the one already installed -- a declared bound and an expected type
+   * are the whole application's, where an argument is its own. An ask that
+   * records nothing needs none at all, which is every ask with no EVar under
+   * it.
+   */
+  isSubtype(left: Type, right: Type, at?: Position): Verdict {
+    return this.#query(
+      at,
+      () => this.#subtype(left, right),
+      () => undefined,
+    );
+  }
+
+  /**
+   * Begin a top-level query: a fresh tank, a place to say things, and the only
+   * point exhaustion is caught. Fuel is per query, not per call, so everything
+   * reachable from one ask shares a budget; the `#`-prefixed workers never
+   * reset, or a nested test would defeat the counter.
+   *
+   * The position is installed here and not by each entry point because it is
+   * the same fact as the fuel: what one top-level ask covers. `at` left out
+   * keeps the one already standing, so a query nested inside another -- a cast
+   * that goes to the relation for a leaf -- still says where it is.
+   *
+   * `onExhausted` is asked for rather than assumed: what not knowing looks
+   * like is the one thing `#query` cannot derive from the ask -- a verdict, an
+   * extreme, a report and the demanded shape.
+   */
+  #query<T>(
+    at: Position | undefined,
+    run: () => T,
+    onExhausted: () => T,
+  ): T {
+    const outerFuel = this.#fuel;
+    const outerAt = this.#at;
+    this.#fuel = this.budget;
+    if (at !== undefined) this.#at = at;
+    try {
+      return run();
+    } catch (error) {
+      if (error instanceof FuelExhausted) return onExhausted();
+      throw error;
+    } finally {
+      this.#fuel = outerFuel;
+      this.#at = outerAt;
+    }
+  }
+
+  /** Spend one step, or unwind. */
+  #spend(): void {
+    if (this.#fuel-- <= 0) throw new FuelExhausted();
+  }
+
+  /**
+   * A part of a cast that could not be reached: said in place, and answered
+   * with the shape that was asked for.
+   *
+   * The missing parts are filled with `TBad`, and `TBad` is the checker's word
+   * for *a report already stands* -- so planting one is a recording like any
+   * other, and this is where the report it promises gets made.
+   */
+  #castFailed(type: Type, pattern: TypePattern, message?: string): Type {
+    this.#sayCastFailed(type, pattern, message);
+    return completePattern(pattern).type;
+  }
+
+  /**
+   * The saying on its own, for the one loss with no part to stand in for it:
+   * a parameter count, a fact about the list rather than about a position.
+   *
+   * Silent when the ask gave no position, which is what tells a *check* from a
+   * *query*: `downcast(TUnknown, expected)` asks what a pattern admits at its
+   * widest, reads no program that could be wrong, and passes none for that
+   * reason.
+   */
+  #sayCastFailed(type: Type, pattern: TypePattern, message?: string): void {
+    if (this.#at === undefined) return;
+    this.#file(
+      "error",
+      message ??
+        `expected ${typeToString(pattern)}, found ${typeToString(type)}`,
+    );
+  }
+
+  /**
+   * File a diagnostic about something recorded. An error where proceeding
+   * would settle the program's meaning arbitrarily, a warning where the loss
+   * runs one way and any later failure can still be explained by it.
+   */
+  #file(
+    severity: "error" | "warning",
+    message: string,
+    where: Position | undefined = this.#at,
+  ): void {
+    const at = where ??
+      impossible("nothing records outside an ask that said where it was");
+    this.diagnostics.push(
+      severity === "error"
+        ? reportError(message, at)
+        : reportWarning(message, at),
+    );
+  }
+
+  #subtype(s: Type, t: Type): boolean {
+    this.#spend();
 
     // Top and bottom, whatever stands opposite: vacuous either way, so nothing
     // is learned and nothing is recorded -- in particular no constraint against
     // an EVar on the other side, which is why this comes first.
-    if (t.kind === "TUnknown" || s.kind === "TNever") return "yes";
+    if (t.kind === "TUnknown" || s.kind === "TNever") return true;
 
     // Reflexivity is not tested up front: every case below either walks both
     // types anyway or settles by comparing two levels. Each carries its own.
@@ -291,56 +343,50 @@ export class Subtyper {
     // No mode guards the recording, because reaching an EVar at all is
     // conditional on there being one: only the two constraint-collecting asks
     // in `#applyCall` are ever handed a type that names one.
-    const tEVar = t.kind === "FVar" && this.#isEVar(t.level)
-      ? t.level
-      : undefined;
-    if (s.kind === "FVar" && this.#isEVar(s.level)) {
-      if (s.level === tEVar) return "yes";
-      if (tEVar === undefined || s.level > tEVar) {
-        return this.#constrain(s.level, "upper", t);
+    const tEVar = t.kind === "FVar" && this.#isEVar(t) ? t : undefined;
+    if (s.kind === "FVar" && this.#isEVar(s)) {
+      if (s.level === tEVar?.level) return true;
+      if (tEVar === undefined || s.level > tEVar.level) {
+        return this.#constrain(s, "upper", t);
       }
     }
     if (tEVar !== undefined) return this.#constrain(tEVar, "lower", s);
 
     // A bad type stands for a report already made, so it relates to anything.
     // Letting it fail here would blame the program twice for one mistake.
-    if (s.kind === "TBad" || t.kind === "TBad") return "yes";
+    if (s.kind === "TBad" || t.kind === "TBad") return true;
 
     // Only the left is promoted. Promoting the right would relate `X <: Y`
     // whenever their bounds happened to meet, which is unsound.
     // An unbounded variable promotes to `unknown`, which the top rule above
-    // has already turned down for this `t` -- so the recursion answers "no"
+    // has already turned down for this `t` -- so the recursion answers `false`
     // there, and nothing here has to.
     if (this.#rigid(s)) {
       // The same variable, before promoting: `X <: X` holds by reflexivity, and
       // going to the bound would lose it -- nothing relates `X`'s bound back to
-      // `X`, so the recursion would answer "no" for a pair that plainly holds.
-      if (t.kind === "FVar" && s.level === t.level) return "yes";
-      return this.#subtype(this.context.upperBoundAt(s.level), t);
+      // `X`, so the recursion would answer `false` for a pair that plainly holds.
+      if (t.kind === "FVar" && s.level === t.level) return true;
+      return this.#subtype(this.#boundOf(s), t);
     }
 
     if (s.kind === "TData" && t.kind === "TData") {
       // Invariant: a datatype's parameters have no declared variance, so
       // `List[never]` is not a `List[unknown]`.
-      if (s.name !== t.name || s.args.length !== t.args.length) return "no";
-      for (const [i, arg] of s.args.entries()) {
-        const verdict = this.#equiv(arg, t.args[i] ?? TBad);
-        if (verdict !== "yes") return verdict;
-      }
-      return "yes";
+      if (s.name !== t.name || s.args.length !== t.args.length) return false;
+      return allPairs(s.args, t.args, (a, b) => this.#equiv(a, b));
     }
 
     if (s.kind === "TFun" && t.kind === "TFun") {
       return this.#subtypeFun(s, t);
     }
-    return "no";
+    return false;
   }
 
   /**
    * Mutual subtyping: what an invariant position demands. A datatype argument
    * today, a reference cell later -- one answer, so the two cannot drift.
    *
-   * `alphaEq` first, as a fast path and nothing more: it answers "yes" or says
+   * `alphaEq` first, as a fast path and nothing more: it answers yes or says
    * nothing, so the relation still decides every pair it turns down. It earns
    * its walk because skipping it costs `2^depth` on a nest compared with
    * itself.
@@ -351,37 +397,30 @@ export class Subtyper {
    * two names the author wrote apart can be the same type, and only the
    * relation sees it.
    */
-  #equiv(s: Type, t: Type): Verdict {
-    if (alphaEq(s, t)) return "yes";
-    const there = this.#subtype(s, t);
-    if (there !== "yes") return there;
-    return this.#subtype(t, s);
+  #equiv(s: Type, t: Type): boolean {
+    if (alphaEq(s, t)) return true;
+    return this.#subtype(s, t) && this.#subtype(t, s);
   }
 
-  /**
-   * Elementwise equivalence of two argument lists. The lattice wants a boolean
-   * where `#subtype` wants a verdict: "exhausted" there means the two could not
-   * be shown equal, which is what the caller does with "no" as well.
-   */
+  /** Elementwise equivalence of two argument lists. */
   #equivArgs(s: readonly Type[], t: readonly Type[]): boolean {
-    return allPairs(s, t, (a, b) => this.#equiv(a, b) === "yes");
+    return allPairs(s, t, (a, b) => this.#equiv(a, b));
   }
 
   #subtypeFun(
     s: Extract<Type, { kind: "TFun" }>,
     t: Extract<Type, { kind: "TFun" }>,
-  ): Verdict {
+  ): boolean {
     // Arity is part of the type, for parameters and for the quantifier alike.
-    if (s.typeParams.length !== t.typeParams.length) return "no";
-    if (s.params.length !== t.params.length) return "no";
+    if (s.typeParams.length !== t.typeParams.length) return false;
+    if (s.params.length !== t.params.length) return false;
 
     // Full Fsub: bounds are contravariant. Kernel Fsub would demand `alphaEq`
     // here and be decidable; this is the trade named at the top of the file.
     for (const [j, binder] of t.typeParams.entries()) {
       const mine = s.typeParams[j];
-      if (mine === undefined) return "no";
-      const verdict = this.#subtype(binder.bound, mine.bound);
-      if (verdict !== "yes") return verdict;
+      if (mine === undefined) return false;
+      if (!this.#subtype(binder.bound, mine.bound)) return false;
     }
 
     // Open both under one group of fresh variables carrying the *right* side's
@@ -397,13 +436,13 @@ export class Subtyper {
       );
       for (const [j, param] of t.params.entries()) {
         const mine = s.params[j];
-        if (mine === undefined) return "no";
+        if (mine === undefined) return false;
         // Parameters are contravariant.
-        const verdict = this.#subtype(
-          openMany(param, opened),
-          openMany(mine, opened),
-        );
-        if (verdict !== "yes") return verdict;
+        if (
+          !this.#subtype(openMany(param, opened), openMany(mine, opened))
+        ) {
+          return false;
+        }
       }
       return this.#subtype(
         openMany(s.result, opened),
@@ -413,14 +452,19 @@ export class Subtyper {
   }
 
   /**
-   * Record `type` as a bound of the EVar at `level`, avoiding first. Anything
-   * the EVar cannot see has to go, and which direction is safe depends on the
-   * side: a lower bound may only be widened, an upper bound only narrowed.
+   * Record `type` as a bound of the EVar `variable` names, avoiding first.
+   * Anything the EVar cannot see has to go, and which direction is safe
+   * depends on the side: a lower bound may only be widened, an upper bound
+   * only narrowed.
+   *
+   * Always `true`: this answers no question about the two types, it records
+   * one. Where it cannot record, it says so itself -- the relation has no
+   * verdict for "I was asked something I could not write down".
    */
-  #constrain(level: Level, side: "lower" | "upper", type: Type): Verdict {
+  #constrain(variable: FVarRef, side: "lower" | "upper", type: Type): boolean {
     // No `apply` first: a batch is solved only after the last constraint is
     // in, so nothing reaching here can mention a *solved* EVar.
-    const batch = this.context.evarAt(level).batch;
+    const evar = this.#evarOf(variable);
 
     // Interdependence is decided over the whole type, before any widening, and
     // against the *batch* rather than this variable's own level -- so a
@@ -430,61 +474,113 @@ export class Subtyper {
     //
     // Both sides are marked: they are parties to one rejected dependency, and
     // a sibling left unmarked goes on to report that nothing constrained it.
-    const siblings = this.#unsolvedEVarsFrom(type, batch);
+    const siblings = this.#evarsFrom(type, evar.batch);
     if (siblings.length > 0) {
-      this.context.noteReported(level);
-      for (const sibling of siblings) this.context.noteReported(sibling);
-      return "interdependent";
+      // An error and not a warning: the constraint is dropped, not weakened.
+      // Widening it to an extreme would be sound, but every other bound on
+      // that side would go with it, so the choice would be arbitrary rather
+      // than merely coarse.
+      this.#file(
+        "error",
+        `cannot infer the type argument ${evar.hint} from ` +
+          `${typeToString(type)}: it depends on another type argument of the ` +
+          `same call, so give it explicitly`,
+      );
+      evar.noteReported();
+      for (const sibling of siblings) sibling.noteReported();
+      return true;
     }
 
     // Avoidance is about *scope*, so it keeps this EVar's own level as its bar:
     // a solution may mention anything to its left, siblings having just been
     // ruled out above.
-    const avoided = this.#avoid(type, level, side === "lower" ? "up" : "down");
+    this.#collapses = [];
+    const avoided = this.#avoid(
+      type,
+      variable.level,
+      // A lower bound is widened and an upper one narrowed, which is the
+      // same choice `dir` names.
+      side === "lower" ? 1 : -1,
+    );
     if (avoided === undefined) {
-      this.context.noteReported(level);
-      return "interdependent";
+      // Unreachable while the pre-pass above runs at a stricter bar; kept so
+      // an EVar can never be widened away in silence.
+      this.#file(
+        "error",
+        `cannot infer the type argument ${evar.hint} from ` +
+          `${typeToString(type)}: it mentions a type argument still being ` +
+          `inferred, so give it explicitly`,
+      );
+      evar.noteReported();
+      return true;
     }
-    this.context.addConstraint(level, side, avoided);
-    return "yes";
+
+    // One warning per collapse, not one per constraint: each names the part
+    // that could not survive, which is what the author would have to annotate.
+    for (const { part, to } of this.#collapses) {
+      this.#file(
+        "warning",
+        `inferring the type argument ${evar.hint}: ${typeToString(part)} ` +
+          `mentions a variable bound inside this call, so the ` +
+          `${side} bound was widened to ${typeToString(to)}`,
+      );
+    }
+    this.#collapses = [];
+
+    evar.addConstraint(side, avoided);
+    return true;
   }
 
   /**
-   * Every unsolved EVar `type` mentions at or beyond `from`.
+   * Every EVar entry `type` mentions at or beyond `from`.
    *
    * "From", not "later": the bar is a batch's first level, so a *sibling*
    * counts even standing to the left of the variable being constrained.
    *
-   * The levels and not a yes-or-no, because callers also have to mark what
+   * The entries and not a yes-or-no, because callers also have to mark what
    * they found -- one traversal answering both.
    */
-  #unsolvedEVarsFrom(type: Type, from: number): Level[] {
+  #evarsFrom(type: Type, from: number): EVarEntry[] {
     switch (type.kind) {
       case "TUnknown":
       case "TNever":
       case "TBad":
       case "BVar":
         return [];
-      case "FVar":
-        return type.level >= from && this.#isEVar(type.level)
-          ? [type.level]
-          : [];
+      case "FVar": {
+        if (type.level < from) return [];
+        const entry = this.context.evarAt(type);
+        return entry === undefined ? [] : [entry];
+      }
       case "TFun":
         return [
-          ...type.typeParams.flatMap((b) =>
-            this.#unsolvedEVarsFrom(b.bound, from)
-          ),
-          ...type.params.flatMap((p) => this.#unsolvedEVarsFrom(p, from)),
-          ...this.#unsolvedEVarsFrom(type.result, from),
+          ...type.typeParams.flatMap((b) => this.#evarsFrom(b.bound, from)),
+          ...type.params.flatMap((p) => this.#evarsFrom(p, from)),
+          ...this.#evarsFrom(type.result, from),
         ];
       case "TData":
-        return type.args.flatMap((arg) => this.#unsolvedEVarsFrom(arg, from));
+        return type.args.flatMap((arg) => this.#evarsFrom(arg, from));
     }
   }
 
+  // --------------------------------------------------------------- avoidance
+
   /**
-   * The least supertype of `type` closed by `levels` going `"up"`, the greatest
-   * subtype going `"down"`, or `undefined` if none can be built.
+   * Note that `part` could not be avoided and `to` stands in its place, and
+   * hand back `to`. Recorded rather than reported: which variable and which
+   * side this bound belongs to is `#constrain`'s to say, not the walk's.
+   */
+  #collapse(part: Type, to: Type): Type {
+    this.#collapses.push({ part, to });
+    return to;
+  }
+
+  /**
+   * The least supertype of `type` closed by `levels` going up, the greatest
+   * subtype going down, or `undefined` if none can be built. `dir` is the
+   * direction it travels, which is why it has no invariant value: invariance
+   * is not somewhere this can go but a collapse, reached at a `TData`
+   * argument.
    *
    * This is the avoidance problem. A constraint picked up under a binder may
    * mention variables that binder introduced, and those cannot appear in a
@@ -492,7 +588,7 @@ export class Subtyper {
    * widening a lower bound and narrowing an upper one, swapping direction at
    * every contravariant position.
    */
-  #avoid(type: Type, levels: number, dir: "up" | "down"): Type | undefined {
+  #avoid(type: Type, levels: number, dir: Direction): Type | undefined {
     if (isClosed(type, levels)) return type;
 
     switch (type.kind) {
@@ -503,30 +599,38 @@ export class Subtyper {
         return type;
       case "FVar": {
         if (type.level < levels) return type;
-        // An EVar out of scope is the interdependent case: nothing can be
-        // said in terms of a variable with no value yet, and widening to top
-        // would throw the constraint away.
-        //
-        // Unreachable from `#constrain`, whose pre-pass rejects such a type at
-        // a stricter bar. Kept because the `TData` case below collapses
-        // without looking, so an EVar inside an invariant argument would be
-        // dropped silently -- the hole the pre-pass exists to cover.
-        if (this.#isEVar(type.level)) return undefined;
+        // An EVar out of scope has no bound to widen to, so this refuses
+        // where the rest of the walk approximates. Unreachable from
+        // `#constrain`, whose pre-pass rejects such a type at a stricter bar;
+        // kept so a second caller could not widen an EVar away in silence.
+        if (this.#isEVar(type)) return undefined;
         // Upward, a variable's declared bound is the nearest thing it is
         // known to sit under; downward there is no lower bound to appeal to,
-        // so bottom is all that is left.
-        if (dir === "down") return TNever;
-        return this.#avoid(this.context.upperBoundAt(type.level), levels, dir);
+        // so bottom is all that is left, and nothing of the variable survives.
+        if (dir < 0) return this.#collapse(type, TNever);
+        const before = this.#collapses.length;
+        const bound = this.#avoid(this.#boundOf(type), levels, dir);
+        // Standing aside for `unknown` says as little as the collapse below,
+        // so it is worth the same warning -- a bound that is really a type is
+        // an approximation the author can still read the result through.
+        //
+        // Unless the bound already collapsed on its own: that report names
+        // what was actually lost, and this one would only repeat it wider.
+        return bound?.kind === "TUnknown" && this.#collapses.length === before
+          ? this.#collapse(type, bound)
+          : bound;
       }
       case "TData": {
         // Arguments are invariant, so neither direction may touch them. If one
-        // mentions something out of scope, the whole type collapses.
+        // mentions something out of scope, the whole type collapses -- the
+        // structure goes with it, which is why this is the loss most worth
+        // saying out loud.
         return type.args.every((arg) => isClosed(arg, levels))
           ? type
-          : (dir === "up" ? TUnknown : TNever);
+          : this.#collapse(type, dir > 0 ? TUnknown : TNever);
       }
       case "TFun": {
-        const flipped = dir === "up" ? "down" : "up";
+        const flipped = flip(dir);
         const typeParams = [];
         for (const binder of type.typeParams) {
           // A bound sits in a contravariant position, like a parameter.
@@ -547,12 +651,19 @@ export class Subtyper {
     }
   }
 
+  // --------------------------------------------------------- joins and meets
+
   /**
    * Least upper bound. Falls back to `unknown` rather than inventing a union:
    * there is no union type, so an inexact answer has to be the sound one.
    */
   join(left: Type, right: Type): Type {
-    return this.#query(() => this.#join(left, right));
+    // Exhausted, top is the sound answer: it is above everything.
+    return this.#query(
+      undefined,
+      () => this.#join(left, right),
+      () => TUnknown,
+    );
   }
 
   #join(s: Type, t: Type): Type {
@@ -567,10 +678,10 @@ export class Subtyper {
     // reverse, so the recursion walks down the context and stops.
     if (s.kind === "FVar" && t.kind === "FVar" && s.level === t.level) return s;
     if (this.#rigid(s) && (!this.#rigid(t) || s.level > t.level)) {
-      return this.#join(this.context.upperBoundAt(s.level), t);
+      return this.#join(this.#boundOf(s), t);
     }
     if (this.#rigid(t)) {
-      return this.#join(s, this.context.upperBoundAt(t.level));
+      return this.#join(s, this.#boundOf(t));
     }
 
     // Two unrelated functions still meet at an arrow, pointwise.
@@ -596,7 +707,7 @@ export class Subtyper {
 
   /** Greatest lower bound. Falls back to `never`, dual to `join`. */
   meet(left: Type, right: Type): Type {
-    return this.#query(() => this.#meet(left, right));
+    return this.#query(undefined, () => this.#meet(left, right), () => TNever);
   }
 
   #meet(s: Type, t: Type): Type {
@@ -614,10 +725,10 @@ export class Subtyper {
     // under a variable, and of two only the one declared later.
     if (s.kind === "FVar" && t.kind === "FVar" && s.level === t.level) return s;
     if (this.#rigid(s) && (!this.#rigid(t) || s.level > t.level)) {
-      return this.#subtype(s, t) === "yes" ? s : TNever;
+      return this.#subtype(s, t) ? s : TNever;
     }
     if (this.#rigid(t)) {
-      return this.#subtype(t, s) === "yes" ? t : TNever;
+      return this.#subtype(t, s) ? t : TNever;
     }
 
     if (s.kind === "TFun" && t.kind === "TFun") {
@@ -632,261 +743,6 @@ export class Subtyper {
 
     if (s.kind === "BVar" && t.kind === "BVar" && s.index === t.index) return s;
     return TNever;
-  }
-
-  // ------------------------------------------------------------------- casts
-
-  /**
-   * The least supertype of `type` matching `pattern`. This is how a checking
-   * rule learns what it asked for: the pattern says the shape, the type says
-   * the content, and the cast is the nearest thing that is both.
-   */
-  upcast(type: Type, pattern: TypePattern): Cast {
-    return this.#query(() => this.#cast(type, pattern, "covariant"));
-  }
-
-  /** The greatest subtype of `type` matching `pattern`. Dual to `upcast`. */
-  downcast(type: Type, pattern: TypePattern): Cast {
-    return this.#query(() => this.#cast(type, pattern, "contravariant"));
-  }
-
-  /**
-   * The type equivalent to `type` and matching `pattern`. Neither of the other
-   * two: an invariant position may not move at all, so this can only read
-   * missing parts off `type` and check that everything written agrees.
-   *
-   * A third direction, not a composition of the other two. A datatype argument
-   * is invariant, yet a cast must still recurse into it:
-   * `downcast(List[(Bool) -> Bool], List[(?) -> Bool])` has an answer, found
-   * by filling the missing part from the type without moving. Either of the
-   * other two would be free to move where movement is unsound, and stopping at
-   * alpha-equality would refuse every pattern holding a missing part.
-   */
-  exactcast(type: Type, pattern: TypePattern): Cast {
-    return this.#query(() => this.#cast(type, pattern, "invariant"));
-  }
-
-  /**
-   * Walks the *pattern*, since the pattern says which shape is wanted, and
-   * asks `type` to keep up.
-   *
-   * Nothing here fails outright: a part that cannot be cast contributes the
-   * shape asked for with `<bad>` in it and a verdict saying so, and the walk
-   * carries on -- a mismatched parameter costs the parameter, not the result
-   * beside it. The verdicts combine and the caller reports once.
-   */
-  #cast(type: Type, pattern: TypePattern, dir: CastDirection): Cast {
-    if (this.#fuel-- <= 0) return castFailed(pattern, "exhausted");
-
-    // Three kinds of demand, and the pattern is what says which. Nothing is
-    // read off `type` until the demand is known, which is what keeps a rule
-    // meant for one kind from running in front of another.
-    switch (pattern.kind) {
-      // Nothing demanded, so nothing moves -- whatever stands there is the
-      // answer. Also the only case that reads content out of `type`, which is
-      // how an invariant position, unable to move at all, still answers.
-      case "TMissing":
-        return castFound(type);
-
-      // A shape is demanded. Only here may `type` be moved to produce one, and
-      // both ways of moving it live in `#castHead`.
-      case "TFun": {
-        const head = this.#castHead(type, pattern, dir);
-        const from = head.type;
-        // Quantifying a different number of variables leaves nothing to walk
-        // into: the two parameter lists stand under different binders, so
-        // their positions do not correspond. A different number of
-        // *parameters* is not like that -- those share binders, so the shared
-        // positions are cast and the mismatch costs only the rest, which is
-        // what `#castFun` does.
-        if (
-          from.kind !== "TFun" ||
-          from.typeParams.length !== pattern.typeParams.length
-        ) {
-          return castFailed(pattern, "no");
-        }
-        const built = this.#castFun(from, pattern, dir);
-        return {
-          type: built.type,
-          verdict: bothVerdicts(head.verdict, built.verdict),
-        };
-      }
-
-      case "TData": {
-        const head = this.#castHead(type, pattern, dir);
-        const from = head.type;
-        if (
-          from.kind !== "TData" || from.name !== pattern.name ||
-          from.args.length !== pattern.args.length
-        ) {
-          return castFailed(pattern, "no");
-        }
-        // Arguments are invariant however deep they sit, as `openAt` says by
-        // passing `invariant` and never flipping out of it again.
-        //
-        // The head's verdict is folded in rather than returned on, and every
-        // argument is walked even where the head already filled one:
-        // re-entering a filled argument is a no-op, `<bad>` being absorbing,
-        // where returning early would assume the head filled the list whole.
-        let verdict: Verdict = head.verdict;
-        const args: Type[] = [];
-        for (const [i, want] of pattern.args.entries()) {
-          const mine = from.args[i] ?? impossible("an argument per argument");
-          const arg = this.#cast(mine, want, "invariant");
-          verdict = bothVerdicts(verdict, arg.verdict);
-          args.push(arg.type);
-        }
-        return { type: TData(from.name, args), verdict };
-      }
-
-      // A leaf is written in full, so it matches only itself and the whole
-      // question is whether `type` reaches it in this direction. Left to the
-      // relation whole, which promotes a variable on its own and knows
-      // `X <: X` -- both lost by moving `type` first.
-      //
-      // `default` and not six arms, but not a hole either: `completeLeaf`
-      // enumerates the same six with no default, so a new kind stops the
-      // compiler there.
-      default: {
-        const leaf = completeLeaf(pattern);
-        const verdict = dir === "covariant"
-          ? this.#subtype(type, leaf)
-          : dir === "contravariant"
-          ? this.#subtype(leaf, type)
-          : this.#equiv(type, leaf);
-        return verdict === "yes"
-          ? castFound(leaf)
-          : castFailed(pattern, verdict);
-      }
-    }
-  }
-
-  /**
-   * What `type` offers when a shape is wanted, as a type the shape cases can
-   * take apart -- so every way of getting there ends in the same structural
-   * walk, and there is no second traversal to keep in step with this one.
-   *
-   * A variable has no shape of its own. Going up it stands aside for its
-   * bound, the same promotion `#join` makes; going down or standing still it
-   * may not, so it is handed on unchanged and fails the shape test.
-   *
-   * Top going down and bottom going up have no head either, for the opposite
-   * reason: the left says nothing and the pattern alone decides. There the
-   * extreme is *lifted* into the shape asked for, one level deep, and the
-   * ordinary walk lifts again wherever it meets the extreme further in.
-   */
-  #castHead(
-    type: Type,
-    pattern: Extract<TypePattern, { kind: "TFun" | "TData" }>,
-    dir: CastDirection,
-  ): Cast {
-    // A report already stands, so a bad type has whatever shape is demanded:
-    // a third way of standing aside, beside promotion and lifting an extreme.
-    // Only needed where a shape is demanded, a demanded leaf going to the
-    // relation, which knows `<bad>` on its own.
-    //
-    // The type but never the verdict: filling a missing part from something
-    // already bad invents nothing, where lifting an extreme is a choice.
-    if (type.kind === "TBad") return castFound(castComplete(pattern).type);
-    if (this.#rigid(type) && dir === "covariant") {
-      return this.#castHead(
-        this.context.upperBoundAt(type.level),
-        pattern,
-        dir,
-      );
-    }
-    if (
-      !((type.kind === "TUnknown" && dir === "contravariant") ||
-        (type.kind === "TNever" && dir === "covariant"))
-    ) {
-      return castFound(type);
-    }
-
-    // A function's parts have variance, so each has an extreme of its own and
-    // the lift is total: the greatest arrow takes the smallest parameters and
-    // the largest result, and the walk that follows lifts again wherever it
-    // meets an extreme further in.
-    if (pattern.kind === "TFun") {
-      const inner = extremeFor(flip(dir));
-      return castFound(TFun(
-        pattern.typeParams.map((b) => mkTypeParamInfo(b.hint, inner)),
-        pattern.params.map(() => inner),
-        extremeFor(dir),
-      ));
-    }
-
-    // A datatype's arguments do not: nothing is greatest among the types a
-    // `List` can be of, so there is no greatest `List`. The shape is lifted
-    // all the same, so a `match` still has a datatype to work with; what the
-    // invariance costs is the verdict, which `castComplete` withholds exactly
-    // when something had to be invented.
-    return castComplete(pattern);
-  }
-
-  /**
-   * Both binders are opened under one group of fresh variables, the way
-   * `#latticeFun` and `#subtypeFun` open theirs. Comparing under their indices
-   * instead would leave a parameter at a `BVar`, which has no bound to read.
-   */
-  #castFun(
-    type: Extract<Type, { kind: "TFun" }>,
-    pattern: Extract<TypePattern, { kind: "TFun" }>,
-    dir: CastDirection,
-  ): Cast {
-    const inner = flip(dir);
-    return this.context.inScope((mark) => {
-      let verdict: Verdict = "yes";
-
-      // Bounds are parallel -- they read in the enclosing scope -- so they are
-      // cast before anything is pushed, and need no closing after. They are
-      // contravariant, like the parameters.
-      const typeParams: TypeParamInfo[] = [];
-      for (const [j, want] of pattern.typeParams.entries()) {
-        const mine = type.typeParams[j] ?? impossible("a binder per binder");
-        const bound = this.#cast(mine.bound, want.bound, inner);
-        verdict = bothVerdicts(verdict, bound.verdict);
-        // The hint is print-only, and the pattern's is the one an author wrote
-        // when there was an annotation to write it in.
-        typeParams.push(mkTypeParamInfo(want.hint, bound.type));
-      }
-
-      const opened = typeParams.map((binder) =>
-        FVar(this.context.pushTypeVar(binder.bound, binder.hint), binder.hint)
-      );
-
-      // The pattern's arity, which is what was asked for: a position only the
-      // pattern has is filled from the pattern alone, one only `type` has is
-      // dropped, and either costs the verdict.
-      if (type.params.length !== pattern.params.length) verdict = "no";
-      const params: Type[] = [];
-      for (const [i, want] of pattern.params.entries()) {
-        const mine = type.params[i];
-        if (mine === undefined) {
-          verdict = "no";
-          // Already in the binder's own scope, having never been opened.
-          params.push(castComplete(want).type);
-          continue;
-        }
-        const param = this.#cast(
-          openMany(mine, opened),
-          openMany<number>(want, opened),
-          inner,
-        );
-        verdict = bothVerdicts(verdict, param.verdict);
-        params.push(closeFrom(param.type, mark));
-      }
-
-      const result = this.#cast(
-        openMany(type.result, opened),
-        openMany<number>(pattern.result, opened),
-        dir,
-      );
-      verdict = bothVerdicts(verdict, result.verdict);
-      return {
-        type: TFun(typeParams, params, closeFrom(result.type, mark)),
-        verdict,
-      };
-    });
   }
 
   /** `#join` when `up`, `#meet` otherwise -- so one arrow case serves both. */
@@ -962,25 +818,318 @@ export class Subtyper {
     });
   }
 
+  // ------------------------------------------------------------------- casts
+
+  /**
+   * The least supertype of `type` matching `pattern`. This is how a checking
+   * rule learns what it asked for: the pattern says the shape, the type says
+   * the content, and the cast is the nearest thing that is both.
+   */
+  upcast(type: Type, pattern: TypePattern, at?: Position): Type {
+    return this.#castQuery(type, pattern, 1, at);
+  }
+
+  /** The greatest subtype of `type` matching `pattern`. Dual to `upcast`. */
+  downcast(type: Type, pattern: TypePattern, at?: Position): Type {
+    return this.#castQuery(type, pattern, -1, at);
+  }
+
+  /**
+   * The type equivalent to `type` and matching `pattern`. Neither of the other
+   * two: an invariant position may not move at all, so this can only read
+   * missing parts off `type` and check that everything written agrees.
+   *
+   * A third direction, not a composition of the other two. A datatype argument
+   * is invariant, yet a cast must still recurse into it:
+   * `downcast(List[(Bool) -> Bool], List[(?) -> Bool])` has an answer, found
+   * by filling the missing part from the type without moving. Either of the
+   * other two would be free to move where movement is unsound, and stopping at
+   * alpha-equality would refuse every pattern holding a missing part.
+   */
+  exactcast(type: Type, pattern: TypePattern, at?: Position): Type {
+    return this.#castQuery(type, pattern, 0, at);
+  }
+
+  /**
+   * One top-level cast, in whichever direction, and the one place a cast can
+   * give up on the whole ask rather than on a part.
+   *
+   * Exhaustion is the only such reason left, and it is the checker's limit
+   * rather than the program's mistake -- so it is said in those words, and the
+   * shape asked for still comes back, since a caller has no more use for a
+   * hole here than anywhere else.
+   */
+  #castQuery(
+    type: Type,
+    pattern: TypePattern,
+    dir: Variance,
+    at: Position | undefined,
+  ): Type {
+    return this.#query(
+      at,
+      () => this.#cast(type, pattern, dir),
+      () =>
+        this.#castFailed(
+          type,
+          pattern,
+          `gave up casting ${typeToString(type)} to ${
+            typeToString(pattern)
+          }: too deeply nested`,
+        ),
+    );
+  }
+
+  /**
+   * Walks the *pattern*, since the pattern says which shape is wanted, and
+   * asks `type` to keep up.
+   *
+   * Nothing here fails outright: a part that cannot be cast reports itself and
+   * contributes the shape asked for with `<bad>` in it, and the walk carries
+   * on -- a mismatched parameter costs the parameter, not the result beside
+   * it, and each says so in its own words.
+   */
+  #cast(type: Type, pattern: TypePattern, dir: Variance): Type {
+    this.#spend();
+
+    // Three kinds of demand, and the pattern is what says which. Nothing is
+    // read off `type` until the demand is known, which is what keeps a rule
+    // meant for one kind from running in front of another.
+    switch (pattern.kind) {
+      // Nothing demanded, so nothing moves -- whatever stands there is the
+      // answer. Also the only case that reads content out of `type`, which is
+      // how an invariant position, unable to move at all, still answers.
+      case "TMissing":
+        return type;
+
+      // A shape is demanded. Only here may `type` be moved to produce one, and
+      // both ways of moving it live in `#castHead`.
+      case "TFun": {
+        const from = this.#castHead(type, pattern, dir);
+        // Quantifying a different number of variables leaves nothing to walk
+        // into: the two parameter lists stand under different binders, so
+        // their positions do not correspond. A different number of
+        // *parameters* is not like that -- those share binders, so the shared
+        // positions are cast and the mismatch costs only the rest, which is
+        // what `#castFun` does.
+        if (
+          from.kind !== "TFun" ||
+          from.typeParams.length !== pattern.typeParams.length
+        ) {
+          return this.#castFailed(type, pattern);
+        }
+        return this.#castFun(from, pattern, dir);
+      }
+
+      case "TData": {
+        const from = this.#castHead(type, pattern, dir);
+        if (
+          from.kind !== "TData" || from.name !== pattern.name ||
+          from.args.length !== pattern.args.length
+        ) {
+          return this.#castFailed(type, pattern);
+        }
+        // Arguments are invariant however deep they sit, as `openAt` says by
+        // passing `0` and never flipping out of it again.
+        //
+        // Every argument is walked even where the head already filled one:
+        // re-entering a filled argument is a no-op, `<bad>` being absorbing,
+        // where returning early would assume the head filled the list whole.
+        const args = pattern.args.map((want, i) =>
+          this.#cast(
+            from.args[i] ?? impossible("an argument per argument"),
+            want,
+            0,
+          )
+        );
+        return TData(from.name, args);
+      }
+
+      // A leaf is written in full, so it matches only itself and the whole
+      // question is whether `type` reaches it in this direction. Left to the
+      // relation whole, which promotes a variable on its own and knows
+      // `X <: X` -- both lost by moving `type` first.
+      //
+      // `default` and not six arms, but not a hole either: `completeLeafPattern`
+      // enumerates the same six with no default, so a new kind stops the
+      // compiler there.
+      default: {
+        const leaf = completeLeafPattern(pattern);
+        const holds = dir > 0
+          ? this.#subtype(type, leaf)
+          : dir < 0
+          ? this.#subtype(leaf, type)
+          : this.#equiv(type, leaf);
+        return holds ? leaf : this.#castFailed(type, pattern);
+      }
+    }
+  }
+
+  /**
+   * What `type` offers when a shape is wanted, as a type the shape cases can
+   * take apart -- so every way of getting there ends in the same structural
+   * walk, and there is no second traversal to keep in step with this one.
+   *
+   * A variable has no shape of its own. Going up it stands aside for its
+   * bound, the same promotion `#join` makes; going down or standing still it
+   * may not, so it is handed on unchanged and fails the shape test.
+   *
+   * Top going down and bottom going up have no head either, for the opposite
+   * reason: the left says nothing and the pattern alone decides. There the
+   * extreme is *lifted* into the shape asked for, one level deep, and the
+   * ordinary walk lifts again wherever it meets the extreme further in.
+   */
+  #castHead(
+    type: Type,
+    pattern: Extract<TypePattern, { kind: "TFun" | "TData" }>,
+    dir: Variance,
+  ): Type {
+    // A report already stands, so a bad type has whatever shape is demanded:
+    // a third way of standing aside, beside promotion and lifting an extreme.
+    // Only needed where a shape is demanded, a demanded leaf going to the
+    // relation, which knows `<bad>` on its own.
+    //
+    // The shape but never a report: filling a missing part from something
+    // already bad invents nothing, where lifting an extreme is a choice.
+    if (type.kind === "TBad") return completePattern(pattern).type;
+    if (this.#rigid(type) && dir > 0) {
+      return this.#castHead(
+        this.#boundOf(type),
+        pattern,
+        dir,
+      );
+    }
+    if (
+      !((type.kind === "TUnknown" && dir < 0) ||
+        (type.kind === "TNever" && dir > 0))
+    ) {
+      return type;
+    }
+
+    // A function's parts have variance, so each has an extreme of its own and
+    // the lift is total: the greatest arrow takes the smallest parameters and
+    // the largest result, and the walk that follows lifts again wherever it
+    // meets an extreme further in.
+    if (pattern.kind === "TFun") {
+      // Only a direction reaches here -- an invariant position moves neither
+      // way, and the guard above let nothing else through -- so each part has
+      // an extreme, taken at the flip of `dir` inside and at `dir` itself for
+      // the result.
+      const inner = dir > 0 ? TUnknown : TNever;
+      return TFun(
+        pattern.typeParams.map((b) => mkTypeParamInfo(b.hint, inner)),
+        pattern.params.map(() => inner),
+        dir < 0 ? TUnknown : TNever,
+      );
+    }
+
+    // A datatype's arguments do not: nothing is greatest among the types a
+    // `List` can be of, so there is no greatest `List`. The shape is lifted
+    // all the same, so a `match` still has a datatype to work with; what the
+    // invariance costs is a report, which `already` is what decides: a shape
+    // that had to be invented is one the cast did not find.
+    const filled = completePattern(pattern);
+    if (filled.already) return filled.type;
+    return this.#castFailed(
+      type,
+      pattern,
+      `cannot tell what ${typeToString(type)} is a ${pattern.name} of: a ` +
+        `datatype's arguments are invariant, so ${typeToString(pattern)} has ` +
+        `no ${dir > 0 ? "least" : "greatest"} solution -- write it out`,
+    );
+  }
+
+  /**
+   * Both binders are opened under one group of fresh variables, the way
+   * `#latticeFun` and `#subtypeFun` open theirs. Comparing under their indices
+   * instead would leave a parameter at a `BVar`, which has no bound to read.
+   */
+  #castFun(
+    type: Extract<Type, { kind: "TFun" }>,
+    pattern: Extract<TypePattern, { kind: "TFun" }>,
+    dir: Variance,
+  ): Type {
+    const inner = flip(dir);
+    return this.context.inScope((mark) => {
+      // Bounds are parallel -- they read in the enclosing scope -- so they are
+      // cast before anything is pushed, and need no closing after. They are
+      // contravariant, like the parameters.
+      const typeParams: TypeParamInfo[] = [];
+      for (const [j, want] of pattern.typeParams.entries()) {
+        const mine = type.typeParams[j] ?? impossible("a binder per binder");
+        const bound = this.#cast(mine.bound, want.bound, inner);
+        // The hint is print-only, and the pattern's is the one an author wrote
+        // when there was an annotation to write it in.
+        typeParams.push(mkTypeParamInfo(want.hint, bound));
+      }
+
+      const opened = typeParams.map((binder) =>
+        FVar(this.context.pushTypeVar(binder.bound, binder.hint), binder.hint)
+      );
+
+      // The pattern's arity, which is what was asked for: a position only the
+      // pattern has is filled from the pattern alone, one only `type` has is
+      // dropped. Said once, by count, rather than once per position that had
+      // no partner.
+      if (type.params.length !== pattern.params.length) {
+        this.#sayCastFailed(
+          type,
+          pattern,
+          `expected ${pattern.params.length} parameter${
+            pattern.params.length === 1 ? "" : "s"
+          }, found ${type.params.length}`,
+        );
+      }
+      const params: Type[] = [];
+      for (const [i, want] of pattern.params.entries()) {
+        const mine = type.params[i];
+        if (mine === undefined) {
+          // The count above already said so, and said it better.
+          // Already in the binder's own scope, having never been opened.
+          params.push(completePattern(want).type);
+          continue;
+        }
+        const param = this.#cast(
+          openMany(mine, opened),
+          openMany<unknown>(want, opened),
+          inner,
+        );
+        params.push(closeFrom(param, mark));
+      }
+
+      const result = this.#cast(
+        openMany(type.result, opened),
+        openMany<unknown>(pattern.result, opened),
+        dir,
+      );
+      return TFun(typeParams, params, closeFrom(result, mark));
+    });
+  }
+
+  // --------------------------------------------------------- solving a batch
+
   /**
    * The join of every lower bound, or `never` if there are none.
    *
    * `solve`-prefixed because this computes a candidate solution, where
-   * `Context.upperBoundAt` reads a binder's declared bound.
+   * `#boundOf` reads a binder's declared bound.
    */
-  solveLowerBoundOf(level: Level): Type {
-    const entry = this.context.evarAt(level);
+  solveLowerBoundOf(entry: EVarEntry): Type {
+    // Exhausted, the join it could not finish is at most top -- the same
+    // answer `join` itself gives up with, and one the solve reports on.
     return this.#query(
+      undefined,
       () => entry.lower.reduce((a, b) => this.#join(a, b), TNever),
+      () => TUnknown,
     );
   }
 
   /** The meet of every upper bound, or `unknown` if there are none. Dual to
    * `solveLowerBoundOf`. */
-  solveUpperBoundOf(level: Level): Type {
-    const entry = this.context.evarAt(level);
+  solveUpperBoundOf(entry: EVarEntry): Type {
     return this.#query(
+      undefined,
       () => entry.upper.reduce((a, b) => this.#meet(a, b), TUnknown),
+      () => TNever,
     );
   }
 
@@ -988,27 +1137,26 @@ export class Subtyper {
    * Solve one EVar, given how it occurs in the type the application hands back.
    *
    * Both bounds are computed, never one: they are peers, and which is the
-   * answer is what `polarity` decides. `never` and `unknown` are not fallbacks
+   * answer is what the entry's occurrences decide. `never` and `unknown` are not fallbacks
    * but the honest defaults -- an EVar with no lower bound really is above
    * bottom, and one with no upper really is below top.
    *
-   * Then, in order:
-   *
-   * 1. `lower <: upper`, or the constraints have no solution at all. This is
-   *    the check that keeps a callee's declared bound honest, that bound being
-   *    an upper constraint like any other.
-   * 2. The selection. Covariant occurrences take the *lower* bound: it is the
-   *    smallest type the constraints admit, so it is the most informative
-   *    result, which is what makes the answer principal rather than merely
-   *    sound. Contravariant ones take the upper bound, dually.
+   * `lower <: upper` first, or the constraints have no solution at all --
+   * which is also the check that keeps a callee's declared bound honest, that
+   * bound being an upper constraint like any other. Then the selection:
+   * covariant occurrences take the *lower* bound, the smallest type the
+   * constraints admit and so the most informative, which is what makes the
+   * answer principal rather than merely sound; contravariant ones take the
+   * upper, dually.
    *
    * Occurring both ways, or inside an invariant `TData` argument, the bounds
    * must *agree*: widening either way breaks the other, so unless they meet
    * there is no principal choice and the checker declines rather than picking.
-   * Taking the lower bound would be sound -- step 1 placed it under every
-   * upper bound -- and that is the objection: it would settle silently on a
-   * type that merely happens to work. The explicit type argument the author
-   * would write is both the fix and the record of it.
+   * An error and not a warning, though either bound would check: at an
+   * invariant occurrence the two results are *incomparable*, so a pick is not
+   * a coarser answer but an arbitrary one, and every later diagnostic would be
+   * an artifact of it. The explicit type argument the author would write is
+   * both the fix and the record of it.
    *
    * It is a real cost, and falls on staged calls in particular:
    *
@@ -1023,48 +1171,88 @@ export class Subtyper {
    * downstream can tell which bound it took, so the lower one is taken for
    * being the *demand*, something that really flowed in.
    *
+   * A variable nothing constrained at all is a warning, not a failure. Every
+   * type satisfies no constraints, so the selection is sound and even
+   * principal where the variable occurs one way; what it is not is
+   * *actionable*, since the `never` or `unknown` it settles on is a type the
+   * author never wrote and will meet again further out.
+   *
    * The relation tests here mutate, as everywhere -- but never this batch.
    * Every recorded bound is closed by `batch`, so no sibling can pick up a
    * bound while its neighbours are being decided, which is what would make the
    * order of this loop matter.
    */
-  solveEVar(level: Level, polarity: Polarity): EVarSolution {
-    const entry = this.context.evarAt(level);
+  solveEVar(entry: EVarEntry, at: Position): Type {
+    const { covariantly, contravariantly } = entry;
+
     if (entry.lower.length === 0 && entry.upper.length === 0) {
-      return { kind: "unconstrained" };
+      // The bounds are `never` and `unknown`, and the occurrence picks between
+      // them as it would between any two. Occurring both ways there is nothing
+      // to disagree about, nothing having been demanded, so the smaller stands.
+      const type = contravariantly && !covariantly ? TUnknown : TNever;
+      this.#file(
+        "warning",
+        `nothing constrains the type argument ${entry.hint}, so it was taken ` +
+          `to be ${typeToString(type)}; give it explicitly if that is not ` +
+          `what was meant`,
+        at,
+      );
+      return type;
     }
 
-    const lower = this.solveLowerBoundOf(level);
-    const upper = this.solveUpperBoundOf(level);
+    const lower = this.solveLowerBoundOf(entry);
+    const upper = this.solveUpperBoundOf(entry);
 
     const verdict = this.isSubtype(lower, upper);
-    if (verdict !== "yes") return { kind: "conflict", lower, upper, verdict };
+    if (verdict !== true) {
+      this.#file(
+        "error",
+        verdict === undefined
+          // The checker's limit, not the program's mistake.
+          ? `gave up inferring the type argument ${entry.hint}: comparing ` +
+            `${typeToString(lower)} with ${typeToString(upper)} ran too deep`
+          : `cannot infer the type argument ${entry.hint}: it is bounded ` +
+            `below by ${typeToString(lower)} and above by ` +
+            `${typeToString(upper)}, and no type is both`,
+        at,
+      );
+      return TBad;
+    }
 
-    if (polarity === "covariant") return { kind: "solved", type: lower };
-    if (polarity === "contravariant") return { kind: "solved", type: upper };
+    if (covariantly && !contravariantly) return lower;
+    if (contravariantly && !covariantly) return upper;
 
-    if (polarity === "invariant") {
+    if (covariantly && contravariantly) {
       // One direction is the check above; this is the other. Together they make
       // the bounds equivalent, and then either may be taken.
-      const back = this.isSubtype(upper, lower);
-      if (back !== "yes") return { kind: "disagrees", lower, upper };
-      return { kind: "solved", type: lower };
+      if (this.isSubtype(upper, lower) === true) return lower;
+      this.#file(
+        "error",
+        `cannot infer the type argument ${entry.hint}: it occurs ` +
+          `invariantly, and the arguments bound it only between ` +
+          `${typeToString(lower)} and ${typeToString(upper)}, so no choice ` +
+          `is the general one; give it explicitly`,
+        at,
+      );
+      return TBad;
     }
 
     // Occurring nowhere: the demand first.
-    return {
-      kind: "solved",
-      type: entry.lower.length > 0 ? lower : upper,
-    };
+    return entry.lower.length > 0 ? lower : upper;
   }
 
   /**
    * Push one EVar behind each of `hints`, run `body` over them, then solve the
-   * batch and substitute the answers into the type it returned.
+   * batch and hand the answers back in order.
+   *
+   * The solutions and not a substituted type: the caller still holds the
+   * unopened result the batch was instantiated from, so opening *that* with
+   * them is one ordinary substitution, where carrying a type back out would
+   * need a second mechanism to put the answers into it.
    *
    * The scope and the variables, and nothing else -- not even their declared
    * bounds, which are a constraint like any other and the caller's to record,
-   * along with which types to open, where the polarity lies, and what to
+   * along with which types to open, where each variable occurs, and what to
    * relate. This owns only the part a caller could get wrong: a batch is
    * pushed together, decided together, and gone before anything outside can
    * see it.
@@ -1078,93 +1266,51 @@ export class Subtyper {
    * an argument's pattern hides the type parameters rather than naming them --
    * so a constraint mentioning an EVar can only mean a sibling.
    *
-   * Reporting is the caller's: a failure names a type argument but no position,
-   * and `Subtyper` has no diagnostics.
+   * `at` is where the batch stands -- the application as a whole -- and the
+   * default for anything filed under it, which a single argument's own ask
+   * narrows for its own length.
    */
   withEVars(
     hints: readonly string[],
-    body: (evars: readonly EVarRef[]) => Type,
-  ): { result: Type; failures: readonly TypeArgFailure[] } {
-    return this.context.inScope(() => {
-      const levels = this.context.pushEVarBatch(hints);
-      // `?A`, not `A`. An EVar is an ordinary `FVar`, so the `?` a diagnostic
-      // shows is put on here, at the one place that knows which it is.
-      const evars = hints.map((hint, j) =>
-        FVar(levels[j] ?? impossible("a level per hint"), `?${hint}`)
-      );
-
-      const result = body(evars);
-
-      const failures: TypeArgFailure[] = [];
-      for (const level of levels) {
-        const entry = this.context.evarAt(level);
-        // A refused constraint was reported where it was refused, so whatever
-        // bounds got through describe a variable already given up on: solving
-        // from them could only tell the same mistake a second time.
-        if (entry.reported) {
-          this.context.setSolution(level, TBad);
-          continue;
-        }
-        const solved = this.solveEVar(level, entry.polarity);
-        if (solved.kind === "solved") {
-          this.context.setSolution(level, solved.type);
-          continue;
-        }
-        // Every failure solves to `TBad`. Checking against a bad type always
-        // succeeds, so one type argument nobody could infer does not go on to
-        // fail again wherever the result is used.
-        failures.push({ hint: entry.hint, reason: solved });
-        this.context.setSolution(level, TBad);
-      }
-
-      return { result: this.context.apply(result), failures };
-    });
+    at: Position,
+    body: (evars: readonly FVarRef[]) => void,
+  ): readonly Type[] {
+    const outer = this.#at;
+    this.#at = at;
+    try {
+      return this.context.inScope(() => {
+        const batch = this.context.pushEVarBatch(hints);
+        body(batch.map((entry) => entry.ref));
+        return batch.map((entry) => this.#solutionFor(entry, at));
+      });
+    } finally {
+      this.#at = outer;
+    }
   }
-}
 
-/**
- * An EVar as a type: an `FVar` whose level the context holds an EVar at. Not
- * just `Type`, because a caller needs the `level` to say anything about it.
- */
-export type EVarRef = Extract<Type, { kind: "FVar" }>;
-
-/**
- * A type argument the batch could not settle, and why. Carries the hint so a
- * message can name it; the position belongs to the caller.
- */
-export type TypeArgFailure = {
-  readonly hint: string;
-  readonly reason: Exclude<EVarSolution, { kind: "solved" }>;
-};
-
-/**
- * What solving one EVar came to. Three of the four are the checker declining,
- * each wanting its own message -- which is why this comes back as a value:
- * `Subtyper` has no diagnostics and should not acquire any.
- */
-export type EVarSolution =
-  | { readonly kind: "solved"; readonly type: Type }
-  /** Nothing was recorded, so every type would do and none is right. */
-  | { readonly kind: "unconstrained" }
-  /** No type is above the lower bound and below the upper one. */
-  | {
-    readonly kind: "conflict";
-    readonly lower: Type;
-    readonly upper: Type;
-    readonly verdict: Verdict;
-  }
   /**
-   * The bounds are satisfiable but unequal, at a position that needs them
-   * equal. Not a mistake in the program's types -- it is the checker declining
-   * to choose where no choice is principal, and asking for the type argument.
+   * What one member of a batch came to.
+   *
+   * A refusal answers `TBad`. Checking against a bad type always succeeds, so
+   * one type argument nobody could infer does not go on to fail again wherever
+   * the result is used.
    */
-  | {
-    readonly kind: "disagrees";
-    readonly lower: Type;
-    readonly upper: Type;
-  };
+  #solutionFor(entry: EVarEntry, at: Position): Type {
+    // A refused constraint was reported where it was refused, so whatever
+    // bounds got through describe a variable already given up on: solving from
+    // them could only tell the same mistake a second time.
+    if (entry.reported) return TBad;
 
-/** Convenience for the common `=== "yes"` test. */
-export function holds(verdict: Verdict): boolean {
-  return verdict === "yes";
+    const solved = this.solveEVar(entry, at);
+    // The batch bar, not this variable's level: a solution is built from bounds
+    // already closed by it, and a sibling riding out would leave a variable
+    // standing in a type after its scope has been popped.
+    if (!isClosed(solved, entry.batch)) {
+      throw new Error(
+        `solution for ?${entry.hint} escapes: it mentions something at or ` +
+          `past level ${entry.batch}, where its batch begins`,
+      );
+    }
+    return solved;
+  }
 }

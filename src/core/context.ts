@@ -39,15 +39,13 @@
  */
 
 import {
-  bothPolarities,
+  FVar,
+  type FVarRef,
   isClosed,
   type Level,
   mkLevel,
-  mkTypeParamInfo,
-  type Polarity,
-  TData,
-  TFun,
   type Type,
+  type Variance,
 } from "./types.ts";
 
 /**
@@ -69,35 +67,54 @@ export type TypeVarEntry = {
 };
 
 /**
- * `?a`, or `?a = solution` once solved.
+ * `?a` -- a type variable still being inferred, and the constraints collected
+ * on it.
  *
  * Constraints accumulate here rather than being solved on sight: a whole
- * argument list contributes before anything is decided, so the solution is
- * the join of the lower bounds rather than whichever argument came first.
- * Every recorded bound is already avoided -- closed by this EVar's `batch` --
- * so `setSolution` can never be handed something out of scope.
+ * argument list contributes before anything is decided, so the solution is the
+ * join of the lower bounds rather than whichever argument came first.
  *
- * Most of this entry is written after it is pushed and read once the batch is
- * solved: `lower` and `upper` grow, `polarity` combines, `reported` latches.
- * `solution` is written once, so it is `readonly` and solving replaces the
- * entry -- a guardrail against an assignment that missed `setSolution`.
+ * A class and not a record because it is the one entry with mutable state and
+ * invariants over it. Nothing it does consults the context -- the bar for a
+ * bound is `batch`, which it carries -- so the operations sit here, leaving
+ * `Context` only the push that allocates a batch and the lookup that finds one.
+ *
+ * No solution field: `Subtyper.withEVars` decides a batch all at once and
+ * collects the answers in order, so nothing has to represent "not solved yet",
+ * which is a state only that loop was ever in a position to observe.
  *
  * `hint` and not `name`: an EVar is reached from an `FVar` carrying its level,
  * never by name, so this is what a diagnostic prints and nothing else.
  */
-export type EVarEntry = {
-  readonly kind: "EVar";
+export class EVarEntry {
+  readonly kind = "EVar";
   readonly hint: string;
+
+  /**
+   * Its position, which is its identity -- redundant with where it sits in the
+   * context, and carried so the entry can hand out the variable that names it
+   * rather than a caller rebuilding one.
+   */
+  readonly level: Level;
+
+  /**
+   * The variable naming this entry. `?A`, not `A`: an EVar is an ordinary
+   * `FVar`, so the `?` a diagnostic shows is put on here, at the one place that
+   * knows which kind the level holds. `hint` stays bare, being what a message
+   * about a *type argument* names.
+   */
+  readonly ref: FVarRef;
+
   /**
    * Where the group this EVar was created with begins -- one argument list's
    * worth, and the unit `Subtyper.withEVars` decides at once.
    *
    * Carried because a constraint may not mention *any* EVar of its own batch,
    * not merely one to its right. Leftward looks harmless, the solver going
-   * ascending, but `?a`'s choice is made by polarity in the *result type*
+   * ascending, but `?a`'s choice is made by where it occurs in the *result type*
    * alone, blind to `?a` standing inside `?b`'s pending bounds. Refusing the
    * dependency keeps every batch a set of independent variables, which is the
-   * condition under which per-variable polarity is the whole story.
+   * condition under which each variable's own occurrences are the whole story.
    *
    * Stated as the batch's rule even though nothing tells batch from context
    * apart any more -- `withEVars` runs only once every argument is checked, so
@@ -105,27 +122,80 @@ export type EVarEntry = {
    * makes the dependency unseeable.
    */
   readonly batch: number;
-  readonly lower: Type[];
-  readonly upper: Type[];
+
+  readonly lower: Type[] = [];
+  readonly upper: Type[] = [];
+
   /**
-   * How this EVar occurs in the type its application hands back, which is what
-   * decides between its two bounds.
+   * The set of positions this EVar occupies in the type its application hands
+   * back, which is what decides between its two bounds. Both false is a
+   * variable the result never mentions -- an answer like any other, since
+   * nothing downstream can tell which bound such a variable took.
    *
-   * Recorded by the opening that puts the variable into that result. `none`
-   * until noted, and `none` forever for a variable the result never mentions:
-   * the two are the same answer, since nothing downstream can tell which bound
-   * such a variable took.
+   * A pair of flags and not one variance: occurring covariantly *and*
+   * contravariantly is what leaves neither bound free to widen, and there is no
+   * variance for occurring nowhere. Recorded by the opening that puts the
+   * variable into that result.
    */
-  polarity: Polarity;
+  covariantly = false;
+  contravariantly = false;
+
   /**
-   * Whether a constraint refused as interdependent already accounts for this
+   * Whether a diagnostic about a refused constraint already accounts for this
    * EVar. Without it such a variable looks like one nothing ever tried to
    * constrain, and the solver tells the same mistake a second time, naming a
    * type parameter where the first telling named what the author wrote.
    */
-  reported: boolean;
-  readonly solution?: Type;
-};
+  reported = false;
+
+  constructor(hint: string, level: Level, batch: number) {
+    this.hint = hint;
+    this.level = level;
+    this.batch = batch;
+    this.ref = FVar(level, `?${hint}`);
+  }
+
+  /**
+   * Record `T <: ?a` or `?a <: T`. The bound must already be avoided -- closed
+   * by `batch` -- since an EVar's constraints may only mention what stands to
+   * the left of its group, exactly as its eventual solution must.
+   *
+   * The bar is the batch and not this variable's own level: between the two
+   * stand only its siblings, and a sibling is refused even leftward (see
+   * `batch`). A caller decides that first and reports it where it is the
+   * program's doing, so reaching here with one is a checker bug and throws.
+   */
+  addConstraint(side: "lower" | "upper", type: Type): void {
+    // Not `Context.assertClosed`: the bar is this batch, not the context's
+    // watermark, and everything to its right is legitimately still standing.
+    if (!isClosed(type, this.batch)) {
+      throw new Error(
+        `bound on ?${this.hint}: mentions something at or past level ` +
+          `${this.batch}, where its batch begins`,
+      );
+    }
+    this[side].push(type);
+  }
+
+  /**
+   * Note that this EVar stands at a position of `variance` in its
+   * application's result, adding to wherever else it stands. An invariant
+   * position counts as both, being one no bound may be widened at.
+   */
+  noteOccurrence(variance: Variance): void {
+    if (variance >= 0) this.covariantly = true;
+    if (variance <= 0) this.contravariantly = true;
+  }
+
+  /**
+   * Note that a diagnostic already accounts for this EVar. Recorded on the
+   * variable because that is what the solver will be looking at, long after the
+   * argument that caused it has been left behind.
+   */
+  noteReported(): void {
+    this.reported = true;
+  }
+}
 
 /** `x : type`, or the wildcard `_`, which binds a position and no name. */
 export type TermVarEntry = {
@@ -201,6 +271,12 @@ export class Context {
     return this.#push({ kind: "TypeVar", name, bound });
   }
 
+  /** The same for a term: omit `name` for a wildcard, which binds a position
+   * and nothing else. */
+  pushTermVar(type: Type, name?: string): Level {
+    return this.#push({ kind: "TermVar", name, type });
+  }
+
   /**
    * A whole batch of EVars at once -- one per type parameter of the callee
    * being instantiated, which is the only place they arise.
@@ -208,19 +284,13 @@ export class Context {
    * Pushed together so `batch` cannot be got wrong: it is the size before the
    * first, so every member agrees on where the group starts.
    */
-  pushEVarBatch(hints: readonly string[]): Level[] {
+  pushEVarBatch(hints: readonly string[]): EVarEntry[] {
     const batch = this.size;
-    return hints.map((hint) =>
-      this.#push({
-        kind: "EVar",
-        hint,
-        batch,
-        lower: [],
-        upper: [],
-        polarity: "none",
-        reported: false,
-      })
-    );
+    return hints.map((hint) => {
+      const entry = new EVarEntry(hint, mkLevel(this.size), batch);
+      this.#push(entry);
+      return entry;
+    });
   }
 
   /**
@@ -229,105 +299,45 @@ export class Context {
    *
    * Only tests reach for this; the checker instantiates a whole callee.
    */
-  pushEVar(hint: string): Level {
-    const [level] = this.pushEVarBatch([hint]);
-    if (level === undefined) throw new Error("pushEVar pushed nothing");
-    return level;
+  pushEVar(hint: string): EVarEntry {
+    const [entry] = this.pushEVarBatch([hint]);
+    if (entry === undefined) throw new Error("pushEVar pushed nothing");
+    return entry;
   }
 
   /**
-   * The entry at `level`. Total: a level comes from a `push` or off a node the
-   * checker built, so naming nothing -- or an entry of the wrong kind -- is a
-   * checker bug. `lookup` is where a question may come back empty.
+   * The entry `variable` names. A level comes from a `push` or off a node the
+   * checker built, so naming nothing is a checker bug; `lookup` is where a
+   * question may come back empty.
    */
-  #entryAt<K extends Entry["kind"]>(
-    level: Level,
-    kind: K,
-  ): Extract<Entry, { kind: K }> {
-    const entry = this.#entries[level];
+  entryAt(variable: FVarRef): Entry {
+    const entry = this.#entries[variable.level];
     if (entry === undefined) {
       throw new Error(
-        `level ${level} names no entry: the context holds ${this.size}`,
+        `level ${variable.level} names no entry: the context holds ${this.size}`,
       );
     }
-    if (entry.kind !== kind) {
-      throw new Error(
-        `level ${level} holds a ${entry.kind}, asked for a ${kind}`,
-      );
-    }
-    return entry as Extract<Entry, { kind: K }>;
-  }
-
-  /** The EVar at `level`. Total, so the level must name one. */
-  evarAt(level: Level): EVarEntry {
-    return this.#entryAt(level, "EVar");
+    return entry;
   }
 
   /**
-   * The EVar at `level`, or `undefined` if the level holds something else.
+   * The EVar `variable` names, or `undefined` if its level holds something
+   * else.
    *
-   * The one read by level allowed to come back empty, because an `FVar` does
-   * not say which kind it names -- rigid variables and EVars share the level
-   * space. Every rule that treats a variable as rigid asks this first;
-   * `evarAt` stays total for the callers that already know.
+   * Which kind a level holds is a *question*, not a mistake: an `FVar` does
+   * not say, rigid variables and EVars sharing the level space. Every rule
+   * that reads a variable's bound asks this or its dual first.
    */
-  evarOrUndefined(level: Level): EVarEntry | undefined {
-    const entry = this.#entries[level];
-    if (entry === undefined) {
-      throw new Error(
-        `level ${level} names no entry: the context holds ${this.size}`,
-      );
-    }
+  evarAt(variable: FVarRef): EVarEntry | undefined {
+    const entry = this.entryAt(variable);
     return entry.kind === "EVar" ? entry : undefined;
   }
 
-  /**
-   * Record `T <: ?a` or `?a <: T`. The bound must already be avoided -- closed
-   * by `level` -- since an EVar's constraints may only mention what stands to
-   * its left, exactly as its eventual solution must.
-   *
-   * The bar is the *batch*, not the level: between the two stand only this
-   * EVar's siblings, and a sibling is refused even leftward (see
-   * `EVarEntry.batch`). A caller decides that first and reports it as
-   * `interdependent` where it is the program's doing, so reaching here with
-   * one is a checker bug and throws.
-   */
-  addConstraint(level: Level, side: "lower" | "upper", type: Type): void {
-    const entry = this.evarAt(level);
-    // Not `assertClosed`: the bar is this batch, not the context's watermark,
-    // and everything to its right is legitimately still standing.
-    if (!isClosed(type, entry.batch)) {
-      throw new Error(
-        `bound on ?${entry.hint}: mentions something at or past level ` +
-          `${entry.batch}, where its batch begins`,
-      );
-    }
-    entry[side].push(type);
-  }
-
-  /**
-   * Note that this EVar stands at `polarity` in its application's result,
-   * combining with wherever else it stands: two occurrences that disagree make
-   * it invariant, which is the case admitting no principal choice.
-   */
-  notePolarity(level: Level, polarity: Polarity): void {
-    const entry = this.evarAt(level);
-    entry.polarity = bothPolarities(entry.polarity, polarity);
-  }
-
-  /**
-   * Note that a diagnostic already accounts for this EVar. Recorded on the
-   * variable because that is what the solver will be looking at, long after the
-   * argument that caused it has been left behind.
-   */
-  noteReported(level: Level): void {
-    this.evarAt(level).reported = true;
-  }
-
-  /** The same for a term: omit `name` for a wildcard, which binds a position
-   * and nothing else. */
-  pushTermVar(type: Type, name?: string): Level {
-    return this.#push({ kind: "TermVar", name, type });
+  /** The rigid type variable `variable` names, or `undefined`. Dual to
+   * `evarAt`. */
+  typeVarAt(variable: FVarRef): TypeVarEntry | undefined {
+    const entry = this.entryAt(variable);
+    return entry.kind === "TypeVar" ? entry : undefined;
   }
 
   /**
@@ -397,18 +407,6 @@ export class Context {
     }
   }
 
-  /**
-   * The *declared* upper bound of the type variable at `level`. Total, like
-   * every read by level -- and total in a second sense: an unbounded variable
-   * stores `TUnknown`, so there is no "no bound" answer either.
-   *
-   * Not `Subtyper.solveUpperBoundOf`, which meets an EVar's collected upper
-   * constraints. This one reads a binder, that one solves.
-   */
-  upperBoundAt(level: Level): Type {
-    return this.#entryAt(level, "TypeVar").bound;
-  }
-
   /** The innermost binding of `name`, whatever kind it turned out to be. */
   lookup(name: string): Binding | undefined {
     const levels = this.#levelsByName.get(name);
@@ -440,69 +438,5 @@ export class Context {
     return found?.entry.kind === "TypeVar"
       ? { level: found.level, entry: found.entry }
       : undefined;
-  }
-
-  /**
-   * Solve `level := type` in place. The escape check is what the ordering
-   * buys: a solution may only mention entries strictly to the left, which is
-   * `isClosed(type, level)`. No separate occurs check, that being the same
-   * question about one level.
-   *
-   * Throws rather than reporting: solving twice, solving a level holding no
-   * EVar, and solving to something that escapes are all checker bugs.
-   */
-  setSolution(level: Level, type: Type): void {
-    const entry = this.evarAt(level);
-    if (entry.solution !== undefined) {
-      throw new Error(`?${entry.hint} is already solved`);
-    }
-    if (!isClosed(type, level)) {
-      throw new Error(
-        `solution for ?${entry.hint} escapes: it mentions something at or ` +
-          `past level ${level}`,
-      );
-    }
-    this.#entries[level] = { ...entry, solution: type };
-  }
-
-  /**
-   * Apply the context as a substitution: replace every solved EVar by its
-   * solution.
-   *
-   * Called from exactly one place, the end of `Subtyper.withEVars`, which is
-   * the whole of an EVar's life: a batch is pushed, two relations record
-   * against it, it is solved, and this carries the answers out. Nothing
-   * upstream holds a type naming one.
-   *
-   * One pass, no chain to follow: a solution is built from recorded bounds,
-   * `#constrain` refuses a bound mentioning any EVar of the batch, and two
-   * batches never overlap.
-   */
-  apply(type: Type): Type {
-    switch (type.kind) {
-      case "TUnknown":
-      case "TNever":
-      case "TBad":
-      case "BVar":
-        return type;
-      case "FVar": {
-        // A rigid variable substitutes to itself, and an unsolved EVar stands
-        // as it is -- so the level is asked, and both non-answers are the same
-        // answer.
-        const entry = this.evarOrUndefined(type.level);
-        const solution = entry?.solution;
-        return solution ?? type;
-      }
-      case "TFun":
-        return TFun(
-          type.typeParams.map((b) =>
-            mkTypeParamInfo(b.hint, this.apply(b.bound))
-          ),
-          type.params.map((param) => this.apply(param)),
-          this.apply(type.result),
-        );
-      case "TData":
-        return TData(type.name, type.args.map((arg) => this.apply(arg)));
-    }
   }
 }
