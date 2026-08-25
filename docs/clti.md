@@ -8,8 +8,7 @@ dependency-free and decidable.
 We broke that. Arguments are checked against `openMany(param, evars)` -- a
 parameter type holding EVars -- so an argument's own checking writes
 constraints, and a nested application can produce one naming a sibling.
-`#constrain`'s refusal and the `interdependent` verdict are the scar tissue, not
-the disease.
+`#constrain`'s refusal is the scar tissue, not the disease.
 
 So how does CLTI push a partial type inward? Not with inference variables. With
 missing parts.
@@ -28,8 +27,8 @@ flows anywhere -- only in the two the checker relates on purpose. These all go:
 - every `Context.apply` but the one that carries a batch's answers out
 
 What survives, and should: `#assertUnsolved`, `expose`'s refusal to promote an
-EVar, `interdependent` and `noteReported`. Constraint collection is where an
-EVar is still real, and those are what it needs.
+EVar, the refusal of a sibling and `noteReported`. Constraint collection is
+where an EVar is still real, and those are what it needs.
 
 That deletion is the point. The rest is how to get there.
 
@@ -85,7 +84,7 @@ on the way is exactly what the relation it replaces used to record.
 - `P` missing: `T`. Nothing is demanded, so nothing moves.
 - `T` is `<bad>`: `<bad>`. A report already stands.
 - `T` is `unknown` going down, or `never` going up: build from `P` alone,
-  filling each missing part with the extreme for its polarity. This is the
+  filling each missing part with the extreme for its variance. This is the
   operation the note wanted separately for result patterns -- it is not
   separate, it is this one against top.
 - both `TFun`: recurse, flipping direction at the parameters and at the bounds.
@@ -135,7 +134,7 @@ until the whole list is in.
 5. The result type against the expected pattern, likewise, using the cast of top
    against the pattern. This is what lets `Nil()` know what it is empty of, and
    it is why an application must accept a pattern rather than a type.
-6. Select by polarity, unchanged.
+6. Select by where the variable occurs, unchanged.
 
 Step 3 walks terms and step 4 walks types, so there is no re-checking.
 
@@ -162,7 +161,7 @@ inherits whatever the join can do.
 - **0. Size the damage.** Done. Two genuine regressions across three tests --
   `f(fn (x) -> id(x), True)` and `both(True, fn (y) -> y)` in both orders.
   Everything else is unchanged, is a better message on an already-failing
-  program, or tests `interdependent` and disappears with it.
+  program, or tests the sibling refusal and disappears with it.
 - **1. Write down matching.** Done, above.
 - **2. The type parameter, as a no-op.** Introduce `TypeMaybe<M>` and both
   aliases, thread them through every signature, and do _not_ add `TMissing` yet.
@@ -188,13 +187,13 @@ inherits whatever the join can do.
   between two ground types, which is the property §1 says LTI rests on and we
   had broken. The relation's verdict is reported: a plain `no` is unreachable
   there, the pattern having already answered for every complete part, but
-  `interdependent` and `exhausted` are the relation declining to record, and the
-  EVar it gave up on is marked as reported, so nothing downstream would. The
-  cost step 0 measured is paid here and nowhere else: a bare lambda in the same
-  argument list now asks for an annotation, in three tests. What it bought is
-  `interdependent` becoming unreachable in practice --
-  `both[A, B](True, fn (y: Bool) -> y)` was refused and now infers, since
-  `?B := Bool` arrives already solved rather than as `?A <: ?B`.
+  `exhausted` is the relation declining to record, and the EVar it gave up on is
+  marked as reported, so nothing downstream would. The cost step 0 measured is
+  paid here and nowhere else: a bare lambda in the same argument list now asks
+  for an annotation, in three tests. What it bought is the sibling refusal
+  becoming unreachable in practice -- `both[A, B](True, fn (y: Bool) -> y)` was
+  refused and now infers, since `?B := Bool` arrives already solved rather than
+  as `?A <: ?B`.
 - **6. `EVar` out of `Type`.** Done, but not as written above. "Constraints live
   in the context, indexed by binder position" was the wrong shape: an index is
   relative, so the relation would have had to carry a binder and a depth. A
@@ -229,8 +228,8 @@ inherits whatever the join can do.
     sides of a printed verdict -- were substituting into types that cannot hold
     an EVar. Verified by removing them: the suite does not move. It takes a
     `Type` rather than a pattern now, for the same reason.
-  - **`interdependent` stays**, and earns it: constraint collection is exactly
-    where a sibling or an escaping variable can still turn up.
+  - **The refusal of a sibling stays**, and earns it: constraint collection is
+    exactly where a sibling or an escaping variable can still turn up.
 
   Then the invariant was made structural rather than argued. **Arguments are
   checked before the batch is pushed**, so there is a stretch of `#applyCall`
@@ -247,7 +246,7 @@ inherits whatever the join can do.
   else, which also makes the unbounded case fall out rather than be excluded --
   `?A <: unknown` is vacuous and the relation says so before it reaches the
   variable. What the call _does_ with its variables stays in `#applyCall` too:
-  which types to open, where the polarity lies, what to relate. `#solveEVars`
+  which types to open, where each variable occurs, what to relate. `#solveEVars`
   moved in, leaving `#reportTypeArg` behind, since the three failures differ
   only in what to _say_.
 
@@ -261,12 +260,12 @@ inherits whatever the join can do.
   `#assertUnsolved` at the relation's head and the cast's, and
   `#unsolvedEVarsFrom`'s throw on a solved EVar. Solving happens after the last
   constraint and the scope drops immediately after, so a solved EVar is never
-  standing where anything looks. `Context.apply` stops recursing for the same
+  standing where anything looks. `Context.apply` stopped recursing for the same
   reason -- a solution is built from bounds that cannot name an EVar, and there
-  is no second batch to name.
+  is no second batch to name -- and then went entirely; see below.
 
-  `setSolution`'s checks stay: those are about _scope_, which is avoidance's
-  business and still subtle.
+  The escape check stays: it is about _scope_, which is avoidance's business and
+  still subtle. It moved with the solving, and its bar is the batch.
 - **7. `#subsume`.** What is left of it relates two written types -- a bound
   against a bound, a type argument against its bound -- and those are casts
   against a complete pattern, once nothing else is left to break.
@@ -274,6 +273,115 @@ inherits whatever the join can do.
 Steps 2 and 3 were additive and safe. Step 4 was the commitment point, and it
 came through without moving the suite -- the behavior it commits to is not paid
 for until step 5 puts patterns where the EVars are.
+
+## Where EVars live
+
+`EVarEntry` is a class, and the operations on it -- recording a bound, noting a
+occurrences, noting that a diagnostic already accounts for it -- sit there
+rather than on `Context`. Nothing they do consults the ordering: the bar for a
+bound is the entry's own `batch`. `Context` keeps the push that allocates a
+batch and the lookup that finds one, and its level-keyed reads answer
+`undefined` for the wrong kind rather than throwing, because which kind a level
+holds is a genuine question -- an `FVar` does not say, rigid variables and EVars
+sharing the space. A level naming nothing at all is still a bug and still
+throws.
+
+An entry carries its own level and the `FVarRef` naming it, so a batch is pushed
+as entries and hands out its variables rather than a caller rebuilding them from
+levels. Everything reached by level is reached from one of those variables, so
+that is what the context's reads take: a level on its own says which entry but
+not that anything pointed at it.
+
+There is no solution field. `withEVars` decides a batch all at once and collects
+the answers in order, so nothing has to represent "not solved yet" -- a state
+only that loop was ever in a position to observe, and the source of a
+three-way-ambiguous `undefined`. The caller still holds the unopened result the
+batch was instantiated from, so it opens _that_ with the solutions: one ordinary
+substitution, and `Context.apply` -- a second mechanism that walked a type to do
+the same job -- deletes.
+
+## Who says what went wrong
+
+`Subtyper` shares the checker's `diagnostics` array, the way `Elaborator` does,
+and files its own. The line is not severity or wording but this:
+
+> A fact about what was **recorded** -- a bound widened, a constraint refused,
+> an EVar settled -- happened whatever the ask was for, so it is said where it
+> happened. A fact about the **answer** is only a failure relative to the
+> asker's intent, so it goes back as a `Verdict`.
+
+Most of `Subtyper`'s own asks are questions rather than assertions -- `#join`
+ordering two variables, `#equiv` running one direction of two -- so a `no` there
+is an ordinary answer and nothing to report. Only the caller knows which it
+made.
+
+Severity follows soundness, and only the recording site knows it: a bound
+_widened_ is a one-directional loss, so any later failure is still explainable
+by it -- a **warning**. A constraint _discarded_, or a choice between two
+_incomparable_ candidates at an invariant occurrence, settles the program's
+meaning arbitrarily -- an **error**. That is why `disagrees` is not warnable
+while `unconstrained` is: nothing was demanded there, so the selection is sound
+and even principal, it is only unactionable.
+
+`interdependent` left `Verdict` with this. It was never an answer about two
+types -- it was a report that the relation had been asked to record something it
+could not write down -- so `#constrain` now files it and returns.
+`TypeArgFailure`/`EVarSolution`, whose only purpose was carrying a reason out to
+be phrased elsewhere, are gone with it.
+
+What is left is `boolean | undefined`: it holds, it does not, or the fuel ran
+out. The third case is not folded into `true` the way `TBad` folds an
+already-reported mistake into the relation, and the difference is where the
+marker can live. `TBad` rides in the _type_, so everything downstream still sees
+that a report stands; a relation has no such carrier, and its caller would
+proceed as though the comparison had held. `solveEVar` is what proves it -- it
+answers `TBad` on exhaustion, which it can only do because the verdict reached
+it. So the third value buys the ability to plant a marker at the one site with
+somewhere to plant one, not merely a choice of wording.
+
+Positions come from the checker, which has them. `withEVars` takes the
+application's, and an optional `at` on `isSubtype` or on a cast narrows it to
+one argument's for the length of that ask -- so a widened bound names the
+argument that caused it, where a solve-time error names the call. There is no
+separate `relate`: a top-level ask installs a position the same way it resets
+the fuel, both being facts about what one query covers, so `#query` does it.
+
+The cast family reports the same way, and has to. A cast never fails on the
+surface -- it always answers with the shape that was asked for, filling what it
+could not reach with `TBad` -- and `TBad` is the checker's word for _a report
+already stands_. Letting the verdict carry the report out put it at whatever
+granularity the outermost caller had, so a result that disagreed came back as
+the whole arrow disagreeing; and a caller with no use for the verdict dropped
+it, leaving a `TBad` speaking for a report nobody had filed. Now `#castFailed`
+files where the shape gives out, and the messages name the part:
+`expected Int, found Bool` rather than
+`expected Bool -> Int, found Bool -> Bool`, and a lambda of the wrong arity gets
+`expected 1 parameter, found 2` back.
+
+So a cast has no verdict at all, and `Cast` is gone -- `upcast`, `downcast` and
+`exactcast` answer with a `Type`. Nothing ever read the verdict before merging
+it into another with `bothVerdicts`, which is what a value that says nothing
+looks like: every way a cast could decline is a fact about a part, said where
+that part is, and the combination at the top named no part and no reason.
+`Verdict` is now the relation's alone -- asking whether one type is under
+another is a question with an answer, where a cast is a rewriting. The one
+decline about the whole ask rather than a part is exhaustion, which is why
+`#castQuery` is the only entry point that still files anything itself.
+
+An ask that passes no position is a _query_, and stays silent. That is not a
+loophole but the distinction itself: `downcast(unknown, expected)` asks what a
+pattern admits at its widest, reads no program that could be wrong, and passes
+no position for exactly that reason.
+
+## Exhaustion unwinds
+
+Fuel is a property of the whole query, so a spent tank is not an answer any
+local caller could use -- and the old code proved it by not using it: `#join`
+and `#meet` both read `exhausted` as "unrelated" and settled for an extreme, a
+definite answer manufactured from a limit. It is an exception now, caught only
+in `#query`, which takes the caller's own way of saying it does not know -- a
+verdict, an extreme, the demanded shape. Interior relations return `boolean`;
+three-valued logic exists only at the boundary.
 
 ## Open
 

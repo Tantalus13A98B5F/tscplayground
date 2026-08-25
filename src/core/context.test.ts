@@ -1,21 +1,19 @@
 import { expect } from "@std/expect";
-import { Context } from "./context.ts";
+import { Context, type EVarEntry } from "./context.ts";
 import {
   alphaEq,
   BVar,
   FVar,
-  type Level,
   mkDataName,
   mkLevel,
   TData,
-  TFun,
   TUnknown,
 } from "./types.ts";
 
 const Bool = mkDataName("Bool");
 
 /** Levels are positions, so a context has to be built to have any. */
-function withEVar(): { context: Context; a: Level } {
+function withEVar(): { context: Context; a: EVarEntry } {
   const context = new Context();
   return { context, a: context.pushEVar("a") };
 }
@@ -63,7 +61,13 @@ Deno.test("a nameless binding holds a position but answers to no name", () => {
   const nameless = context.pushTypeVar(TData(Bool));
 
   expect(nameless).toBe(mkLevel(1));
-  expect(alphaEq(context.upperBoundAt(nameless), TData(Bool))).toBe(true);
+  expect(
+    alphaEq(
+      context.typeVarAt(FVar(nameless, "_"))?.bound ?? TUnknown,
+      TData(Bool),
+    ),
+  )
+    .toBe(true);
   // Still reachable by level, so its bound is not lost -- only its name is.
   expect(context.lookupTypeVar("X")?.level).toBe(outer);
 });
@@ -71,82 +75,32 @@ Deno.test("a nameless binding holds a position but answers to no name", () => {
 Deno.test("push hands back the level it allocated", () => {
   const context = new Context();
   expect(context.pushTypeVar(TUnknown, "X")).toBe(mkLevel(0));
-  expect(context.pushEVar("a")).toBe(mkLevel(1));
+  expect(context.pushEVar("a").level).toBe(mkLevel(1));
   expect(context.size).toBe(2);
 });
 
-Deno.test("solve records a solution in place", () => {
-  const { context, a } = withEVar();
-
-  context.setSolution(a, TData(Bool));
-  expect(alphaEq(context.evarAt(a).solution ?? TUnknown, TData(Bool))).toBe(
-    true,
-  );
-});
-
-Deno.test("solve rejects a solution mentioning the variable itself", () => {
-  const { context, a } = withEVar();
-
-  // `?a` is not to the left of itself, so this is the escape check doing it.
-  expect(() => context.setSolution(a, TFun([], [FVar(a, "a")], TUnknown)))
-    .toThrow("escapes");
-  expect(context.evarAt(a).solution).toBeUndefined();
-});
-
-Deno.test("solve rejects a solution that escapes its scope", () => {
-  // `?a` is bound to the left of `X`, so `?a := X` would let X escape.
-  const { context, a } = withEVar();
-  const X = context.pushTypeVar(TUnknown, "X");
-
-  expect(() => context.setSolution(a, FVar(X, "X"))).toThrow("escapes");
-});
-
-Deno.test("solve accepts a solution mentioning something to its left", () => {
+Deno.test("which kind a level holds is a question, but the level itself is not", () => {
+  // An `FVar` says a level and no more, so asking whether it names an EVar is
+  // ordinary. Asking about a level nothing was ever pushed at is a checker bug.
   const context = new Context();
-  const X = context.pushTypeVar(TUnknown, "X");
+  const X = FVar(context.pushTypeVar(TUnknown, "X"), "X");
   const a = context.pushEVar("a");
 
-  context.setSolution(a, FVar(X, "X"));
-  expect(alphaEq(context.evarAt(a).solution ?? TUnknown, FVar(X, "X"))).toBe(
-    true,
-  );
+  expect(context.evarAt(X)).toBeUndefined();
+  expect(context.typeVarAt(a.ref)).toBeUndefined();
+  expect(context.evarAt(a.ref)?.hint).toBe("a");
+  expect(() => context.entryAt(FVar(mkLevel(9), "stray")))
+    .toThrow("names no entry");
 });
 
-Deno.test("solve refuses to overwrite an existing solution", () => {
-  const { context, a } = withEVar();
-  context.setSolution(a, TData(Bool));
+Deno.test("an EVar records constraints, refusing one it could not be solved to", () => {
+  const { a } = withEVar();
 
-  expect(() => context.setSolution(a, TUnknown)).toThrow("already solved");
-  expect(alphaEq(context.evarAt(a).solution ?? TUnknown, TData(Bool))).toBe(
-    true,
-  );
-});
-
-Deno.test("a read by level is total, so a wrong one is a bug and not a value", () => {
-  // Every level comes from a `push` or off a node the checker built, so the
-  // kind is known before the read. Answering `undefined` would leave a caller
-  // inventing a type for a program that has nothing wrong with it.
-  const context = new Context();
-  const X = context.pushTypeVar(TUnknown, "X");
-  const a = context.pushEVar("a");
-
-  expect(() => context.setSolution(X, TUnknown)).toThrow("holds a TypeVar");
-  expect(() => context.evarAt(X)).toThrow("holds a TypeVar");
-  expect(() => context.upperBoundAt(a)).toThrow("holds a EVar");
-  expect(() => context.evarAt(mkLevel(9))).toThrow("names no entry");
-});
-
-Deno.test("apply substitutes a solution wherever it stands", () => {
-  const { context, a } = withEVar();
-  context.setSolution(a, TData(Bool));
-
-  const applied = context.apply(TFun([], [FVar(a, "a")], TUnknown));
-  expect(alphaEq(applied, TFun([], [TData(Bool)], TUnknown))).toBe(true);
-});
-
-Deno.test("apply leaves unsolved EVars alone", () => {
-  const { context, a } = withEVar();
-  expect(alphaEq(context.apply(FVar(a, "a")), FVar(a, "a"))).toBe(true);
+  a.addConstraint("lower", TData(Bool));
+  expect(alphaEq(a.lower[0] ?? TUnknown, TData(Bool))).toBe(true);
+  // `?a` begins its own batch, so a bound naming it is one its solution could
+  // not mention either -- the caller was to have avoided it first.
+  expect(() => a.addConstraint("upper", a.ref)).toThrow("past level");
 });
 
 Deno.test("truncate ends a scope, keeping what came before it", () => {
@@ -203,17 +157,22 @@ Deno.test("assertClosed allows the binders a stored type was closed into", () =>
   expect(() => context.assertClosed("field", [field])).toThrow();
 });
 
-Deno.test("an EVar records where it stands, combining its occurrences", () => {
-  const { context, a } = withEVar();
-  // Nothing noted yet, and a variable the result never mentions stays here.
-  expect(context.evarAt(a).polarity).toBe("none");
+Deno.test("an EVar records where it stands, accumulating its occurrences", () => {
+  const { a } = withEVar();
+  // Nothing noted yet, where a variable the result never mentions also stays.
+  expect([a.covariantly, a.contravariantly]).toEqual([false, false]);
 
-  context.notePolarity(a, "covariant");
-  expect(context.evarAt(a).polarity).toBe("covariant");
-  // Twice at the same polarity says nothing new.
-  context.notePolarity(a, "covariant");
-  expect(context.evarAt(a).polarity).toBe("covariant");
-  // Standing both ways is what leaves no bound free to widen.
-  context.notePolarity(a, "contravariant");
-  expect(context.evarAt(a).polarity).toBe("invariant");
+  a.noteOccurrence(1);
+  expect([a.covariantly, a.contravariantly]).toEqual([true, false]);
+  // Twice at the same variance says nothing new.
+  a.noteOccurrence(1);
+  expect([a.covariantly, a.contravariantly]).toEqual([true, false]);
+  // Standing both ways is what leaves no bound free to widen -- reached by two
+  // occurrences here, and by one invariant occurrence on its own.
+  a.noteOccurrence(-1);
+  expect([a.covariantly, a.contravariantly]).toEqual([true, true]);
+
+  const { a: b } = withEVar();
+  b.noteOccurrence(0);
+  expect([b.covariantly, b.contravariantly]).toEqual([true, true]);
 });

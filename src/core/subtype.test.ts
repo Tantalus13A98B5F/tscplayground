@@ -1,6 +1,7 @@
 import { expect } from "@std/expect";
-import { Context } from "./context.ts";
-import { type Cast, Subtyper } from "./subtype.ts";
+import { mkFileId, mkPosition } from "../diagnostics/diagnostic.ts";
+import { Context, type EVarEntry } from "./context.ts";
+import { Subtyper } from "./subtype.ts";
 import {
   BVar,
   FVar,
@@ -16,7 +17,22 @@ import {
   type Type,
   type TypePattern,
   typeToString,
+  type Variance,
 } from "./types.ts";
+
+/** Somewhere for a diagnostic to point at; no test reads it back. */
+const somewhere = mkPosition(mkFileId(0), 1, 1);
+
+/** Note where an EVar stands and solve it, which `withEVars` does in one go. */
+function solveAt(sub: Subtyper, entry: EVarEntry, variance: Variance): string {
+  entry.noteOccurrence(variance);
+  return typeToString(sub.solveEVar(entry, somewhere));
+}
+
+/** What the subtyper said about what it recorded, as `severity: message`. */
+function saidBy(sub: Subtyper): string[] {
+  return sub.diagnostics.map((d) => `${d.severity}: ${d.message}`);
+}
 
 const ListP = (arg: TypePattern) => TData(mkDataName("List"), [arg]);
 const fnP = (params: readonly TypePattern[], result: TypePattern) =>
@@ -25,10 +41,26 @@ const fnP = (params: readonly TypePattern[], result: TypePattern) =>
 /**
  * A cast's answer, or `<none>` when it declined -- which reads better in a
  * table of results than the `<bad>` that stands in for it.
+ *
+ * A cast has no verdict to read: declining *is* saying so, so what was said is
+ * what tells. Taken and cleared, so the next row of a table starts from
+ * silence.
  */
-function castToString(cast: Cast): string {
-  return cast.verdict === "yes" ? typeToString(cast.type) : "<none>";
+function castToString(sub: Subtyper, type: Type): string {
+  return sub.diagnostics.splice(0).length === 0 ? typeToString(type) : "<none>";
 }
+
+/**
+ * The three casts, each given a position, which is what makes them report.
+ * Without one a cast is a *query* and stays silent, and a test of what a cast
+ * answers is a test of what it says.
+ */
+const up = (sub: Subtyper, type: Type, pattern: TypePattern) =>
+  sub.upcast(type, pattern, somewhere);
+const down = (sub: Subtyper, type: Type, pattern: TypePattern) =>
+  sub.downcast(type, pattern, somewhere);
+const exact = (sub: Subtyper, type: Type, pattern: TypePattern) =>
+  sub.exactcast(type, pattern, somewhere);
 
 const Bool = TData(mkDataName("Bool"));
 const Int = TData(mkDataName("Int"));
@@ -42,66 +74,66 @@ function fixture(): { context: Context; sub: Subtyper } {
 
 Deno.test("everything is below unknown and above never", () => {
   const { sub } = fixture();
-  expect(sub.isSubtype(Bool, TUnknown)).toBe("yes");
-  expect(sub.isSubtype(TNever, Bool)).toBe("yes");
-  expect(sub.isSubtype(TUnknown, Bool)).toBe("no");
+  expect(sub.isSubtype(Bool, TUnknown)).toBe(true);
+  expect(sub.isSubtype(TNever, Bool)).toBe(true);
+  expect(sub.isSubtype(TUnknown, Bool)).toBe(false);
 });
 
 Deno.test("a bad type relates to anything, in both directions", () => {
   // One unresolved name must not become an error at every use of it.
   const { sub } = fixture();
-  expect(sub.isSubtype(TBad, Bool)).toBe("yes");
-  expect(sub.isSubtype(Bool, TBad)).toBe("yes");
+  expect(sub.isSubtype(TBad, Bool)).toBe(true);
+  expect(sub.isSubtype(Bool, TBad)).toBe(true);
 });
 
 Deno.test("a bad type flows into an EVar rather than short-circuiting", () => {
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
-  expect(sub.isSubtype(TBad, FVar(a, "?a"))).toBe("yes");
+  expect(sub.isSubtype(TBad, a.ref)).toBe(true);
   // Recorded, so the EVar solves to `<bad>` instead of looking unconstrained.
-  expect(context.evarAt(a)?.lower.map(typeToString)).toEqual(["<bad>"]);
+  expect(a.lower.map(typeToString)).toEqual(["<bad>"]);
   expect(typeToString(sub.solveLowerBoundOf(a))).toBe("<bad>");
 });
 
 Deno.test("a datatype is invariant in its arguments", () => {
   const { sub } = fixture();
-  expect(sub.isSubtype(List(Bool), List(Bool))).toBe("yes");
-  expect(sub.isSubtype(List(TNever), List(TUnknown))).toBe("no");
-  expect(sub.isSubtype(List(Bool), List(Int))).toBe("no");
+  expect(sub.isSubtype(List(Bool), List(Bool))).toBe(true);
+  expect(sub.isSubtype(List(TNever), List(TUnknown))).toBe(false);
+  expect(sub.isSubtype(List(Bool), List(Int))).toBe(false);
 });
 
 Deno.test("functions are contravariant in parameters, covariant in results", () => {
   const { sub } = fixture();
   expect(sub.isSubtype(fn([TUnknown], TNever), fn([Bool], TUnknown)))
-    .toBe("yes");
-  expect(sub.isSubtype(fn([TNever], Bool), fn([Bool], Bool))).toBe("no");
-  expect(sub.isSubtype(fn([Bool], TUnknown), fn([Bool], Bool))).toBe("no");
+    .toBe(true);
+  expect(sub.isSubtype(fn([TNever], Bool), fn([Bool], Bool))).toBe(false);
+  expect(sub.isSubtype(fn([Bool], TUnknown), fn([Bool], Bool))).toBe(false);
 });
 
 Deno.test("arity is part of the type", () => {
   const { sub } = fixture();
-  expect(sub.isSubtype(fn([Bool], Bool), fn([Bool, Bool], Bool))).toBe("no");
+  expect(sub.isSubtype(fn([Bool], Bool), fn([Bool, Bool], Bool))).toBe(false);
   expect(
     sub.isSubtype(
       TFun([mkTypeParamInfo("A", TUnknown)], [], Bool),
       fn([], Bool),
     ),
   )
-    .toBe("no");
+    .toBe(false);
 });
 
 Deno.test("a type variable is promoted to its bound, but only on the left", () => {
   const { context, sub } = fixture();
   const X = context.pushTypeVar(Bool, "X");
-  expect(sub.isSubtype(FVar(X, "X"), Bool)).toBe("yes");
-  expect(sub.isSubtype(Bool, FVar(X, "X"))).toBe("no");
+  expect(sub.isSubtype(FVar(X, "X"), Bool)).toBe(true);
+  expect(sub.isSubtype(Bool, FVar(X, "X"))).toBe(false);
 });
 
 Deno.test("promotion follows a chain of bounds", () => {
   const { context, sub } = fixture();
   const X = context.pushTypeVar(Bool, "X");
   const Y = context.pushTypeVar(FVar(X, "X"), "Y");
-  expect(sub.isSubtype(FVar(Y, "Y"), Bool)).toBe("yes");
+  expect(sub.isSubtype(FVar(Y, "Y"), Bool)).toBe(true);
   expect(typeToString(sub.expose(FVar(Y, "Y")))).toBe("Bool");
 });
 
@@ -111,21 +143,21 @@ Deno.test("bounds are contravariant, which is full Fsub not kernel", () => {
   // less of A, so the left, which assumes nothing, is the more general.
   const loose = TFun([mkTypeParamInfo("A", TUnknown)], [], Bool);
   const tight = TFun([mkTypeParamInfo("A", Bool)], [], Bool);
-  expect(sub.isSubtype(loose, tight)).toBe("yes");
-  expect(sub.isSubtype(tight, loose)).toBe("no");
+  expect(sub.isSubtype(loose, tight)).toBe(true);
+  expect(sub.isSubtype(tight, loose)).toBe(false);
 });
 
 Deno.test("a quantifier's body is compared under fresh variables", () => {
   const { sub } = fixture();
   const identity = TFun([mkTypeParamInfo("A", TUnknown)], [BVar(0)], BVar(0));
-  expect(sub.isSubtype(identity, identity)).toBe("yes");
+  expect(sub.isSubtype(identity, identity)).toBe(true);
   const toUnknown = TFun(
     [mkTypeParamInfo("A", TUnknown)],
     [BVar(0)],
     TUnknown,
   );
-  expect(sub.isSubtype(identity, toUnknown)).toBe("yes");
-  expect(sub.isSubtype(toUnknown, identity)).toBe("no");
+  expect(sub.isSubtype(identity, toUnknown)).toBe(true);
+  expect(sub.isSubtype(toUnknown, identity)).toBe(false);
 });
 
 Deno.test("comparing a quantifier leaves the context as it found it", () => {
@@ -140,18 +172,18 @@ Deno.test("an EVar collects a bound instead of answering", () => {
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
 
-  expect(sub.isSubtype(Bool, FVar(a, "?a"))).toBe("yes");
-  expect(sub.isSubtype(FVar(a, "?a"), TUnknown)).toBe("yes");
-  expect(context.evarAt(a)?.lower.map(typeToString)).toEqual(["Bool"]);
+  expect(sub.isSubtype(Bool, a.ref)).toBe(true);
+  expect(sub.isSubtype(a.ref, TUnknown)).toBe(true);
+  expect(a.lower.map(typeToString)).toEqual(["Bool"]);
   // `?a <: unknown` is discharged by the top rule before any bound is recorded.
-  expect(context.evarAt(a)?.upper.length).toBe(0);
+  expect(a.upper.length).toBe(0);
 });
 
 Deno.test("several lower bounds join into one solution", () => {
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
-  sub.isSubtype(Bool, FVar(a, "?a"));
-  sub.isSubtype(Int, FVar(a, "?a"));
+  sub.isSubtype(Bool, a.ref);
+  sub.isSubtype(Int, a.ref);
   // Nothing relates Bool and Int, and there is no union, so the join is top.
   expect(typeToString(sub.solveLowerBoundOf(a))).toBe("unknown");
 });
@@ -159,8 +191,8 @@ Deno.test("several lower bounds join into one solution", () => {
 Deno.test("a lower bound is joined, not overwritten by the last constraint", () => {
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
-  sub.isSubtype(TNever, FVar(a, "?a"));
-  sub.isSubtype(Bool, FVar(a, "?a"));
+  sub.isSubtype(TNever, a.ref);
+  sub.isSubtype(Bool, a.ref);
   expect(typeToString(sub.solveLowerBoundOf(a))).toBe("Bool");
 });
 
@@ -170,9 +202,9 @@ Deno.test("between two EVars the constraint lands on the righthand one", () => {
   const a = context.pushEVar("a");
   const b = context.pushEVar("b");
 
-  expect(sub.isSubtype(FVar(a, "?a"), FVar(b, "?b"))).toBe("yes");
-  expect(context.evarAt(b)?.lower.map(typeToString)).toEqual(["?a"]);
-  expect(context.evarAt(a)?.upper.length).toBe(0);
+  expect(sub.isSubtype(a.ref, b.ref)).toBe(true);
+  expect(b.lower.map(typeToString)).toEqual(["?a"]);
+  expect(a.upper.length).toBe(0);
 });
 
 Deno.test("avoidance widens an out-of-scope variable to its bound", () => {
@@ -181,16 +213,22 @@ Deno.test("avoidance widens an out-of-scope variable to its bound", () => {
   // X is introduced *after* ?a, so ?a's solution may not mention it.
   const X = context.pushTypeVar(Bool, "X");
 
-  expect(sub.isSubtype(FVar(X, "X"), FVar(a, "?a"))).toBe("yes");
-  expect(context.evarAt(a)?.lower.map(typeToString)).toEqual(["Bool"]);
+  expect(sub.isSubtype(FVar(X, "X"), a.ref, somewhere)).toBe(true);
+  expect(a.lower.map(typeToString)).toEqual(["Bool"]);
 });
 
 Deno.test("avoidance falls back to top when a variable has no useful bound", () => {
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
   const X = context.pushTypeVar(TUnknown, "X");
-  expect(sub.isSubtype(FVar(X, "X"), FVar(a, "?a"))).toBe("yes");
-  expect(context.evarAt(a)?.lower.map(typeToString)).toEqual(["unknown"]);
+  // Given a position: widening all the way to top is a loss worth saying out
+  // loud, and a diagnostic needs somewhere to point.
+  expect(sub.isSubtype(FVar(X, "X"), a.ref, somewhere)).toBe(true);
+  expect(a.lower.map(typeToString)).toEqual(["unknown"]);
+  expect(saidBy(sub)).toEqual([
+    "warning: inferring the type argument a: X mentions a variable bound " +
+    "inside this call, so the lower bound was widened to unknown",
+  ]);
 });
 
 Deno.test("avoidance swaps direction at a contravariant position", () => {
@@ -200,10 +238,16 @@ Deno.test("avoidance swaps direction at a contravariant position", () => {
 
   // Widening `(X) -> X` means *narrowing* the parameter: `(never) -> Bool`
   // accepts more arguments, so it is the supertype.
-  expect(sub.isSubtype(fn([FVar(X, "X")], FVar(X, "X")), FVar(a, "?a")))
-    .toBe("yes");
-  expect(context.evarAt(a)?.lower.map(typeToString)).toEqual([
+  expect(sub.isSubtype(fn([FVar(X, "X")], FVar(X, "X")), a.ref, somewhere))
+    .toBe(true);
+  expect(a.lower.map(typeToString)).toEqual([
     "never -> Bool",
+  ]);
+  // The parameter went to bottom, which keeps none of `X`; the result stood
+  // aside for `Bool`, which is a type the author can still read through.
+  expect(saidBy(sub)).toEqual([
+    "warning: inferring the type argument a: X mentions a variable bound " +
+    "inside this call, so the lower bound was widened to never",
   ]);
 });
 
@@ -214,20 +258,30 @@ Deno.test("avoidance cannot touch an invariant argument, so it collapses", () =>
 
   // `List[X]` has no in-scope supertype but top: widening the argument would
   // change the type, invariance being the whole point.
-  expect(sub.isSubtype(List(FVar(X, "X")), FVar(a, "?a"))).toBe("yes");
-  expect(context.evarAt(a)?.lower.map(typeToString)).toEqual(["unknown"]);
+  expect(sub.isSubtype(List(FVar(X, "X")), a.ref, somewhere)).toBe(true);
+  expect(a.lower.map(typeToString)).toEqual(["unknown"]);
+  expect(saidBy(sub)).toEqual([
+    "warning: inferring the type argument a: List[X] mentions a variable " +
+    "bound inside this call, so the lower bound was widened to unknown",
+  ]);
 });
 
-Deno.test("an out-of-scope EVar is interdependent, and is rejected", () => {
+Deno.test("a constraint naming a sibling is refused, and said so", () => {
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
   const b = context.pushEVar("b");
 
   // `List[?b] <: ?a` would need ?a's solution to mention ?b, which stands to
   // its right and has no solution yet. Nothing sound to record, so: reject.
-  expect(sub.isSubtype(List(FVar(b, "?b")), FVar(a, "?a")))
-    .toBe("interdependent");
-  expect(context.evarAt(a)?.lower.length).toBe(0);
+  //
+  // `true` all the same. The relation was not asked a question here, it was
+  // asked to record one, and what it could not record it reports itself.
+  expect(sub.isSubtype(List(b.ref), a.ref, somewhere)).toBe(true);
+  expect(a.lower.length).toBe(0);
+  expect(saidBy(sub)).toEqual([
+    "error: cannot infer the type argument a from List[?b]: it depends on " +
+    "another type argument of the same call, so give it explicitly",
+  ]);
 });
 
 Deno.test("join and meet agree with the relation on ordered pairs", () => {
@@ -245,13 +299,13 @@ Deno.test("top and bottom meet an EVar without constraining it", () => {
   // a lattice operation must not write on its operands.
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
-  const evar = FVar(a, "?a");
+  const evar = a.ref;
   expect(typeToString(sub.join(TNever, evar))).toBe("?a");
   expect(typeToString(sub.join(evar, TUnknown))).toBe("unknown");
   expect(typeToString(sub.meet(TUnknown, evar))).toBe("?a");
   expect(typeToString(sub.meet(evar, TNever))).toBe("never");
-  expect(context.evarAt(a).lower).toEqual([]);
-  expect(context.evarAt(a).upper).toEqual([]);
+  expect(a.lower).toEqual([]);
+  expect(a.upper).toEqual([]);
 });
 
 Deno.test("a variable joins at its bound and meets as itself", () => {
@@ -311,12 +365,12 @@ Deno.test("the lattice does not promote an EVar to a bound it has not got", () =
   // enforced this from the inside; the invariant makes it unnecessary.
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
-  const evar = FVar(a, "?a");
+  const evar = a.ref;
   expect(typeToString(sub.join(evar, Bool))).toBe("unknown");
   expect(typeToString(sub.meet(evar, Bool))).toBe("never");
   expect(typeToString(sub.join(evar, evar))).toBe("?a");
-  expect(context.evarAt(a).lower).toEqual([]);
-  expect(context.evarAt(a).upper).toEqual([]);
+  expect(a.lower).toEqual([]);
+  expect(a.upper).toEqual([]);
 });
 
 Deno.test("join of unrelated types is top, there being no union", () => {
@@ -378,18 +432,18 @@ function nest(depth: number, innermost: Type): Type {
 
 Deno.test("a comparison past the budget is exhausted, not a mismatch", () => {
   const context = new Context();
-  const sub = new Subtyper(context, 20);
+  const sub = new Subtyper(context, [], 20);
   // The two differ only at the very bottom, so nothing short-circuits and the
-  // budget runs out first. Reporting this as "no" would blame the program for
+  // budget runs out first. Reporting this as `false` would blame the program for
   // the checker's limit.
-  expect(sub.isSubtype(nest(50, Bool), nest(50, Int))).toBe("exhausted");
+  expect(sub.isSubtype(nest(50, Bool), nest(50, Int))).toBeUndefined();
 });
 
 Deno.test("the budget is per query, so one deep ask does not poison the next", () => {
   const context = new Context();
-  const sub = new Subtyper(context, 20);
-  expect(sub.isSubtype(nest(50, Bool), nest(50, Int))).toBe("exhausted");
-  expect(sub.isSubtype(Bool, TUnknown)).toBe("yes");
+  const sub = new Subtyper(context, [], 20);
+  expect(sub.isSubtype(nest(50, Bool), nest(50, Int))).toBeUndefined();
+  expect(sub.isSubtype(Bool, TUnknown)).toBe(true);
   expect(typeToString(sub.join(TNever, Bool))).toBe("Bool");
 });
 
@@ -397,17 +451,17 @@ Deno.test("a nest of datatypes compares with itself in one walk", () => {
   // Invariance relates each argument in both directions, so without the
   // equality test in that loop this pair costs `2^depth` and exhausts a real
   // budget by depth 11. A budget of two says it is not recursing at all.
-  const sub = new Subtyper(new Context(), 2);
+  const sub = new Subtyper(new Context(), [], 2);
   let deep: Type = Bool;
   for (let i = 0; i < 20; i++) deep = List(deep);
-  expect(sub.isSubtype(deep, deep)).toBe("yes");
+  expect(sub.isSubtype(deep, deep)).toBe(true);
 });
 
 Deno.test("a comparison within the budget still decides", () => {
   const context = new Context();
-  const sub = new Subtyper(context, 2000);
-  expect(sub.isSubtype(nest(50, Bool), nest(50, Bool))).toBe("yes");
-  expect(sub.isSubtype(nest(50, Bool), nest(50, Int))).toBe("no");
+  const sub = new Subtyper(context, [], 2000);
+  expect(sub.isSubtype(nest(50, Bool), nest(50, Bool))).toBe(true);
+  expect(sub.isSubtype(nest(50, Bool), nest(50, Int))).toBe(false);
 });
 
 Deno.test("expose promotes an unbounded variable to top", () => {
@@ -430,46 +484,48 @@ Deno.test("a contravariant occurrence takes the upper bound", () => {
   // satisfies the constraints is the informative answer.
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
-  sub.isSubtype(FVar(a, "?a"), Bool);
+  sub.isSubtype(a.ref, Bool);
 
-  const solved = sub.solveEVar(a, "contravariant");
-  expect(solved.kind === "solved" && typeToString(solved.type)).toBe("Bool");
+  expect(solveAt(sub, a, -1)).toBe("Bool");
 });
 
 Deno.test("a covariant occurrence takes the lower bound", () => {
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
-  sub.isSubtype(Bool, FVar(a, "?a"));
+  sub.isSubtype(Bool, a.ref);
 
-  const solved = sub.solveEVar(a, "covariant");
-  expect(solved.kind === "solved" && typeToString(solved.type)).toBe("Bool");
+  expect(solveAt(sub, a, 1)).toBe("Bool");
 });
 
 Deno.test("a covariant EVar with only an upper bound takes bottom", () => {
-  // Principal, and the point of asking polarity at all: nothing demanded a
+  // Principal, and the point of asking where it occurs at all: nothing demanded a
   // larger type, so the smallest the constraints admit is the answer.
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
-  sub.isSubtype(FVar(a, "?a"), Bool);
+  sub.isSubtype(a.ref, Bool);
 
-  const solved = sub.solveEVar(a, "covariant");
-  expect(solved.kind === "solved" && typeToString(solved.type)).toBe("never");
+  expect(solveAt(sub, a, 1)).toBe("never");
 });
 
 Deno.test("an invariant occurrence demands the bounds meet", () => {
-  // `Bool` would check. It is declined because nothing says it is *the*
-  // answer, and settling silently hides that a choice was made.
+  // `Bool` would check. It is refused because at an invariant occurrence the
+  // two candidates are incomparable, so picking one is arbitrary rather than
+  // coarse -- an error, where a one-directional loss is only a warning.
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
-  sub.isSubtype(Bool, FVar(a, "?a"));
-  expect(sub.solveEVar(a, "invariant").kind).toBe("disagrees");
+  sub.isSubtype(Bool, a.ref);
+  expect(solveAt(sub, a, 0)).toBe("<bad>");
+  expect(saidBy(sub)).toEqual([
+    "error: cannot infer the type argument a: it occurs invariantly, and the " +
+    "arguments bound it only between Bool and unknown, so no choice is the " +
+    "general one; give it explicitly",
+  ]);
 
   // Bounded from both sides by the same type, there is nothing to choose.
   const b = context.pushEVar("b");
-  sub.isSubtype(Bool, FVar(b, "?b"));
-  sub.isSubtype(FVar(b, "?b"), Bool);
-  const solved = sub.solveEVar(b, "invariant");
-  expect(solved.kind === "solved" && typeToString(solved.type)).toBe("Bool");
+  sub.isSubtype(Bool, b.ref);
+  sub.isSubtype(b.ref, Bool);
+  expect(solveAt(sub, b, 0)).toBe("Bool");
 });
 
 Deno.test("occurring nowhere is not the invariant case", () => {
@@ -477,38 +533,50 @@ Deno.test("occurring nowhere is not the invariant case", () => {
   // taking one -- the demand.
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
-  sub.isSubtype(Bool, FVar(a, "?a"));
+  sub.isSubtype(Bool, a.ref);
 
-  const solved = sub.solveEVar(a, "none");
-  expect(solved.kind === "solved" && typeToString(solved.type)).toBe("Bool");
+  expect(typeToString(sub.solveEVar(a, somewhere))).toBe("Bool");
 });
 
 Deno.test("bounds with nothing between them are a conflict, not a choice", () => {
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
-  sub.isSubtype(Bool, FVar(a, "?a"));
-  sub.isSubtype(FVar(a, "?a"), Int);
+  sub.isSubtype(Bool, a.ref);
+  sub.isSubtype(a.ref, Int);
 
-  const solved = sub.solveEVar(a, "covariant");
-  expect(solved.kind).toBe("conflict");
+  expect(solveAt(sub, a, 1)).toBe("<bad>");
+  expect(saidBy(sub)).toEqual([
+    "error: cannot infer the type argument a: it is bounded below by Bool " +
+    "and above by Int, and no type is both",
+  ]);
 });
 
-Deno.test("an EVar with no bounds at all is unconstrained, not bottom", () => {
+Deno.test("an EVar nothing constrained is a warning, not a refusal", () => {
+  // Every type satisfies no constraints, so the selection is sound and the
+  // answer usable; what it is not is something the author asked for.
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
-  expect(sub.solveEVar(a, "covariant").kind).toBe("unconstrained");
+  expect(solveAt(sub, a, 1)).toBe("never");
+  expect(saidBy(sub)).toEqual([
+    "warning: nothing constrains the type argument a, so it was taken to be " +
+    "never; give it explicitly if that is not what was meant",
+  ]);
 });
 
 Deno.test("one batch's EVars may not depend on each other", () => {
-  // Polarity is read off the result type alone, so a sibling standing in a
+  // Where an EVar occurs is read off the result type alone, so a sibling in a
   // pending bound would be a dependency the selection cannot see.
   const { context, sub } = fixture();
   const [a, b] = context.pushEVarBatch(["a", "b"]);
-  if (a === undefined || b === undefined) throw new Error("no batch");
+  if (a === undefined || b === undefined) throw new Error("batch of two");
 
-  expect(sub.isSubtype(FVar(a, "?a"), FVar(b, "?b"))).toBe("interdependent");
-  expect(context.evarAt(b).lower.length).toBe(0);
-  expect(context.evarAt(a).upper.length).toBe(0);
+  expect(sub.isSubtype(a.ref, b.ref, somewhere)).toBe(true);
+  expect(b.lower.length).toBe(0);
+  expect(a.upper.length).toBe(0);
+  expect(saidBy(sub)).toEqual([
+    "error: cannot infer the type argument b from ?a: it depends on another " +
+    "type argument of the same call, so give it explicitly",
+  ]);
 });
 
 Deno.test("the bar for a refused dependency is the batch, not the context", () => {
@@ -521,39 +589,39 @@ Deno.test("the bar for a refused dependency is the batch, not the context", () =
   const { context, sub } = fixture();
   const outer = context.pushEVar("A");
   const [inner] = context.pushEVarBatch(["B"]);
-  if (inner === undefined) throw new Error("no batch");
+  if (inner === undefined) throw new Error("batch of one");
 
-  expect(sub.isSubtype(FVar(outer, "?A"), FVar(inner, "?B"))).toBe("yes");
-  expect(context.evarAt(inner).lower.map(typeToString)).toEqual(["?A"]);
+  expect(sub.isSubtype(outer.ref, inner.ref)).toBe(true);
+  expect(inner.lower.map(typeToString)).toEqual(["?A"]);
 });
 
 Deno.test("a missing part takes whatever the type has there", () => {
   const { sub } = fixture();
-  expect(castToString(sub.upcast(Bool, TMissing))).toBe("Bool");
-  expect(castToString(sub.downcast(Bool, TMissing))).toBe("Bool");
-  expect(castToString(sub.exactcast(Bool, TMissing))).toBe("Bool");
+  expect(castToString(sub, up(sub, Bool, TMissing))).toBe("Bool");
+  expect(castToString(sub, down(sub, Bool, TMissing))).toBe("Bool");
+  expect(castToString(sub, exact(sub, Bool, TMissing))).toBe("Bool");
 });
 
 Deno.test("a written pattern matches only itself, and the direction decides", () => {
   const { sub } = fixture();
   // `Bool <: unknown`, so `unknown` is reachable going up but not down.
-  expect(castToString(sub.upcast(Bool, TUnknown))).toBe("unknown");
-  expect(castToString(sub.downcast(Bool, TUnknown))).toBe("<none>");
-  expect(castToString(sub.downcast(TUnknown, Bool))).toBe("Bool");
-  expect(castToString(sub.upcast(Bool, Int))).toBe("<none>");
+  expect(castToString(sub, up(sub, Bool, TUnknown))).toBe("unknown");
+  expect(castToString(sub, down(sub, Bool, TUnknown))).toBe("<none>");
+  expect(castToString(sub, down(sub, TUnknown, Bool))).toBe("Bool");
+  expect(castToString(sub, up(sub, Bool, Int))).toBe("<none>");
 });
 
 Deno.test("a cast fills a function pointwise, flipping at the parameters", () => {
   const { sub } = fixture();
   const idish = fn([Bool], Bool);
-  expect(castToString(sub.upcast(idish, fnP([TMissing], TMissing))))
+  expect(castToString(sub, up(sub, idish, fnP([TMissing], TMissing))))
     .toBe("Bool -> Bool");
   // Nothing on the left, so the pattern alone decides: least going up means
   // the smallest result and -- parameters being contravariant -- the largest
   // parameter.
-  expect(castToString(sub.upcast(TNever, fnP([TMissing], TMissing))))
+  expect(castToString(sub, up(sub, TNever, fnP([TMissing], TMissing))))
     .toBe("unknown -> never");
-  expect(castToString(sub.downcast(TUnknown, fnP([TMissing], TMissing))))
+  expect(castToString(sub, down(sub, TUnknown, fnP([TMissing], TMissing))))
     .toBe("never -> unknown");
 });
 
@@ -563,65 +631,65 @@ Deno.test("an invariant cast is not either of the other two", () => {
   // since the argument pattern has a missing part to fill from the type.
   const { sub } = fixture();
   const listOfId = List(fn([Bool], Bool));
-  expect(castToString(sub.downcast(listOfId, ListP(fnP([TMissing], Bool)))))
+  expect(castToString(sub, down(sub, listOfId, ListP(fnP([TMissing], Bool)))))
     .toBe("List[Bool -> Bool]");
-  expect(castToString(sub.upcast(listOfId, ListP(fnP([Bool], TMissing)))))
+  expect(castToString(sub, up(sub, listOfId, ListP(fnP([Bool], TMissing)))))
     .toBe("List[Bool -> Bool]");
   // Written and disagreeing: invariance has nowhere to go.
-  expect(castToString(sub.upcast(listOfId, ListP(fnP([TMissing], Int)))))
+  expect(castToString(sub, up(sub, listOfId, ListP(fnP([TMissing], Int)))))
     .toBe("<none>");
 });
 
-Deno.test("an invariant missing part costs the verdict, not the answer", () => {
+Deno.test("an invariant missing part costs a report, not the answer", () => {
   // Nothing is greatest among the types a `List` can be of, so an extreme
   // lifted into one has to invent the argument. The shape is still built and
   // handed back -- so a `match` on it has a datatype to work with -- but it is
   // a stand-in, and must not read as a success.
   const { sub } = fixture();
-  const lifted = sub.upcast(TNever, ListP(TMissing));
-  expect(lifted.verdict).toBe("no");
-  expect(typeToString(lifted.type)).toBe("List[<bad>]");
+  expect(castToString(sub, up(sub, TNever, ListP(TMissing)))).toBe("<none>");
 
   // Nested, the walk fills the rest of the shape rather than stopping at the
   // first invented argument.
-  const nested = sub.upcast(TNever, ListP(ListP(TMissing)));
-  expect(nested.verdict).toBe("no");
-  expect(typeToString(nested.type)).toBe("List[List[<bad>]]");
+  const nested = up(sub, TNever, ListP(ListP(TMissing)));
+  expect(typeToString(nested)).toBe("List[List[<bad>]]");
+  sub.diagnostics.length = 0;
 
   // With every argument written there is nothing to invent, so the same lift
   // is an answer.
-  expect(castToString(sub.downcast(TUnknown, ListP(Bool)))).toBe("List[Bool]");
-  expect(castToString(sub.upcast(TNever, ListP(Bool)))).toBe("List[Bool]");
+  expect(castToString(sub, down(sub, TUnknown, ListP(Bool)))).toBe(
+    "List[Bool]",
+  );
+  expect(castToString(sub, up(sub, TNever, ListP(Bool)))).toBe("List[Bool]");
 });
 
 Deno.test("a variable stands aside for its bound going up, and not down", () => {
   const { context, sub } = fixture();
   const X = context.pushTypeVar(fn([Bool], Bool), "X");
   const x = FVar(X, "X");
-  expect(castToString(sub.upcast(x, fnP([TMissing], TMissing))))
+  expect(castToString(sub, up(sub, x, fnP([TMissing], TMissing))))
     .toBe("Bool -> Bool");
   // Nothing structural sits under a variable, so there is no answer below it
   // -- and inventing one from the pattern would build a type not under `X`.
-  expect(castToString(sub.downcast(x, fnP([TMissing], TMissing))))
+  expect(castToString(sub, down(sub, x, fnP([TMissing], TMissing))))
     .toBe("<none>");
-  expect(castToString(sub.exactcast(x, fnP([TMissing], TMissing))))
+  expect(castToString(sub, exact(sub, x, fnP([TMissing], TMissing))))
     .toBe("<none>");
   // Itself, whichever way.
-  expect(castToString(sub.downcast(x, TMissing))).toBe("X");
+  expect(castToString(sub, down(sub, x, TMissing))).toBe("X");
 });
 
 Deno.test("an unbounded variable has no function above it either", () => {
   const { context, sub } = fixture();
   const X = context.pushTypeVar(TUnknown, "X");
-  expect(castToString(sub.upcast(FVar(X, "X"), fnP([TMissing], TMissing))))
+  expect(castToString(sub, up(sub, FVar(X, "X"), fnP([TMissing], TMissing))))
     .toBe("<none>");
 });
 
 Deno.test("a bad type satisfies any demand", () => {
   // A report already stands, so nothing here is failed a second time.
   const { sub } = fixture();
-  expect(castToString(sub.upcast(TBad, ListP(TMissing)))).toBe("List[<bad>]");
-  expect(castToString(sub.downcast(TBad, fnP([Bool], TMissing))))
+  expect(castToString(sub, up(sub, TBad, ListP(TMissing)))).toBe("List[<bad>]");
+  expect(castToString(sub, down(sub, TBad, fnP([Bool], TMissing))))
     .toBe("Bool -> <bad>");
 });
 
@@ -631,36 +699,44 @@ Deno.test("a parameter list of the wrong length costs its own positions", () => 
   // reads the parts off it -- and the parts that do line up keep their real
   // answers, which is the rule the rest of the walk follows.
   const { sub } = fixture();
-  const tooFew = sub.upcast(fn([Bool], Bool), fnP([Bool, Bool], TMissing));
-  expect(tooFew.verdict).toBe("no");
-  expect(typeToString(tooFew.type)).toBe("(Bool, Bool) -> Bool");
+  const tooFew = up(sub, fn([Bool], Bool), fnP([Bool, Bool], TMissing));
+  expect(typeToString(tooFew)).toBe("(Bool, Bool) -> Bool");
+  // Said once, by count: the position with no partner is not a mismatch of its
+  // own, and reporting there would make one complaint out of every gap.
+  expect(saidBy(sub)).toEqual(["error: expected 2 parameters, found 1"]);
+  sub.diagnostics.length = 0;
 
-  const tooMany = sub.upcast(fn([Bool, Bool], Bool), fnP([Bool], TMissing));
-  expect(tooMany.verdict).toBe("no");
-  expect(typeToString(tooMany.type)).toBe("Bool -> Bool");
+  const tooMany = up(sub, fn([Bool, Bool], Bool), fnP([Bool], TMissing));
+  expect(typeToString(tooMany)).toBe("Bool -> Bool");
+  expect(saidBy(sub)).toEqual(["error: expected 1 parameter, found 2"]);
 
   // Quantifying a different number of variables is a wall, though: the two
   // parameter lists stand under different binders, so their positions do not
   // correspond and neither can be read in the other's scope.
-  const quantified = sub.upcast(
-    fn([Bool], Bool),
-    TFun([mkTypeParamInfo("A", TUnknown)], [TMissing], TMissing),
+  const quantified = TFun(
+    [mkTypeParamInfo("A", TUnknown)],
+    [TMissing],
+    TMissing,
   );
-  expect(quantified.verdict).toBe("no");
+  expect(castToString(sub, up(sub, fn([Bool], Bool), quantified)))
+    .toBe("<none>");
 });
 
 Deno.test("a cast is shape-exact, so arity is part of the pattern", () => {
   const { sub } = fixture();
-  expect(castToString(sub.upcast(fn([Bool], Bool), fnP([TMissing], TMissing))))
+  expect(
+    castToString(sub, up(sub, fn([Bool], Bool), fnP([TMissing], TMissing))),
+  )
     .toBe("Bool -> Bool");
   expect(
     castToString(
-      sub.upcast(fn([Bool], Bool), fnP([TMissing, TMissing], TMissing)),
+      sub,
+      up(sub, fn([Bool], Bool), fnP([TMissing, TMissing], TMissing)),
     ),
   ).toBe("<none>");
-  expect(castToString(sub.upcast(List(Bool), ListP(TMissing))))
+  expect(castToString(sub, up(sub, List(Bool), ListP(TMissing))))
     .toBe("List[Bool]");
-  expect(castToString(sub.upcast(Bool, ListP(TMissing)))).toBe("<none>");
+  expect(castToString(sub, up(sub, Bool, ListP(TMissing)))).toBe("<none>");
 });
 
 Deno.test("a declined cast answers with the shape that was asked for", () => {
@@ -668,36 +744,71 @@ Deno.test("a declined cast answers with the shape that was asked for", () => {
   // the answer still has a datatype to check its arms against. `<bad>` stands
   // only where the pattern said nothing, and cannot go on to be blamed.
   const { sub } = fixture();
-  const declined = sub.upcast(Bool, ListP(TMissing));
-  expect(declined.verdict).toBe("no");
-  expect(typeToString(declined.type)).toBe("List[<bad>]");
+  const declined = up(sub, Bool, ListP(TMissing));
+  expect(typeToString(declined)).toBe("List[<bad>]");
 
   // A pattern written in full leaves nothing to fill: this is exactly what
   // `check` does today by returning its expected type after reporting.
-  const mismatch = sub.upcast(Bool, Int);
-  expect(mismatch.verdict).toBe("no");
-  expect(typeToString(mismatch.type)).toBe("Int");
+  const mismatch = up(sub, Bool, Int);
+  expect(typeToString(mismatch)).toBe("Int");
 
   // Deeper failures rebuild at the top, rather than handing up the fragment
   // that failed.
-  const inner = sub.upcast(fn([Bool], Bool), fnP([Bool], ListP(TMissing)));
-  expect(inner.verdict).toBe("no");
-  expect(typeToString(inner.type)).toBe("Bool -> List[<bad>]");
+  const inner = up(sub, fn([Bool], Bool), fnP([Bool], ListP(TMissing)));
+  expect(typeToString(inner)).toBe("Bool -> List[<bad>]");
+
+  // Three declines, each said where it happened rather than once at the top.
+  expect(saidBy(sub).length).toBe(3);
 });
 
 Deno.test("a bad type answers with the demanded shape too", () => {
   const { sub } = fixture();
-  const cast = sub.upcast(TBad, ListP(TMissing));
-  expect(cast.verdict).toBe("yes");
-  expect(typeToString(cast.type)).toBe("List[<bad>]");
+  expect(castToString(sub, up(sub, TBad, ListP(TMissing))))
+    .toBe("List[<bad>]");
+});
+
+Deno.test("a cast given a position says which part it could not reach", () => {
+  // The `<bad>` a failed cast plants stands for a report already made, so the
+  // report is made here. The part is what is named: the whole arrow agrees
+  // everywhere but the result, and saying so at the arrow would hide that.
+  const { sub } = fixture();
+  const cast = up(sub, fn([Bool], Bool), fnP([Bool], Int));
+  expect(typeToString(cast)).toBe("Bool -> Int");
+  expect(saidBy(sub)).toEqual(["error: expected Int, found Bool"]);
+});
+
+Deno.test("a cast given no position answers without saying anything", () => {
+  // What tells a check from a query. `downcast(unknown, pattern)` asks what a
+  // pattern admits at its widest, reading no program that could be wrong, and
+  // passes no position for that reason.
+  const { sub } = fixture();
+  const cast = sub.upcast(fn([Bool], Bool), fnP([Bool], Int));
+  // The same answer, and the same `<bad>`-free shape -- only unsaid.
+  expect(typeToString(cast)).toBe("Bool -> Int");
+  expect(saidBy(sub)).toEqual([]);
+});
+
+Deno.test("a datatype lifted out of an extreme is a part that was invented", () => {
+  // Nothing is greatest among the `List`s, so a demanded `List[?]` cannot be
+  // reached from `never`; the shape is still handed back, so a `match` has
+  // something to work with, and the invention is what gets reported.
+  const { sub } = fixture();
+  const cast = up(sub, TNever, ListP(TMissing));
+  expect(typeToString(cast)).toBe("List[<bad>]");
+  expect(saidBy(sub)[0]).toContain("cannot tell what never is a List of");
 });
 
 Deno.test("a cast out of fuel says so, rather than reporting a mismatch", () => {
-  // The distinction the whole `Verdict` exists for: a spent tank is the
-  // checker's limit, and calling it a mismatch would blame the program.
+  // A spent tank is the checker's limit, and calling it a mismatch would blame
+  // the program -- so it keeps its own words. The only decline a cast can make
+  // about the whole ask rather than about a part, which is why it is the only
+  // one the entry point files.
   const { context } = fixture();
-  const starved = new Subtyper(context, 0);
-  expect(starved.upcast(Bool, Bool).verdict).toBe("exhausted");
+  const starved = new Subtyper(context, [], 0);
+  expect(typeToString(starved.upcast(Bool, Bool, somewhere))).toBe("Bool");
+  expect(saidBy(starved)).toEqual([
+    "error: gave up casting Bool to Bool: too deeply nested",
+  ]);
 });
 
 Deno.test("a quantified parameter is opened, so its bound can be read", () => {
@@ -712,7 +823,7 @@ Deno.test("a quantified parameter is opened, so its bound can be read", () => {
     [Bool],
     fnP([TMissing], TMissing),
   );
-  expect(castToString(sub.upcast(type, pattern)))
+  expect(castToString(sub, up(sub, type, pattern)))
     .toBe("[X <: Bool -> Bool](Bool) -> Bool -> Bool");
 });
 
@@ -721,9 +832,9 @@ Deno.test("a part that cannot be cast costs itself and not its siblings", () => 
   // the parameter is the shape that was asked for, and the result beside it is
   // still the real answer rather than collateral.
   const { sub } = fixture();
-  const partial = sub.upcast(fn([Bool], Bool), fnP([Int], TMissing));
-  expect(partial.verdict).toBe("no");
-  expect(typeToString(partial.type)).toBe("Int -> Bool");
+  const partial = up(sub, fn([Bool], Bool), fnP([Int], TMissing));
+  expect(typeToString(partial)).toBe("Int -> Bool");
+  expect(saidBy(sub)).toEqual(["error: expected Int, found Bool"]);
 });
 
 Deno.test("a variable pattern is answered, not promoted past", () => {
@@ -734,16 +845,16 @@ Deno.test("a variable pattern is answered, not promoted past", () => {
   const { context, sub } = fixture();
   const X = FVar(context.pushTypeVar(Bool, "X"), "X");
   const Y = FVar(context.pushTypeVar(X, "Y"), "Y");
-  expect(castToString(sub.upcast(X, X))).toBe("X");
-  expect(castToString(sub.upcast(Y, X))).toBe("X");
-  expect(castToString(sub.downcast(X, X))).toBe("X");
+  expect(castToString(sub, up(sub, X, X))).toBe("X");
+  expect(castToString(sub, up(sub, Y, X))).toBe("X");
+  expect(castToString(sub, down(sub, X, X))).toBe("X");
   // An unbounded variable would promote straight to top, so this is the case
   // that fails loudest without the guard.
   const U = FVar(context.pushTypeVar(TUnknown, "U"), "U");
-  expect(castToString(sub.upcast(U, U))).toBe("U");
+  expect(castToString(sub, up(sub, U, U))).toBe("U");
   // Still promoted when a shape really is wanted.
   const F = FVar(context.pushTypeVar(fn([Bool], Bool), "F"), "F");
-  expect(castToString(sub.upcast(F, fnP([TMissing], TMissing))))
+  expect(castToString(sub, up(sub, F, fnP([TMissing], TMissing))))
     .toBe("Bool -> Bool");
 });
 
@@ -791,25 +902,29 @@ Deno.test("a cast that succeeds is related to its input, always", () => {
   for (const type of types) {
     for (const pattern of patterns) {
       // Nothing demanded, and nothing already blamed, must never decline.
-      expect(sub.upcast(type, TMissing).type).toBe(type);
-      expect(sub.upcast(TBad, pattern).verdict).toBe("yes");
+      expect(castToString(sub, up(sub, type, TMissing)))
+        .toBe(typeToString(type));
+      expect(castToString(sub, up(sub, TBad, pattern))).not.toBe("<none>");
 
-      const up = sub.upcast(type, pattern);
-      if (up.verdict === "yes") {
+      // `castToString` is what says whether a cast declined -- it drains what
+      // was said -- so an answer kept for a second look is cast again.
+      const higher = castToString(sub, up(sub, type, pattern));
+      if (higher !== "<none>") {
         succeeded++;
-        expect(sub.isSubtype(type, up.type)).toBe("yes");
+        expect(sub.isSubtype(type, up(sub, type, pattern))).toBe(true);
       }
-      const down = sub.downcast(type, pattern);
-      if (down.verdict === "yes") {
+      const lower = castToString(sub, down(sub, type, pattern));
+      if (lower !== "<none>") {
         succeeded++;
-        expect(sub.isSubtype(down.type, type)).toBe("yes");
+        expect(sub.isSubtype(down(sub, type, pattern), type)).toBe(true);
       }
-      const exact = sub.exactcast(type, pattern);
-      if (exact.verdict === "yes") {
+      const same = castToString(sub, exact(sub, type, pattern));
+      if (same !== "<none>") {
         succeeded++;
-        expect(sub.isSubtype(type, exact.type)).toBe("yes");
-        expect(sub.isSubtype(exact.type, type)).toBe("yes");
+        expect(sub.isSubtype(type, exact(sub, type, pattern))).toBe(true);
+        expect(sub.isSubtype(exact(sub, type, pattern), type)).toBe(true);
       }
+      sub.diagnostics.length = 0;
     }
   }
   // A grid that stopped relating anything would pass vacuously.
