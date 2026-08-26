@@ -196,6 +196,18 @@ Deno.test("a lower bound is joined, not overwritten by the last constraint", () 
   expect(typeToString(sub.solveLowerBoundOf(a))).toBe("Bool");
 });
 
+Deno.test("a variable in scope is recorded as itself, not as its bound", () => {
+  // The rigid variable stands to the left, so ?a may name it. Promoting it
+  // first would bound ?a by Bool and lose every solution naming X.
+  const context = new Context();
+  const X = context.pushTypeVar(Bool, "X");
+  const sub = new Subtyper(context);
+  const a = context.pushEVar("a");
+
+  expect(sub.isSubtype(FVar(X, "X"), a.ref)).toBe(true);
+  expect(a.lower.map(typeToString)).toEqual(["X"]);
+});
+
 Deno.test("between two EVars the constraint lands on the righthand one", () => {
   // ?a is to the left of ?b, so only ?b may mention ?a.
   const { context, sub } = fixture();
@@ -248,6 +260,34 @@ Deno.test("avoidance swaps direction at a contravariant position", () => {
   expect(saidBy(sub)).toEqual([
     "warning: inferring the type argument a: X mentions a variable bound " +
     "inside this call, so the lower bound was widened to never",
+  ]);
+});
+
+Deno.test("an invariant position pins an EVar with one constraint", () => {
+  // Both bounds from one recording, and one walk to get them: `#eqtype` is
+  // what an invariant argument asks, not two subtypings.
+  const { context, sub } = fixture();
+  const a = context.pushEVar("a");
+
+  expect(sub.isSubtype(List(Bool), List(a.ref))).toBe(true);
+  expect(a.lower.map(typeToString)).toEqual(["Bool"]);
+  expect(a.upper.map(typeToString)).toEqual(["Bool"]);
+});
+
+Deno.test("an invariant constraint refuses what it cannot avoid", () => {
+  // An equation has no direction to give ground in, so where a bound would
+  // widen to `unknown` and say so, this one is dropped and reported.
+  const { context, sub } = fixture();
+  const a = context.pushEVar("a");
+  const X = context.pushTypeVar(Bool, "X");
+
+  expect(sub.isSubtype(List(FVar(X, "X")), List(a.ref), somewhere)).toBe(true);
+  expect(a.lower.length).toBe(0);
+  expect(a.upper.length).toBe(0);
+  expect(saidBy(sub)).toEqual([
+    "error: cannot infer the type argument a from X: it mentions a variable " +
+    "bound inside this call, and an invariant position admits no wider " +
+    "guess, so give it explicitly",
   ]);
 });
 
@@ -447,11 +487,12 @@ Deno.test("the budget is per query, so one deep ask does not poison the next", (
   expect(typeToString(sub.join(TNever, Bool))).toBe("Bool");
 });
 
-Deno.test("a nest of datatypes compares with itself in one walk", () => {
-  // Invariance relates each argument in both directions, so without the
-  // equality test in that loop this pair costs `2^depth` and exhausts a real
-  // budget by depth 11. A budget of two says it is not recursing at all.
-  const sub = new Subtyper(new Context(), [], 2);
+Deno.test("a nest of datatypes costs one walk, not one per direction", () => {
+  // Invariance relates each argument both ways round. Asking that as two
+  // subtypings would walk the whole argument twice at every level, so this
+  // pair would cost `2^20` and exhaust any budget; one `#eqtype` walk spends
+  // about two steps a level.
+  const sub = new Subtyper(new Context(), [], 50);
   let deep: Type = Bool;
   for (let i = 0; i < 20; i++) deep = List(deep);
   expect(sub.isSubtype(deep, deep)).toBe(true);
