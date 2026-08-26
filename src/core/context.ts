@@ -165,7 +165,7 @@ export class EVarEntry {
    * `batch`). A caller decides that first and reports it where it is the
    * program's doing, so reaching here with one is a checker bug and throws.
    */
-  addConstraint(side: "lower" | "upper", type: Type): void {
+  addConstraint(side: ConstraintSide, type: Type): void {
     // Not `Context.assertClosed`: the bar is this batch, not the context's
     // watermark, and everything to its right is legitimately still standing.
     if (!isClosed(type, this.batch)) {
@@ -174,7 +174,8 @@ export class EVarEntry {
           `${this.batch}, where its batch begins`,
       );
     }
-    this[side].push(type);
+    if (side !== "upper") this.lower.push(type);
+    if (side !== "lower") this.upper.push(type);
   }
 
   /**
@@ -203,6 +204,13 @@ export type TermVarEntry = {
   readonly name: string | undefined;
   readonly type: Type;
 };
+
+/**
+ * Which bound of an EVar a constraint is. `both` is what an invariant position
+ * records: it pins the variable to one type rather than bounding it, and is
+ * one constraint and not two, so avoidance sees it whole.
+ */
+export type ConstraintSide = "lower" | "upper" | "both";
 
 /** What the context holds, in one ordered list. */
 export type Entry = TypeVarEntry | EVarEntry | TermVarEntry;
