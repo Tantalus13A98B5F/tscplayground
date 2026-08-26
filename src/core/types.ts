@@ -160,27 +160,20 @@ export function mkTypeParamInfo<M = never>(
  * Numbers because the only operation is flipping, and flipping is negation --
  * which is also why `0` is its own flip, and so why a position inside an
  * invariant one stays invariant however deep below it sits. Testing is by
- * sign, and a rule that admits only the two directions asks for `Direction`.
+ * sign.
  *
  * Not what a *variable* comes to: that is a set of the positions it was found
  * in, which `EVarEntry` keeps, and whose empty case has no variance to name.
  */
 export type Variance = -1 | 0 | 1;
 
-/** A position a type may actually move at, which an invariant one is not. */
-export type Direction = Exclude<Variance, 0>;
-
 /**
  * Contravariant positions swap the two directions and fix invariance.
  *
- * Parametric in the *set* and not the value: negation is closed over both
- * `Variance` and `Direction`, so a caller that has ruled invariance out keeps
- * having ruled it out. `Flip<V>` at the type level would say more than any
- * caller asks -- nothing here needs to know that flipping a covariant position
- * lands on a contravariant one, only that it lands somewhere it started from.
+ * Negation, which is why invariance needs no case: `0` is its own flip.
  */
-export function flip<V extends Variance>(variance: V): V {
-  return -variance as V;
+export function flip(variance: Variance): Variance {
+  return -variance as Variance;
 }
 
 /**

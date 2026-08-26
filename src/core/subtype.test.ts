@@ -233,14 +233,11 @@ Deno.test("avoidance falls back to top when a variable has no useful bound", () 
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
   const X = context.pushTypeVar(TUnknown, "X");
-  // Given a position: widening all the way to top is a loss worth saying out
-  // loud, and a diagnostic needs somewhere to point.
   expect(sub.isSubtype(FVar(X, "X"), a.ref, somewhere)).toBe(true);
   expect(a.lower.map(typeToString)).toEqual(["unknown"]);
-  expect(saidBy(sub)).toEqual([
-    "warning: inferring the type argument a: X mentions a variable bound " +
-    "inside this call, so the lower bound was widened to unknown",
-  ]);
+  // Silently: standing aside for a bound is what avoidance is for, and the
+  // bound being top makes it coarser, not a different thing.
+  expect(saidBy(sub)).toEqual([]);
 });
 
 Deno.test("avoidance swaps direction at a contravariant position", () => {
@@ -256,11 +253,9 @@ Deno.test("avoidance swaps direction at a contravariant position", () => {
     "never -> Bool",
   ]);
   // The parameter went to bottom, which keeps none of `X`; the result stood
-  // aside for `Bool`, which is a type the author can still read through.
-  expect(saidBy(sub)).toEqual([
-    "warning: inferring the type argument a: X mentions a variable bound " +
-    "inside this call, so the lower bound was widened to never",
-  ]);
+  // aside for `Bool`. Each part collapsed where it stood, rather than taking
+  // the arrow down with it.
+  expect(saidBy(sub)).toEqual([]);
 });
 
 Deno.test("an invariant position pins an EVar with one constraint", () => {
@@ -274,16 +269,19 @@ Deno.test("an invariant position pins an EVar with one constraint", () => {
   expect(a.upper.map(typeToString)).toEqual(["Bool"]);
 });
 
-Deno.test("an invariant constraint refuses what it cannot avoid", () => {
-  // An equation has no direction to give ground in, so where a bound would
-  // widen to `unknown` and say so, this one is dropped and reported.
+Deno.test("an equation it cannot avoid decides the EVar as bad", () => {
+  // An equation has no direction to give ground in, so where a part is out of
+  // scope the variable is settled: widening it one way and narrowing it the
+  // other would give a pair that cannot meet. Said here, where the cause is
+  // still in hand, rather than left for the solver to notice as two extremes
+  // that do not fit.
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
   const X = context.pushTypeVar(Bool, "X");
 
   expect(sub.isSubtype(List(FVar(X, "X")), List(a.ref), somewhere)).toBe(true);
-  expect(a.lower.length).toBe(0);
-  expect(a.upper.length).toBe(0);
+  expect(a.lower.map(typeToString)).toEqual(["<bad>"]);
+  expect(a.upper.map(typeToString)).toEqual(["<bad>"]);
   expect(saidBy(sub)).toEqual([
     "error: cannot infer the type argument a from X: it mentions a variable " +
     "bound inside this call, and an invariant position admits no wider " +
@@ -300,27 +298,22 @@ Deno.test("avoidance cannot touch an invariant argument, so it collapses", () =>
   // change the type, invariance being the whole point.
   expect(sub.isSubtype(List(FVar(X, "X")), a.ref, somewhere)).toBe(true);
   expect(a.lower.map(typeToString)).toEqual(["unknown"]);
-  expect(saidBy(sub)).toEqual([
-    "warning: inferring the type argument a: List[X] mentions a variable " +
-    "bound inside this call, so the lower bound was widened to unknown",
-  ]);
+  expect(saidBy(sub)).toEqual([]);
 });
 
-Deno.test("a constraint naming a sibling is refused, and said so", () => {
+Deno.test("a constraint naming a sibling is approximated, and said so", () => {
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
   const b = context.pushEVar("b");
 
-  // `List[?b] <: ?a` would need ?a's solution to mention ?b, which stands to
-  // its right and has no solution yet. Nothing sound to record, so: reject.
-  //
-  // `true` all the same. The relation was not asked a question here, it was
-  // asked to record one, and what it could not record it reports itself.
+  // `List[?b] <: ?a` would need ?a's solution to mention ?b, which has no
+  // solution yet. There is no bound to stand aside for, so ?b takes the
+  // argument, and the invariant argument takes `List` with it.
   expect(sub.isSubtype(List(b.ref), a.ref, somewhere)).toBe(true);
-  expect(a.lower.length).toBe(0);
+  expect(a.lower.map(typeToString)).toEqual(["unknown"]);
   expect(saidBy(sub)).toEqual([
-    "error: cannot infer the type argument a from List[?b]: it depends on " +
-    "another type argument of the same call, so give it explicitly",
+    "warning: the type argument b cannot appear in another type argument's " +
+    "bound, so the constraint mentioning it was approximated",
   ]);
 });
 
@@ -612,11 +605,11 @@ Deno.test("one batch's EVars may not depend on each other", () => {
   if (a === undefined || b === undefined) throw new Error("batch of two");
 
   expect(sub.isSubtype(a.ref, b.ref, somewhere)).toBe(true);
-  expect(b.lower.length).toBe(0);
+  expect(b.lower.map(typeToString)).toEqual(["unknown"]);
   expect(a.upper.length).toBe(0);
   expect(saidBy(sub)).toEqual([
-    "error: cannot infer the type argument b from ?a: it depends on another " +
-    "type argument of the same call, so give it explicitly",
+    "warning: the type argument a cannot appear in another type argument's " +
+    "bound, so the constraint mentioning it was approximated",
   ]);
 });
 

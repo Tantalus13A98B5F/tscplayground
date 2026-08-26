@@ -125,14 +125,6 @@ export class Subtyper {
   #at: Position | undefined;
 
   /**
-   * What the avoidance in progress had to give up on, drained by `#constrain`
-   * once it knows which variable and which side to name. Scoped to one
-   * `#avoid` call the way the fuel is scoped to one query -- set before, read
-   * and cleared after, so there is never a moment where it holds a leftover.
-   */
-  #collapses: { readonly part: Type; readonly to: Type }[] = [];
-
-  /**
    * `diagnostics` is the checker's own array, shared rather than copied, the
    * way the elaborator shares it: what is recorded here is said here.
    *
@@ -458,189 +450,128 @@ export class Subtyper {
    * only narrowed.
    *
    * Always `true`: this answers no question about the two types, it records
-   * one. Where it cannot record, it says so itself -- the relation has no
-   * verdict for "I was asked something I could not write down".
+   * one, and there is no verdict for "I was asked something I could not write
+   * down". Something is always written down -- at worst an extreme, which
+   * constrains nothing and is reported where it is put.
    */
   #constrain(evar: EVarEntry, side: ConstraintSide, type: Type): boolean {
     // No `apply` first: a batch is solved only after the last constraint is
     // in, so nothing reaching here can mention a *solved* EVar.
-
-    // Interdependence is decided over the whole type, before any widening, and
-    // against the *batch* rather than this variable's own level -- so a
-    // sibling is refused in either direction. Unlike a rigid variable an EVar
-    // has no bound to widen to, so collapsing it to top would drop the
-    // constraint on the floor. See `EVarEntry.batch`.
     //
-    // Both sides are marked: they are parties to one rejected dependency, and
-    // a sibling left unmarked goes on to report that nothing constrained it.
-    const siblings = this.#evarsFrom(type, evar.batch);
-    if (siblings.length > 0) {
-      // An error and not a warning: the constraint is dropped, not weakened.
-      // Widening it to an extreme would be sound, but every other bound on
-      // that side would go with it, so the choice would be arbitrary rather
-      // than merely coarse.
-      this.#file(
-        "error",
-        `cannot infer the type argument ${evar.hint} from ` +
-          `${typeToString(type)}: it depends on another type argument of the ` +
-          `same call, so give it explicitly`,
-      );
-      evar.noteReported();
-      for (const sibling of siblings) sibling.noteReported();
+    // The bar is where the batch begins and not this EVar's own level: a
+    // solution may mention anything to the batch's left, but a sibling is out
+    // of bounds in either direction -- selection reads the result type alone,
+    // so a sibling standing in a pending bound is a dependency it cannot see.
+    // The levels between are that batch and nothing else, so no rigid variable
+    // loses scope by the wider bar.
+    if (side !== "both") {
+      const dir = side === "lower" ? 1 : -1;
+      // A bound has a direction to give ground in, so it always lands.
+      evar.addConstraint(side, this.#avoid(type, evar.batch, dir)!);
       return true;
     }
 
-    // Avoidance is about *scope*, so it keeps this EVar's own level as its bar:
-    // a solution may mention anything to its left, siblings having just been
-    // ruled out above.
-    this.#collapses = [];
-    const avoided = this.#avoid(
-      type,
-      evar.level,
-      // A lower bound is widened and an upper one narrowed, which is the
-      // same choice `dir` names. `both` may go neither way: it is an equation,
-      // and an equation approximated in either direction is a different one.
-      side === "lower" ? 1 : side === "upper" ? -1 : 0,
-    );
-    if (avoided === undefined) {
-      // Two ways to get here, and they are not the same mistake. An equation
-      // has no direction to give ground in, so anything out of scope stops it
-      // -- the ordinary case for `both`. A bound, meanwhile, can always widen
-      // except past an EVar, and the pre-pass above turns those down at a
-      // stricter bar, so that arm stands only against a second caller.
+    // An equation has no direction to give ground in, so where a part is out
+    // of scope there is nothing to record it as -- and no second try either:
+    // widening the equation into a lower bound and narrowing it into an upper
+    // one would give a pair that cannot meet, since only a part that collapsed
+    // gets here and a strict widening never sits under the matching strict
+    // narrowing. The variable is decided, so decide it here, where the cause
+    // is still in hand: `TBad` both ways, and the report that makes it true.
+    const pinned = this.#avoid(type, evar.batch, 0);
+    if (pinned === undefined) {
       this.#file(
         "error",
         `cannot infer the type argument ${evar.hint} from ` +
-          `${typeToString(type)}: it mentions ` +
-          (side === "both"
-            ? `a variable bound inside this call, and an invariant position ` +
-              `admits no wider guess`
-            : `a type argument still being inferred`) +
-          `, so give it explicitly`,
+          `${typeToString(type)}: it mentions a variable bound inside this ` +
+          `call, and an invariant position admits no wider guess, so give it ` +
+          `explicitly`,
       );
-      evar.noteReported();
+      evar.addConstraint("both", TBad);
       return true;
     }
-
-    // One warning per collapse, not one per constraint: each names the part
-    // that could not survive, which is what the author would have to annotate.
-    // Never for `both`, which refuses where the others widen, so the wording
-    // below always has a side to name.
-    for (const { part, to } of this.#collapses) {
-      this.#file(
-        "warning",
-        `inferring the type argument ${evar.hint}: ${typeToString(part)} ` +
-          `mentions a variable bound inside this call, so the ` +
-          `${side} bound was widened to ${typeToString(to)}`,
-      );
-    }
-    this.#collapses = [];
-
-    evar.addConstraint(side, avoided);
+    evar.addConstraint("both", pinned);
     return true;
   }
 
   /**
-   * Every EVar entry `type` mentions at or beyond `from`.
-   *
-   * "From", not "later": the bar is a batch's first level, so a *sibling*
-   * counts even standing to the left of the variable being constrained.
-   *
-   * The entries and not a yes-or-no, because callers also have to mark what
-   * they found -- one traversal answering both.
-   */
-  #evarsFrom(type: Type, from: number): EVarEntry[] {
-    switch (type.kind) {
-      case "TUnknown":
-      case "TNever":
-      case "TBad":
-      case "BVar":
-        return [];
-      case "FVar": {
-        if (type.level < from) return [];
-        const entry = this.context.evarAt(type);
-        return entry === undefined ? [] : [entry];
-      }
-      case "TFun":
-        return [
-          ...type.typeParams.flatMap((b) => this.#evarsFrom(b.bound, from)),
-          ...type.params.flatMap((p) => this.#evarsFrom(p, from)),
-          ...this.#evarsFrom(type.result, from),
-        ];
-      case "TData":
-        return type.args.flatMap((arg) => this.#evarsFrom(arg, from));
-    }
-  }
-
-  /**
-   * Note that `part` could not be avoided and `to` stands in its place, and
-   * hand back `to`. Recorded rather than reported: which variable and which
-   * side this bound belongs to is `#constrain`'s to say, not the walk's.
-   */
-  #collapse(part: Type, to: Type): Type {
-    this.#collapses.push({ part, to });
-    return to;
-  }
-
-  /**
    * The least supertype of `type` closed by `levels` going up, the greatest
-   * subtype going down, or `undefined` if none can be built. `dir` is the
-   * direction it travels, which is why it has no invariant value: invariance
-   * is not somewhere this can go but a collapse, reached at a `TData`
-   * argument.
+   * subtype going down, or -- invariantly, where there is no direction to
+   * travel in -- `undefined` if `type` is not already closed.
    *
    * This is the avoidance problem. A constraint picked up under a binder may
    * mention variables that binder introduced, and those cannot appear in a
    * solution that outlives it -- so each is replaced by something in scope,
-   * widening a lower bound and narrowing an upper one, swapping direction at
-   * every contravariant position.
+   * swapping direction at every contravariant position.
+   *
+   * The outer half of the walk: it takes what `#avoidPart` could not name and
+   * puts an extreme there. Every recursion goes through here, so a part that
+   * runs out of room collapses at the smallest node that has room for it,
+   * rather than taking its parents down with it.
    */
   #avoid(type: Type, levels: number, dir: Variance): Type | undefined {
-    if (isClosed(type, levels)) return type;
+    const avoided = this.#avoidPart(type, levels, dir);
+    if (avoided !== undefined) return avoided;
+    if (dir === 0) return undefined;
+    return dir > 0 ? TUnknown : TNever;
+  }
 
+  /**
+   * `type` rebuilt out of parts in scope, or `undefined` where it cannot be:
+   * an EVar, which has constraints rather than a bound to stand aside for, or
+   * anything at all in an invariant position, which admits no wider guess.
+   * A compound goes with any part that could not be named, since half a type
+   * is not a type.
+   *
+   * The scope test is this walk itself and not a closedness check up front:
+   * closedness reads levels, and a `BVar` has none -- a binder inside `type`
+   * is in scope wherever `type` goes, and asking about it in level terms gets
+   * the wrong answer.
+   */
+  #avoidPart(type: Type, levels: number, dir: Variance): Type | undefined {
     switch (type.kind) {
       case "TUnknown":
       case "TNever":
       case "TBad":
+      // Bound by something inside `type`, so it travels with it.
       case "BVar":
         return type;
       case "FVar": {
         if (type.level < levels) return type;
-        // An EVar out of scope has no bound to widen to, so this refuses
-        // where the rest of the walk approximates. Unreachable from
-        // `#constrain`, whose pre-pass rejects such a type at a stricter bar;
-        // kept so a second caller could not widen an EVar away in silence.
         const entry = this.context.entryAt(type);
-        if (entry.kind !== "TypeVar") return undefined;
-        // Invariantly there is nothing to stand aside for: widening and
-        // narrowing both change which type the equation names, so a variable
-        // out of scope refuses rather than approximates.
-        if (dir === 0) return undefined;
+        if (entry.kind === "EVar") {
+          // Said here and not by the caller: only the walk knows which part
+          // was the problem, and what stands in its place is the outer half's
+          // business. An unsolved EVar has no bound to appeal to, so this is
+          // as near as the answer gets.
+          this.#file(
+            "warning",
+            `the type argument ${entry.hint} cannot appear in another type ` +
+              `argument's bound, so the constraint mentioning it was ` +
+              `approximated`,
+          );
+          return undefined;
+        }
+        if (entry.kind !== "TypeVar") {
+          impossible("a type naming a term variable's level");
+        }
         // Upward, a variable's declared bound is the nearest thing it is
         // known to sit under; downward there is no lower bound to appeal to,
-        // so bottom is all that is left, and nothing of the variable survives.
-        if (dir < 0) return this.#collapse(type, TNever);
-        const before = this.#collapses.length;
-        const bound = this.#avoid(entry.bound, levels, dir);
-        // Standing aside for `unknown` says as little as the collapse below,
-        // so it is worth the same warning -- a bound that is really a type is
-        // an approximation the author can still read the result through.
-        //
-        // Unless the bound already collapsed on its own: that report names
-        // what was actually lost, and this one would only repeat it wider.
-        return bound?.kind === "TUnknown" && this.#collapses.length === before
-          ? this.#collapse(type, bound)
-          : bound;
+        // so nothing of the variable survives.
+        if (dir <= 0) return undefined;
+        return this.#avoid(entry.bound, levels, dir);
       }
       case "TData": {
-        // Arguments are invariant, so neither direction may touch them. If one
-        // mentions something out of scope, the whole type collapses -- the
-        // structure goes with it, which is why this is the loss most worth
-        // saying out loud.
-        if (type.args.every((arg) => isClosed(arg, levels))) return type;
-        return dir === 0
-          ? undefined
-          : this.#collapse(type, dir > 0 ? TUnknown : TNever);
+        // A datatype's arguments have no declared variance, so each is asked
+        // invariantly however this node was reached: an argument that cannot
+        // be named exactly takes the whole type with it.
+        const args = [];
+        for (const arg of type.args) {
+          const avoided = this.#avoid(arg, levels, 0);
+          if (avoided === undefined) return undefined;
+          args.push(avoided);
+        }
+        return TData(type.name, args);
       }
       case "TFun": {
         const flipped = flip(dir);
@@ -1336,16 +1267,13 @@ export class Subtyper {
   /**
    * What one member of a batch came to.
    *
-   * A refusal answers `TBad`. Checking against a bad type always succeeds, so
-   * one type argument nobody could infer does not go on to fail again wherever
-   * the result is used.
+   * A variable given up on answers `TBad`, and needs nothing special here to:
+   * whoever gave up recorded `TBad` as the bound, and it stays `TBad` through
+   * the lattice. Checking against a bad type always succeeds, so one type
+   * argument nobody could infer does not go on to fail again wherever the
+   * result is used.
    */
   #solutionFor(entry: EVarEntry, at: Position): Type {
-    // A refused constraint was reported where it was refused, so whatever
-    // bounds got through describe a variable already given up on: solving from
-    // them could only tell the same mistake a second time.
-    if (entry.reported) return TBad;
-
     const solved = this.solveEVar(entry, at);
     // The batch bar, not this variable's level: a solution is built from bounds
     // already closed by it, and a sibling riding out would leave a variable

@@ -140,14 +140,6 @@ export class EVarEntry {
   covariantly = false;
   contravariantly = false;
 
-  /**
-   * Whether a diagnostic about a refused constraint already accounts for this
-   * EVar. Without it such a variable looks like one nothing ever tried to
-   * constrain, and the solver tells the same mistake a second time, naming a
-   * type parameter where the first telling named what the author wrote.
-   */
-  reported = false;
-
   constructor(hint: string, level: Level, batch: number) {
     this.hint = hint;
     this.level = level;
@@ -186,15 +178,6 @@ export class EVarEntry {
   noteOccurrence(variance: Variance): void {
     if (variance >= 0) this.covariantly = true;
     if (variance <= 0) this.contravariantly = true;
-  }
-
-  /**
-   * Note that a diagnostic already accounts for this EVar. Recorded on the
-   * variable because that is what the solver will be looking at, long after the
-   * argument that caused it has been left behind.
-   */
-  noteReported(): void {
-    this.reported = true;
   }
 }
 
