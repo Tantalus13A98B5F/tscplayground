@@ -79,12 +79,22 @@ Deno.test("an expected type constrains the type arguments", () => {
   ).toBe("List[Bool]");
 });
 
-Deno.test("the expected type reaches a nested application", () => {
-  // Checking pushes through the argument list too: `Cons` takes its `A` from
-  // the expected type, and the `Nil()` in its second field takes it from the
-  // parameter type that follows.
+Deno.test("the expected type reaches the call but not its arguments", () => {
+  // `Cons` takes its `A` from the annotation. The `Nil()` in its second field
+  // does not: an argument is checked against a pattern that hides the type
+  // parameters behind missing parts, so nothing there says what it is empty
+  // of, and it has to say so itself.
+  //
+  // Only a datatype's invariant arguments make that necessary -- `List[never]`
+  // would do otherwise -- so this is the variance limitation showing through,
+  // not a limit of what checking propagates.
   expect(
-    typeOf(...LIST, ...BOOL, "let xs : List[Bool] = Cons(True, Nil());", "xs"),
+    typeOf(
+      ...LIST,
+      ...BOOL,
+      "let xs : List[Bool] = Cons(True, Nil[Bool]());",
+      "xs",
+    ),
   ).toBe("List[Bool]");
 });
 
@@ -147,18 +157,17 @@ Deno.test("a bare lambda works in a later parameter list", () => {
   ).toBe("Bool");
 });
 
-Deno.test("an invariant occurrence is not settled by a bound from one side", () => {
+Deno.test("an invariant occurrence is settled by a bound from one side", () => {
   // `True` says `Bool <: A` and nothing says anything from above, so `Bool` is
-  // a choice rather than the answer. Sound, and declined all the same: the
-  // author is the one who knows, and the annotation is the record of it.
-  const [type, ...messages] = run(
-    ...BOOL,
-    "let apply = fn [A](x: A) -> fn (f: (A) -> A) -> f(x);",
-    "apply(True)(fn (y) -> y)",
-  );
-  expect(type).toBe("<bad>");
-  expect(messages.length).toBe(1);
-  expect(messages[0]).toContain("occurs invariantly");
+  // the only type any argument asked for -- a demand weighed against a default
+  // is not a choice, and a staged call settles on it without an annotation.
+  expect(
+    typeOf(
+      ...BOOL,
+      "let apply = fn [A](x: A) -> fn (f: (A) -> A) -> f(x);",
+      "apply(True)(fn (y) -> y)",
+    ),
+  ).toBe("Bool");
 });
 
 Deno.test("a bare lambda in the same list has no type to take", () => {
@@ -209,14 +218,13 @@ Deno.test("a bare lambda that destructures needs a later list", () => {
   expect(messages.length).toBe(1);
   expect(messages[0]).toContain("cannot infer a type for y");
 
-  // Staged over two lists, the same body is fine -- `A` given explicitly,
-  // since it occurs invariantly in what the first list returns.
+  // Staged over two lists, the same body is fine: the first list settles `A`
+  // from `True` alone, so by the second one `y` has a type to match on.
   expect(
     typeOf(
       ...BOOL,
       "let staged = fn [A](x: A) -> fn (f: (A) -> A) -> f(x);",
-      "staged[Bool](True)(fn (y) -> match y with | True -> False " +
-        "| False -> True)",
+      "staged(True)(fn (y) -> match y with | True -> False | False -> True)",
     ),
   ).toBe("Bool");
 });

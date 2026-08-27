@@ -51,9 +51,8 @@ function castToString(sub: Subtyper, type: Type): string {
 }
 
 /**
- * The three casts, each given a position, which is what makes them report.
- * Without one a cast is a *query* and stays silent, and a test of what a cast
- * answers is a test of what it says.
+ * The three casts. A position is required of every cast, so these only save
+ * repeating the one the tests all point at.
  */
 const up = (sub: Subtyper, type: Type, pattern: TypePattern) =>
   sub.upcast(type, pattern, somewhere);
@@ -92,7 +91,6 @@ Deno.test("a bad type flows into an EVar rather than short-circuiting", () => {
   expect(sub.isSubtype(TBad, a.ref)).toBe(true);
   // Recorded, so the EVar solves to `<bad>` instead of looking unconstrained.
   expect(a.lower.map(typeToString)).toEqual(["<bad>"]);
-  expect(typeToString(sub.solveLowerBoundOf(a))).toBe("<bad>");
 });
 
 Deno.test("a datatype is invariant in its arguments", () => {
@@ -185,7 +183,7 @@ Deno.test("several lower bounds join into one solution", () => {
   sub.isSubtype(Bool, a.ref);
   sub.isSubtype(Int, a.ref);
   // Nothing relates Bool and Int, and there is no union, so the join is top.
-  expect(typeToString(sub.solveLowerBoundOf(a))).toBe("unknown");
+  expect(solveAt(sub, a, 1)).toBe("unknown");
 });
 
 Deno.test("a lower bound is joined, not overwritten by the last constraint", () => {
@@ -193,7 +191,7 @@ Deno.test("a lower bound is joined, not overwritten by the last constraint", () 
   const a = context.pushEVar("a");
   sub.isSubtype(TNever, a.ref);
   sub.isSubtype(Bool, a.ref);
-  expect(typeToString(sub.solveLowerBoundOf(a))).toBe("Bool");
+  expect(solveAt(sub, a, 1)).toBe("Bool");
 });
 
 Deno.test("a variable in scope is recorded as itself, not as its bound", () => {
@@ -283,9 +281,9 @@ Deno.test("an equation it cannot avoid decides the EVar as bad", () => {
   expect(a.lower.map(typeToString)).toEqual(["<bad>"]);
   expect(a.upper.map(typeToString)).toEqual(["<bad>"]);
   expect(saidBy(sub)).toEqual([
-    "error: cannot infer the type argument a from X: it mentions a variable " +
-    "bound inside this call, and an invariant position admits no wider " +
-    "guess, so give it explicitly",
+    "error: cannot infer the type argument a from X: it mentions something " +
+    "this type argument cannot name, and an invariant position admits no " +
+    "wider guess, so give it explicitly",
   ]);
 });
 
@@ -313,7 +311,7 @@ Deno.test("a constraint naming a sibling is approximated, and said so", () => {
   expect(a.lower.map(typeToString)).toEqual(["unknown"]);
   expect(saidBy(sub)).toEqual([
     "warning: the type argument b cannot appear in another type argument's " +
-    "bound, so the constraint mentioning it was approximated",
+    "bound; give it explicitly if what was inferred is not what was meant",
   ]);
 });
 
@@ -447,13 +445,6 @@ Deno.test("a bad type absorbs both lattice operations", () => {
   expect(typeToString(sub.meet(Bool, TBad))).toBe("<bad>");
 });
 
-Deno.test("an EVar with no bounds spans the whole lattice", () => {
-  const { context, sub } = fixture();
-  const a = context.pushEVar("a");
-  expect(typeToString(sub.solveLowerBoundOf(a))).toBe("never");
-  expect(typeToString(sub.solveUpperBoundOf(a))).toBe("unknown");
-});
-
 /** Nested arrows, each level forcing one more bound comparison. */
 function nest(depth: number, innermost: Type): Type {
   let type = innermost;
@@ -541,25 +532,40 @@ Deno.test("a covariant EVar with only an upper bound takes bottom", () => {
   expect(solveAt(sub, a, 1)).toBe("never");
 });
 
-Deno.test("an invariant occurrence demands the bounds meet", () => {
-  // `Bool` would check. It is refused because at an invariant occurrence the
-  // two candidates are incomparable, so picking one is arbitrary rather than
-  // coarse -- an error, where a one-directional loss is only a warning.
+Deno.test("an invariant occurrence bounded from one side takes it", () => {
+  // Nothing was recorded from above, so `unknown` is the default and not a
+  // demand -- there is nothing for `Bool` to be weighed against, and nothing
+  // to say.
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
   sub.isSubtype(Bool, a.ref);
-  expect(solveAt(sub, a, 0)).toBe("<bad>");
-  expect(saidBy(sub)).toEqual([
-    "error: cannot infer the type argument a: it occurs invariantly, and the " +
-    "arguments bound it only between Bool and unknown, so no choice is the " +
-    "general one; give it explicitly",
-  ]);
+  expect(solveAt(sub, a, 0)).toBe("Bool");
+  expect(saidBy(sub)).toEqual([]);
 
-  // Bounded from both sides by the same type, there is nothing to choose.
+  // Bounded from both sides by the same type, there is likewise nothing to
+  // choose.
   const b = context.pushEVar("b");
   sub.isSubtype(Bool, b.ref);
   sub.isSubtype(b.ref, Bool);
   expect(solveAt(sub, b, 0)).toBe("Bool");
+  expect(saidBy(sub)).toEqual([]);
+});
+
+Deno.test("two invariant demands that differ take the lower, and say so", () => {
+  // Both bounds were asked for and they are not equivalent, so neither is
+  // above the other in the result. `Bool` satisfies every constraint, which is
+  // why this is a warning rather than a refusal, and it is not the only type
+  // that would, which is why it is said.
+  const { context, sub } = fixture();
+  const a = context.pushEVar("a");
+  sub.isSubtype(fn([Bool], Bool), a.ref);
+  sub.isSubtype(a.ref, fn([TNever], Bool));
+  expect(solveAt(sub, a, 0)).toBe("Bool -> Bool");
+  expect(saidBy(sub)).toEqual([
+    "warning: the type argument a occurs invariantly, and the arguments " +
+    "bound it between Bool -> Bool and never -> Bool, so it was taken to be " +
+    "Bool -> Bool; give it explicitly if that is not what was meant",
+  ]);
 });
 
 Deno.test("occurring nowhere is not the invariant case", () => {
@@ -588,12 +594,18 @@ Deno.test("bounds with nothing between them are a conflict, not a choice", () =>
 Deno.test("an EVar nothing constrained is a warning, not a refusal", () => {
   // Every type satisfies no constraints, so the selection is sound and the
   // answer usable; what it is not is something the author asked for.
+  // With nothing recorded the two bounds are the seeds of the folds, which
+  // span the whole lattice, and the occurrence picks between them.
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
   expect(solveAt(sub, a, 1)).toBe("never");
+  const b = context.pushEVar("b");
+  expect(solveAt(sub, b, -1)).toBe("unknown");
   expect(saidBy(sub)).toEqual([
     "warning: nothing constrains the type argument a, so it was taken to be " +
     "never; give it explicitly if that is not what was meant",
+    "warning: nothing constrains the type argument b, so it was taken to be " +
+    "unknown; give it explicitly if that is not what was meant",
   ]);
 });
 
@@ -609,7 +621,7 @@ Deno.test("one batch's EVars may not depend on each other", () => {
   expect(a.upper.length).toBe(0);
   expect(saidBy(sub)).toEqual([
     "warning: the type argument a cannot appear in another type argument's " +
-    "bound, so the constraint mentioning it was approximated",
+    "bound; give it explicitly if what was inferred is not what was meant",
   ]);
 });
 
@@ -811,14 +823,28 @@ Deno.test("a cast given a position says which part it could not reach", () => {
   expect(saidBy(sub)).toEqual(["error: expected Int, found Bool"]);
 });
 
-Deno.test("a cast given no position answers without saying anything", () => {
-  // What tells a check from a query. `downcast(unknown, pattern)` asks what a
-  // pattern admits at its widest, reading no program that could be wrong, and
-  // passes no position for that reason.
+Deno.test("the widest type matching a pattern fills by variance", () => {
   const { sub } = fixture();
-  const cast = sub.upcast(fn([Bool], Bool), fnP([Bool], Int));
-  // The same answer, and the same `<bad>`-free shape -- only unsaid.
-  expect(typeToString(cast)).toBe("Bool -> Int");
+  const widest = (pattern: TypePattern) =>
+    typeToString(sub.widestMatching(pattern));
+
+  // Nothing written, so nothing constrains: top.
+  expect(widest(TMissing)).toBe("unknown");
+  // A complete pattern is already the answer.
+  expect(widest(fnP([Bool], Int))).toBe("Bool -> Int");
+  // Each hole takes the extreme that makes the whole largest, which flips
+  // going into a parameter.
+  expect(widest(fnP([Bool], TMissing))).toBe("Bool -> unknown");
+  expect(widest(fnP([TMissing], Bool))).toBe("never -> Bool");
+  expect(saidBy(sub)).toEqual([]);
+});
+
+Deno.test("no widest List, so a hole in one takes the datatype with it", () => {
+  // The argument is invariant, so there is nothing to widen it to and the
+  // whole type gives way -- silently, since this answers a question about a
+  // pattern and reads no program that could be wrong.
+  const { sub } = fixture();
+  expect(typeToString(sub.widestMatching(ListP(TMissing)))).toBe("unknown");
   expect(saidBy(sub)).toEqual([]);
 });
 

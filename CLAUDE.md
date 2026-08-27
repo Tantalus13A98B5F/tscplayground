@@ -35,11 +35,24 @@ lets `Nil()` know what it is empty of. Then check the lower bound sits under the
 upper, and pick between them by how the EVar occurs in the application's result
 type -- covariant takes the lower, contravariant the upper, which is what makes
 the answer principal. Occurring both ways, or inside an invariant `TData`
-argument, admits no principal choice, so the two bounds must _meet_; where they
-do not, say so and ask for the type argument. Either bound would check there,
-and that is the objection -- settling silently would hide that a choice was
-made. A variable occurring nowhere in the result is not this case: nothing can
-tell which bound it took, so it takes the lower one.
+argument, neither bound is the answer by position, since widening either way
+breaks the other. Bounded from one side only, there is still nothing to choose:
+the other bound is the default extreme, which nobody recorded, and a demand
+weighed against a default settles it silently -- this is what lets a staged
+`apply(True)(fn (y) -> y)` infer its type argument. Bounded both ways by
+equivalent types, likewise. Bounded both ways by types that differ, take the
+lower for being the demand and _warn_: either bound would check, so nothing is
+unsound, but neither is above the other and settling silently would hide that a
+choice was made. A variable occurring nowhere in the result is not this case at
+all: the solution goes into the result type, which has no place for it, so
+nothing can tell the bounds apart and no choice is one. It takes the lower.
+
+Exhaustion is per solve, not per bound: joining the lower constraints, meeting
+the upper ones and comparing the two are one ask, and running dry in any of them
+is the checker's limit rather than the program's mistake. Say so and answer
+`TBad`, which cannot go on to be wrong somewhere else; falling back to an
+extreme would manufacture a bound the author never wrote and then blame them for
+it.
 
 A constraint picked up under a binder may mention variables that binder
 introduced, which an EVar's solution must not. Avoidance removes them, widening
