@@ -602,10 +602,10 @@ Deno.test("an EVar nothing constrained is a warning, not a refusal", () => {
   const b = context.pushEVar("b");
   expect(solveAt(sub, b, -1)).toBe("unknown");
   expect(saidBy(sub)).toEqual([
-    "warning: nothing constrains the type argument a, so it was taken to be " +
-    "never; give it explicitly if that is not what was meant",
-    "warning: nothing constrains the type argument b, so it was taken to be " +
-    "unknown; give it explicitly if that is not what was meant",
+    "warning: nothing constrains the type argument a; give it " +
+    "explicitly if what was inferred is not what was meant",
+    "warning: nothing constrains the type argument b; give it " +
+    "explicitly if what was inferred is not what was meant",
   ]);
 });
 
