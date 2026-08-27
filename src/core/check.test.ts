@@ -546,8 +546,8 @@ Deno.test("a type argument nothing constrained is a warning, and checks", () => 
   );
   expect(type).toBe("Bool");
   expect(messages).toEqual([
-    "nothing constrains the type argument A, so it was taken to be never; " +
-    "give it explicitly if that is not what was meant",
+    "nothing constrains the type argument A; give it explicitly if " +
+    "what was inferred is not what was meant",
   ]);
 });
 
