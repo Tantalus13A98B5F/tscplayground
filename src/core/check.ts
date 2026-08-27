@@ -44,7 +44,6 @@ import {
   TBad,
   TFun,
   TMissing,
-  TNever,
   TUnknown,
   type Type,
   type TypePattern,
@@ -431,11 +430,7 @@ export class Checker {
       return TBad;
     }
 
-    // The widest type the expected pattern admits, which is what a pattern
-    // says as an upper bound: a missing part becomes the extreme for its
-    // variance, so only the written parts constrain. A complete pattern gives
-    // itself back, and `TMissing` gives `unknown`.
-    const demanded = this.subtyper.downcast(TUnknown, expected);
+    const demanded = this.subtyper.widestMatching(expected);
 
     // What is left is the relating, which is all the EVars are for: the
     // complete type each argument came back with against a parameter type over
@@ -580,8 +575,9 @@ export class Checker {
     expected: TypePattern,
   ): Type {
     const scrutinee = this.subtyper.expose(this.infer(term.scrutinee));
-    const joined = this.#armTypes(term, scrutinee, expected)
-      .reduce((left, right) => this.subtyper.join(left, right), TNever);
+    const joined = this.subtyper.joinMany(
+      this.#armTypes(term, scrutinee, expected),
+    );
     return this.#coerce(joined, expected, term.at);
   }
 
