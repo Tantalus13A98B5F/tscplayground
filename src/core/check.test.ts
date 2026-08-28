@@ -535,20 +535,14 @@ Deno.test("a declared bound is checked against what the arguments demand", () =>
   expect(messages[0]).toContain("Int");
 });
 
-Deno.test("a type argument nothing constrained is a warning, and checks", () => {
+Deno.test("a type argument nothing constrained is silent", () => {
   // `A` reaches neither the parameters nor the result, so nothing downstream
-  // can tell which type it took -- sound, and still worth saying, since the
-  // `never` it settles on is a type the author never wrote.
-  const [type, ...messages] = run(
-    ...BOOL,
-    "let f = fn [A](x: Bool) -> x;",
-    "f(True)",
-  );
-  expect(type).toBe("Bool");
-  expect(messages).toEqual([
-    "nothing constrains the type argument A; give it explicitly if " +
-    "what was inferred is not what was meant",
-  ]);
+  // can tell which type it took. Nor could an author: there is no position to
+  // write a better one at, and saying so would report every use of a type
+  // parameter the callee happens not to need.
+  expect(
+    run(...BOOL, "let f = fn [A](x: Bool) -> x;", "f(True)"),
+  ).toEqual(["Bool"]);
 });
 
 Deno.test("two type parameters of one call no longer depend on each other", () => {

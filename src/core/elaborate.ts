@@ -35,13 +35,13 @@ import type {
   Declarations,
 } from "./declarations.ts";
 import {
+  badUnder,
   BVar,
   closeFrom,
   FVar,
   mkDataName,
   mkTypeParamInfo,
   openMany,
-  TBad,
   TData,
   TFun,
   TNever,
@@ -57,8 +57,10 @@ export class Elaborator {
     readonly diagnostics: Diagnostic[],
   ) {}
 
-  #report(message: string, at: Position, width = 1): void {
-    this.diagnostics.push(reportError(message, at, width));
+  #report(message: string, at: Position, width = 1): Diagnostic {
+    const diagnostic = reportError(message, at, width);
+    this.diagnostics.push(diagnostic);
+    return diagnostic;
   }
 
   elaborateType(node: TypeNode): Type {
@@ -67,8 +69,6 @@ export class Elaborator {
         return TUnknown;
       case "NeverType":
         return TNever;
-      case "BadType":
-        return TBad;
       case "NameType":
         return this.#elaborateName(node);
       case "FunType":
@@ -88,19 +88,23 @@ export class Elaborator {
     const typeVar = this.context.lookupTypeVar(text);
     if (typeVar !== undefined) {
       if (args.length > 0) {
-        this.#report(`type variable ${text} takes no arguments`, at, width);
-        return TBad;
+        return badUnder(
+          this.#report(`type variable ${text} takes no arguments`, at, width),
+        );
       }
       return FVar(typeVar.level, text);
     }
 
     const alias = this.declarations.aliasOf(text);
     if (alias !== undefined) {
-      if (
-        !this.#checkArity("type alias", text, alias.params.length, args, at)
-      ) {
-        return TBad;
-      }
+      const wrong = this.#reportArityMismatch(
+        "type alias",
+        text,
+        alias.params.length,
+        args,
+        at,
+      );
+      if (wrong !== undefined) return badUnder(wrong);
       // Transparent: expanded here, so nothing downstream learns aliases exist.
       return openMany(alias.body, args);
     }
@@ -108,30 +112,36 @@ export class Elaborator {
     const datatype = this.declarations.datatypeOf(text);
     if (datatype !== undefined) {
       const arity = datatype.params.length;
-      if (!this.#checkArity("datatype", text, arity, args, at)) return TBad;
+      const wrong = this.#reportArityMismatch(
+        "datatype",
+        text,
+        arity,
+        args,
+        at,
+      );
+      if (wrong !== undefined) return badUnder(wrong);
       return TData(datatype.name, args);
     }
 
-    this.#report(`unknown type ${text}`, at, width);
-    return TBad;
+    return badUnder(this.#report(`unknown type ${text}`, at, width));
   }
 
-  #checkArity(
+  /** The diagnostic filed for a wrong count, or `undefined` if it was right. */
+  #reportArityMismatch(
     what: string,
     name: string,
     arity: number,
     args: readonly Type[],
     at: Position,
-  ): boolean {
-    if (args.length === arity) return true;
-    this.#report(
+  ): Diagnostic | undefined {
+    if (args.length === arity) return undefined;
+    return this.#report(
       `${what} ${name} takes ${arity} type argument${
         arity === 1 ? "" : "s"
       }, given ${args.length}`,
       at,
       name.length,
     );
-    return false;
   }
 
   #elaborateFun(node: Extract<TypeNode, { kind: "FunType" }>): Type {

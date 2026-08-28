@@ -19,6 +19,14 @@ function stream(text: string): string {
   return stream;
 }
 
+Deno.test("end of input opens no block, so a trailing opener opens nothing", () => {
+  // Rule 2 alone: `eof` sits at column 1, and every floor a block could
+  // inherit is at least the file's alignment, which is also 1. Nothing clears
+  // it, so no case for end of input is needed here.
+  expect(scan("let x =\n").stream).toBe("let x =");
+  expect(scan("let x =\n  let y =\n").stream).toBe("let x = { let y = }");
+});
+
 Deno.test("a new line at the alignment separates items", () => {
   expect(stream("let x = a\nlet y = b\nx\n"))
     .toBe("let x = a ; let y = b ; x");

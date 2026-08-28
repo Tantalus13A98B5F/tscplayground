@@ -187,7 +187,11 @@ export function tokenize(source: Source): Result<readonly Token[]> {
   tokens.push({
     kind: "eof",
     text: "",
-    at: mkPosition(source.id, source.lines.length, 0),
+    // The start of the final line, which a trailing newline leaves empty:
+    // where a cursor at end of file actually sits. Column 1 like any other
+    // position, so a diagnostic pointing here draws a caret; it opens no block
+    // for being at the file's own alignment, which rule 2 requires clearing.
+    at: mkPosition(source.id, source.lines.length, 1),
     first: true,
   });
   return produced(tokens, diagnostics);

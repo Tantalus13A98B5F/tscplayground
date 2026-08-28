@@ -83,14 +83,7 @@ export type TypeNode =
     readonly params: readonly TypeNode[];
     readonly result: TypeNode;
     readonly at: Position;
-  }
-  /**
-   * A type nothing can be said about, for a name elaboration cannot resolve. It
-   * becomes `TBad`, which checks against anything, so one unresolved name does
-   * not fail every use of it. The parser never builds one: a type it cannot
-   * read costs the item it sits in.
-   */
-  | { readonly kind: "BadType"; readonly at: Position };
+  };
 
 export type TermNode =
   | { readonly kind: "Var"; readonly name: Ident; readonly at: Position }

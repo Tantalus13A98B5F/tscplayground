@@ -43,6 +43,7 @@ import {
 import type { ConstraintSide, Context, EVarEntry } from "./context.ts";
 import {
   allPairs,
+  badUnder,
   closeFrom,
   completeLeafPattern,
   completePattern,
@@ -52,7 +53,6 @@ import {
   impossible,
   mkTypeParamInfo,
   openMany,
-  TBad,
   TData,
   TFun,
   TNever,
@@ -238,14 +238,14 @@ export class Subtyper {
     severity: "error" | "warning",
     message: string,
     where: Position | undefined = this.#at,
-  ): void {
+  ): Diagnostic {
     const at = where ??
       impossible("nothing records outside an ask that said where it was");
-    this.diagnostics.push(
-      severity === "error"
-        ? reportError(message, at)
-        : reportWarning(message, at),
-    );
+    const diagnostic = severity === "error"
+      ? reportError(message, at)
+      : reportWarning(message, at);
+    this.diagnostics.push(diagnostic);
+    return diagnostic;
   }
 
   // ------------------------------------------------------------------- casts
@@ -259,8 +259,8 @@ export class Subtyper {
    * other, and this is where the report it promises gets made.
    */
   #castFailed(type: Type, pattern: TypePattern, message?: string): Type {
-    this.#sayCastFailed(type, pattern, message);
-    return completePattern(pattern).type;
+    const witness = this.#sayCastFailed(type, pattern, message);
+    return completePattern(pattern, () => badUnder(witness));
   }
 
   /**
@@ -271,8 +271,12 @@ export class Subtyper {
    * and `TBad` means a report already stands -- so a cast that could decline
    * quietly would be putting that marker in on a promise nobody kept.
    */
-  #sayCastFailed(type: Type, pattern: TypePattern, message?: string): void {
-    this.#file(
+  #sayCastFailed(
+    type: Type,
+    pattern: TypePattern,
+    message?: string,
+  ): Diagnostic {
+    return this.#file(
       "error",
       message ??
         `expected ${typeToString(pattern)}, found ${typeToString(type)}`,
@@ -456,7 +460,7 @@ export class Subtyper {
     //
     // The shape but never a report: filling a missing part from something
     // already bad invents nothing, where lifting an extreme is a choice.
-    if (head.kind === "TBad") return completePattern(pattern).type;
+    if (head.kind === "TBad") return completePattern(pattern, () => head);
 
     if (
       !((head.kind === "TUnknown" && dir < 0) ||
@@ -487,15 +491,15 @@ export class Subtyper {
     // all the same, so a `match` still has a datatype to work with; what the
     // invariance costs is a report, which `already` is what decides: a shape
     // that had to be invented is one the cast did not find.
-    const filled = completePattern(pattern);
-    if (filled.already) return filled.type;
-    return this.#castFailed(
-      type,
-      pattern,
-      `cannot tell what ${typeToString(type)} is a ${pattern.name} of: a ` +
-        `datatype's arguments are invariant, so ${typeToString(pattern)} has ` +
-        `no ${dir > 0 ? "least" : "greatest"} solution -- write it out`,
-    );
+    return completePattern(pattern, () =>
+      badUnder(this.#sayCastFailed(
+        type,
+        pattern,
+        `cannot tell what ${typeToString(type)} is a ${pattern.name} of: a ` +
+          `datatype's arguments are invariant, so ${
+            typeToString(pattern)
+          } has no ${dir > 0 ? "least" : "greatest"} solution -- write it out`,
+      )));
   }
 
   /**
@@ -530,21 +534,24 @@ export class Subtyper {
       // pattern has is filled from the pattern alone, one only `type` has is
       // dropped. Said once, by count, rather than once per position that had
       // no partner.
-      if (type.params.length !== pattern.params.length) {
-        this.#sayCastFailed(
+      const spare = type.params.length === pattern.params.length
+        ? undefined
+        : badUnder(this.#sayCastFailed(
           type,
           pattern,
           `expected ${pattern.params.length} parameter${
             pattern.params.length === 1 ? "" : "s"
           }, found ${type.params.length}`,
-        );
-      }
+        ));
       const params: Type[] = [];
       for (const [i, want] of pattern.params.entries()) {
         const mine = type.params[i];
         if (mine === undefined) {
           // Already in the binder's own scope, having never been opened.
-          params.push(completePattern(want).type);
+          params.push(completePattern(
+            want,
+            () => spare ?? impossible("a spare parameter at a matching arity"),
+          ));
           continue;
         }
         const param = this.#cast(
@@ -798,14 +805,14 @@ export class Subtyper {
     // is still in hand: `TBad` both ways, and the report that makes it true.
     const pinned = this.#avoid(type, evar.batch, 0);
     if (pinned === undefined) {
-      this.#file(
+      const witness = this.#file(
         "error",
         `cannot infer the type argument ${evar.hint} from ` +
           `${typeToString(type)}: it mentions something this type argument ` +
           `cannot name, and an invariant position admits no wider guess, so ` +
           `give it explicitly`,
       );
-      evar.addConstraint("both", TBad);
+      evar.addConstraint("both", badUnder(witness));
       return true;
     }
     evar.addConstraint("both", pinned);
@@ -1019,7 +1026,8 @@ export class Subtyper {
   }
 
   #join(s: Type, t: Type): Type {
-    if (s.kind === "TBad" || t.kind === "TBad") return TBad;
+    if (s.kind === "TBad") return s;
+    if (t.kind === "TBad") return t;
     if (s.kind === "TUnknown" || t.kind === "TUnknown") return TUnknown;
     if (s.kind === "TNever") return t;
     if (t.kind === "TNever") return s;
@@ -1053,7 +1061,8 @@ export class Subtyper {
   }
 
   #meet(s: Type, t: Type): Type {
-    if (s.kind === "TBad" || t.kind === "TBad") return TBad;
+    if (s.kind === "TBad") return s;
+    if (t.kind === "TBad") return t;
     if (s.kind === "TNever" || t.kind === "TNever") return TNever;
     if (s.kind === "TUnknown") return t;
     if (t.kind === "TUnknown") return s;
@@ -1224,12 +1233,11 @@ export class Subtyper {
    */
   solveEVar(entry: EVarEntry, at: Position): Type {
     return this.#query(at, () => this.#solveEVar(entry), () => {
-      this.#file(
+      return badUnder(this.#file(
         "error",
         `gave up inferring the type argument ${entry.hint}: its constraints ` +
           `ran too deep`,
-      );
-      return TBad;
+      ));
     });
   }
 
@@ -1240,26 +1248,19 @@ export class Subtyper {
     const upper = this.#meetMany(entry.upper);
 
     if (!this.#subtype(lower, upper)) {
-      this.#file(
+      return badUnder(this.#file(
         "error",
         `cannot infer the type argument ${entry.hint}: it is bounded below ` +
           `by ${typeToString(lower)} and above by ${typeToString(upper)}, ` +
           `and no type is both`,
-      );
-      return TBad;
+      ));
     }
 
-    // Nothing demanded, so the bounds are the extremes. Said and not settled
-    // here: the selection below picks between them as it would between any
-    // two, and what it lands on is no part of what is worth saying.
-    if (entry.lower.length === 0 && entry.upper.length === 0) {
-      this.#file(
-        "warning",
-        `nothing constrains the type argument ${entry.hint}; give it ` +
-          `explicitly if what was inferred is not what was meant`,
-      );
-    }
-
+    // Nothing demanded is not a case: both bounds are then the extremes, and
+    // the selection below reads them as it reads any other pair. `Nil()` is
+    // the whole of it -- `List[never]` is what the program says, not a guess
+    // standing in for something the author left out.
+    //
     // Below here the bounds are ordered, so every answer satisfies every
     // constraint and the only question left is which is the *general* one.
     if (covariantly && !contravariantly) return lower;

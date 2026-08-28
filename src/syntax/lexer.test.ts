@@ -17,10 +17,11 @@ Deno.test("tokenize ends every stream with eof", () => {
   expect(kinds("x")).toEqual(["identifier", "eof"]);
 });
 
-Deno.test("eof sits at column 0, so it closes every open block", () => {
-  // Neither `column = indent` nor `column > indent` holds for any real block.
-  const eof = lex("  x\n").at(-1);
-  expect(eof?.at.column).toBe(0);
+Deno.test("eof sits at a position like any other, so a caret can point at it", () => {
+  // The start of the line a trailing newline leaves empty. Being *measured* as
+  // no column at all is `layout`'s rule, not this position -- a 0 here would
+  // be a diagnostic pointing one left of the line.
+  expect(lex("  x\n").at(-1)?.at).toMatchObject({ line: 2, column: 1 });
 });
 
 Deno.test("keywords are distinguished from identifiers", () => {
