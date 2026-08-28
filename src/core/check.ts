@@ -30,10 +30,16 @@ import {
   type TypeParam,
 } from "../syntax/ast.ts";
 import { Context } from "./context.ts";
-import { type CtorInfo, Declarations } from "./declarations.ts";
+import {
+  type CtorInfo,
+  type DatatypeInfo,
+  Declarations,
+} from "./declarations.ts";
 import { ctorFieldsAt, Elaborator } from "./elaborate.ts";
 import { Subtyper, type Verdict } from "./subtype.ts";
 import {
+  type BadType,
+  badUnder,
   closeFrom,
   completePattern,
   FVar,
@@ -41,7 +47,6 @@ import {
   mkLevel,
   openMany,
   openWith,
-  TBad,
   TFun,
   TMissing,
   TUnknown,
@@ -73,8 +78,10 @@ export class Checker {
     return this.infer(program.term);
   }
 
-  #report(message: string, at: Position, width = 1): void {
-    this.diagnostics.push(reportError(message, at, width));
+  #report(message: string, at: Position, width = 1): Diagnostic {
+    const diagnostic = reportError(message, at, width);
+    this.diagnostics.push(diagnostic);
+    return diagnostic;
   }
 
   /**
@@ -97,14 +104,16 @@ export class Checker {
       case true:
         return;
       case false:
-        return this.#report(`expected ${wanted}, found ${found}`, at);
+        this.#report(`expected ${wanted}, found ${found}`, at);
+        return;
       // Not absent: the fuel ran out. The checker's limit, not the program's
       // mistake, so not "found X, expected Y".
       case undefined:
-        return this.#report(
+        this.#report(
           `gave up comparing ${found} with ${wanted}: too deeply nested`,
           at,
         );
+        return;
     }
   }
 
@@ -272,17 +281,15 @@ export class Checker {
     if (declared.bound !== undefined) {
       return this.elaborator.elaborateType(declared.bound);
     }
-    const filled = completePattern(supplied);
-    if (!filled.already) {
+    return completePattern(supplied, () => {
       const name = bindingHint(declared.name);
-      this.#report(
+      return badUnder(this.#report(
         `cannot infer a bound for ${name}: write it, or use this function ` +
           `where its bounds are known`,
         declared.name.at,
         name.length,
-      );
-    }
-    return filled.type;
+      ));
+    });
   }
 
   /**
@@ -300,17 +307,15 @@ export class Checker {
     if (param.annotation !== undefined) {
       return this.elaborator.elaborateType(param.annotation);
     }
-    const filled = completePattern(supplied);
-    if (!filled.already) {
+    return completePattern(supplied, () => {
       const name = bindingHint(param.name);
-      this.#report(
+      return badUnder(this.#report(
         `cannot infer a type for ${name}: annotate it, or use this function ` +
           `where its parameter types are known`,
         param.name.at,
         name.length,
-      );
-    }
-    return filled.type;
+      ));
+    });
   }
 
   /**
@@ -361,12 +366,13 @@ export class Checker {
   #inferVar(term: Extract<TermNode, { kind: "Var" }>): Type {
     const found = this.context.lookupTerm(term.name.text);
     if (found !== undefined) return found.entry.type;
-    this.#report(
-      `unknown name ${term.name.text}`,
-      term.name.at,
-      term.name.text.length,
+    return badUnder(
+      this.#report(
+        `unknown name ${term.name.text}`,
+        term.name.at,
+        term.name.text.length,
+      ),
     );
-    return TBad;
   }
 
   /**
@@ -393,15 +399,15 @@ export class Checker {
   ): Type {
     const callee = this.subtyper.expose(this.infer(term.callee));
     if (callee.kind !== "TFun") {
-      if (callee.kind !== "TBad") {
+      const answer = callee.kind === "TBad" ? callee : badUnder(
         this.#report(
           `${typeToString(callee)} is not a function`,
           term.callee.at,
-        );
-      }
+        ),
+      );
       // Still walk the arguments: errors inside them are real either way.
       for (const arg of term.args) this.infer(arg);
-      return TBad;
+      return answer;
     }
 
     // Every argument is checked before a single EVar exists, against a
@@ -421,13 +427,14 @@ export class Checker {
     // missing arguments were what the type parameters were to be read from, so
     // there is nothing left to ask and nothing to suppress afterwards.
     if (term.args.length !== callee.params.length) {
-      this.#report(
-        `expected ${callee.params.length} argument${
-          callee.params.length === 1 ? "" : "s"
-        }, found ${term.args.length}`,
-        term.at,
+      return badUnder(
+        this.#report(
+          `expected ${callee.params.length} argument${
+            callee.params.length === 1 ? "" : "s"
+          }, found ${term.args.length}`,
+          term.at,
+        ),
       );
-      return TBad;
     }
 
     const demanded = this.subtyper.widestMatching(expected);
@@ -507,22 +514,23 @@ export class Checker {
     const args = term.args.map((arg) => this.elaborator.elaborateType(arg));
 
     if (callee.kind !== "TFun") {
-      if (callee.kind !== "TBad") {
+      if (callee.kind === "TBad") return callee;
+      return badUnder(
         this.#report(
           `${typeToString(callee)} takes no type arguments`,
           term.callee.at,
-        );
-      }
-      return TBad;
+        ),
+      );
     }
     if (callee.typeParams.length !== args.length) {
-      this.#report(
-        `expected ${callee.typeParams.length} type argument${
-          callee.typeParams.length === 1 ? "" : "s"
-        }, found ${args.length}`,
-        term.at,
+      return badUnder(
+        this.#report(
+          `expected ${callee.typeParams.length} type argument${
+            callee.typeParams.length === 1 ? "" : "s"
+          }, found ${args.length}`,
+          term.at,
+        ),
       );
-      return TBad;
     }
 
     for (const [j, binder] of callee.typeParams.entries()) {
@@ -591,15 +599,18 @@ export class Checker {
     scrutinee: Type,
     expected: TypePattern,
   ): Type[] {
-    const datatype = scrutinee.kind === "TData"
-      ? this.declarations.datatypeOf(scrutinee.name)
-      : undefined;
-    if (scrutinee.kind !== "TData" && scrutinee.kind !== "TBad") {
-      this.#report(
-        `cannot match on ${typeToString(scrutinee)}: it is not a datatype`,
-        term.scrutinee.at,
-      );
-    }
+    // What the arms bind against: a datatype to look constructors up in, or
+    // the `<bad>` their binders take instead, which is why the report for a
+    // scrutinee that is not one is made here rather than at the binding.
+    const target: MatchTarget = scrutinee.kind === "TData"
+      ? this.declarations.datatypeOf(scrutinee.name) ??
+        impossible("a TData whose name no declaration table holds")
+      : {
+        bad: scrutinee.kind === "TBad" ? scrutinee : badUnder(this.#report(
+          `cannot match on ${typeToString(scrutinee)}: it is not a datatype`,
+          term.scrutinee.at,
+        )),
+      };
 
     const args = scrutinee.kind === "TData" ? scrutinee.args : [];
     const covered = new Set<string>();
@@ -619,11 +630,11 @@ export class Checker {
         }
         covered.add(name);
       }
-      types.push(this.#checkArm(arm, datatype?.name, args, expected));
+      types.push(this.#checkArm(arm, target, args, expected));
     }
 
-    if (!wild && datatype !== undefined) {
-      const missing = datatype.ctors
+    if (!wild && !("bad" in target)) {
+      const missing = target.ctors
         .map((ctor) => ctor.name)
         .filter((name) => !covered.has(name));
       if (missing.length > 0) {
@@ -638,13 +649,13 @@ export class Checker {
 
   #checkArm(
     arm: MatchArm,
-    owner: string | undefined,
+    target: MatchTarget,
     args: readonly Type[],
     expected: TypePattern,
   ): Type {
     const type = this.context.inScope(() => {
       if (arm.pattern.kind === "PCtor") {
-        this.#bindPattern(arm.pattern, owner, args);
+        this.#bindPattern(arm.pattern, target, args);
       }
       return this.check(arm.body, expected);
     });
@@ -654,25 +665,23 @@ export class Checker {
 
   #bindPattern(
     pattern: Extract<MatchArm["pattern"], { kind: "PCtor" }>,
-    owner: string | undefined,
+    target: MatchTarget,
     args: readonly Type[],
   ): void {
     const name = pattern.name.text;
     // The scrutinee's own datatype names every constructor that can appear,
     // so no reverse map is needed.
-    const ctor = owner === undefined
+    const ctor = "bad" in target
       ? undefined
-      : this.declarations.ctorOf(owner, name);
+      : this.declarations.ctorOf(target.name, name);
 
     if (ctor === undefined) {
-      if (owner !== undefined) {
-        this.#report(
-          `${name} is not a constructor of ${owner}`,
-          pattern.name.at,
-          name.length,
-        );
-      }
-      for (const binder of pattern.args) this.#pushBinding(binder, TBad);
+      const bad = "bad" in target ? target.bad : badUnder(this.#report(
+        `${name} is not a constructor of ${target.name}`,
+        pattern.name.at,
+        name.length,
+      ));
+      for (const binder of pattern.args) this.#pushBinding(binder, bad);
       return;
     }
 
@@ -687,23 +696,34 @@ export class Checker {
     // Fields are stored closed over the datatype's parameters, so the
     // scrutinee's own type arguments are what open them.
     const fields = ctorFieldsAt(ctor, args);
-    if (fields.length !== pattern.args.length) {
+    // The binders past the constructor's fields take the `<bad>` this report
+    // licenses, which keeps the arm's body checkable.
+    const spare = fields.length === pattern.args.length ? undefined : badUnder(
       this.#report(
         `${ctor.name} takes ${fields.length} field${
           fields.length === 1 ? "" : "s"
         }, bound ${pattern.args.length}`,
         pattern.at,
         ctor.name.length,
-      );
-    }
+      ),
+    );
     this.#reportDuplicateBinders(pattern.args, "pattern");
     for (const [j, binder] of pattern.args.entries()) {
-      // `TBad` where the pattern binds more than the constructor has: the
-      // mismatch is reported above, and this keeps the arm's body checkable.
-      this.#pushBinding(binder, fields[j] ?? TBad);
+      this.#pushBinding(
+        binder,
+        fields[j] ?? spare ?? impossible("a binder past a matching arity"),
+      );
     }
   }
 }
+
+/**
+ * What a `match`'s arms bind against. Either a datatype whose constructors
+ * they name, or a scrutinee that is none, carrying the `<bad>` its binders
+ * take -- witnessed once, where the scrutinee was read, rather than at each
+ * binder that has nothing to be.
+ */
+type MatchTarget = DatatypeInfo | { readonly bad: BadType };
 
 /** Check a whole program, handing back its type and every diagnostic. */
 export function checkProgram(

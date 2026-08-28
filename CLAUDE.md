@@ -17,6 +17,13 @@ Checker structure:
 - Checking to a bad type always success
 - So, never fail checking a tree halfway
 
+A bad type means _a report already stands_, and that is constructive: `TBad` is
+private to `types.ts` and the only way to one is `badUnder`, which takes the
+diagnostic that licenses it. So a rule either files and passes the diagnostic it
+got back, or hands on a bad type it already holds. `completePattern` takes the
+report lazily -- it is asked for only where a part was missing, and at most once
+however many were, which is the question callers used to ask as `already`.
+
 Walk types structurally. A function over types dispatches on the kind of each
 node and recurses on what that kind contains; a whole-type equality test like
 `alphaEq` is not a case, and standing one in front of the switch as a fast path
@@ -46,6 +53,10 @@ unsound, but neither is above the other and settling silently would hide that a
 choice was made. A variable occurring nowhere in the result is not this case at
 all: the solution goes into the result type, which has no place for it, so
 nothing can tell the bounds apart and no choice is one. It takes the lower.
+Bounded from neither side is not a case either: both bounds are then the
+extreme, and the occurrence reads them as it reads any pair -- `Nil()` is
+`List[never]` because that is what the program says, not because something was
+left out.
 
 Exhaustion is per solve, not per bound: joining the lower constraints, meeting
 the upper ones and comparing the two are one ask, and running dry in any of them

@@ -1,14 +1,18 @@
 import { expect } from "@std/expect";
-import { mkFileId, mkPosition } from "../diagnostics/diagnostic.ts";
+import {
+  mkFileId,
+  mkPosition,
+  reportError,
+} from "../diagnostics/diagnostic.ts";
 import { Context, type EVarEntry } from "./context.ts";
 import { Subtyper } from "./subtype.ts";
 import {
+  badUnder,
   BVar,
   FVar,
   type Level,
   mkDataName,
   mkTypeParamInfo,
-  TBad,
   TData,
   TFun,
   TMissing,
@@ -22,6 +26,9 @@ import {
 
 /** Somewhere for a diagnostic to point at; no test reads it back. */
 const somewhere = mkPosition(mkFileId(0), 1, 1);
+
+/** A `<bad>` to hand the relation, under a report a test stands in for. */
+const TBad = badUnder(reportError("something was already wrong", somewhere));
 
 /** Note where an EVar stands and solve it, which `withEVars` does in one go. */
 function solveAt(sub: Subtyper, entry: EVarEntry, variance: Variance): string {
@@ -591,22 +598,17 @@ Deno.test("bounds with nothing between them are a conflict, not a choice", () =>
   ]);
 });
 
-Deno.test("an EVar nothing constrained is a warning, not a refusal", () => {
-  // Every type satisfies no constraints, so the selection is sound and the
-  // answer usable; what it is not is something the author asked for.
+Deno.test("an EVar nothing constrained spans the lattice, silently", () => {
   // With nothing recorded the two bounds are the seeds of the folds, which
-  // span the whole lattice, and the occurrence picks between them.
+  // span the whole lattice, and the occurrence picks between them as it picks
+  // between any pair. Nothing to say: every type satisfies no constraints, so
+  // the extreme the occurrence asks for is the answer rather than a guess.
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
   expect(solveAt(sub, a, 1)).toBe("never");
   const b = context.pushEVar("b");
   expect(solveAt(sub, b, -1)).toBe("unknown");
-  expect(saidBy(sub)).toEqual([
-    "warning: nothing constrains the type argument a; give it " +
-    "explicitly if what was inferred is not what was meant",
-    "warning: nothing constrains the type argument b; give it " +
-    "explicitly if what was inferred is not what was meant",
-  ]);
+  expect(saidBy(sub)).toEqual([]);
 });
 
 Deno.test("one batch's EVars may not depend on each other", () => {

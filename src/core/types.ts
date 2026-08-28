@@ -16,6 +16,8 @@
  * traversals that have to agree about what a position is.
  */
 
+import type { Diagnostic } from "../diagnostics/diagnostic.ts";
+
 /**
  * A free variable's identity *is* its position in the context, so a level needs
  * no allocator: the next one is the context's size. Type variables and EVars
@@ -108,7 +110,42 @@ export const TMissing: TypePattern = { kind: "TMissing" };
 
 export const TUnknown: Type = { kind: "TUnknown" };
 export const TNever: Type = { kind: "TNever" };
-export const TBad: Type = { kind: "TBad" };
+
+/**
+ * A type known to *be* `<bad>`. What `badUnder` hands back, so a rule holding
+ * one can say so in its own signature rather than re-testing the kind.
+ */
+export type BadType = Extract<Type, { kind: "TBad" }>;
+
+/**
+ * A type nothing can be said about. Not exported: the only way to one is
+ * `badUnder`, so every `<bad>` in a checked program carries a diagnostic that
+ * put it there.
+ */
+const TBad: BadType = { kind: "TBad" };
+
+/**
+ * `<bad>` under the diagnostic that licenses it.
+ *
+ * `TBad` relates to everything, which is only sound because it means *a report
+ * already stands*: nothing built from one can go on to be blamed, and nothing
+ * downstream will say a second thing about it. So the witness is the whole
+ * point -- the caller passes the diagnostic it filed, and a `<bad>` with no
+ * report behind it cannot be written.
+ *
+ * An error, and not a warning: a warning is something the program may go on
+ * from, so it licenses nothing to stop saying. Nor `info`.
+ *
+ * Propagating an existing one needs nothing: `<bad>` is a singleton and its
+ * witness is whatever put it there, so a rule that already holds one hands
+ * that same value on.
+ */
+export function badUnder(witness: Diagnostic): BadType {
+  if (witness.severity !== "error") {
+    impossible(`a <bad> witnessed by a ${witness.severity}`);
+  }
+  return TBad;
+}
 
 export function BVar(index: number): Type {
   return { kind: "BVar", index };
@@ -379,8 +416,6 @@ export function isClosed<M>(
 
 /**
  * A pattern read back as a type, `<bad>` standing wherever it said nothing.
- * `already` is whether it said nothing anywhere -- one walk, because building
- * the type and asking what had to be invented are the same question.
  *
  * Keeping the shape is the point: `List[<bad>]` is still a datatype, so a
  * `match` on it can be checked for membership and exhaustiveness where a bare
@@ -388,46 +423,38 @@ export function isClosed<M>(
  * invents -- `<bad>` relates to anything and none of them can go on to be
  * blamed -- which is what separates this from choosing an arbitrary type.
  *
- * What `already` means is the caller's: it is a fact about the pattern, not a
- * verdict about a relation, and every caller so far reports it as one.
+ * `bad` is asked for only where a part is missing, and asked at most once
+ * however many are: what a caller does there is report, and the report is
+ * about the pattern rather than about any one hole in it. A pattern that was
+ * complete never calls it, which is how a caller learns it invented nothing --
+ * the question it used to ask as `already`.
  */
 export function completePattern(
   pattern: TypePattern,
-): { type: Type; already: boolean } {
-  switch (pattern.kind) {
-    case "TMissing":
-      return { type: TBad, already: false };
-    case "TFun": {
-      let already = true;
-      const typeParams: TypeParamInfo[] = [];
-      for (const binder of pattern.typeParams) {
-        const bound = completePattern(binder.bound);
-        already &&= bound.already;
-        typeParams.push(mkTypeParamInfo(binder.hint, bound.type));
-      }
-      const params: Type[] = [];
-      for (const param of pattern.params) {
-        const built = completePattern(param);
-        already &&= built.already;
-        params.push(built.type);
-      }
-      const result = completePattern(pattern.result);
-      already &&= result.already;
-      return { type: TFun(typeParams, params, result.type), already };
+  bad: () => Type,
+): Type {
+  let reported: Type | undefined;
+  const once = () => reported ??= bad();
+
+  const walk = (pattern: TypePattern): Type => {
+    switch (pattern.kind) {
+      case "TMissing":
+        return once();
+      case "TFun":
+        return TFun(
+          pattern.typeParams.map((binder) =>
+            mkTypeParamInfo(binder.hint, walk(binder.bound))
+          ),
+          pattern.params.map(walk),
+          walk(pattern.result),
+        );
+      case "TData":
+        return TData(pattern.name, pattern.args.map(walk));
+      default:
+        return completeLeafPattern(pattern);
     }
-    case "TData": {
-      let already = true;
-      const args: Type[] = [];
-      for (const arg of pattern.args) {
-        const built = completePattern(arg);
-        already &&= built.already;
-        args.push(built.type);
-      }
-      return { type: TData(pattern.name, args), already };
-    }
-    default:
-      return { type: completeLeafPattern(pattern), already: true };
-  }
+  };
+  return walk(pattern);
 }
 
 /**
