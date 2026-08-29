@@ -690,20 +690,26 @@ Deno.test("an invariant cast is not either of the other two", () => {
 
 Deno.test("an invariant missing part costs a report, not the answer", () => {
   // Nothing is greatest among the types a `List` can be of, so an extreme
-  // lifted into one has to invent the argument. The shape is still built and
-  // handed back -- so a `match` on it has a datatype to work with -- but it is
-  // a stand-in, and must not read as a success.
+  // lifted into one has to choose the argument. The extreme it came from is
+  // the choice, and it is a real answer -- every `List` is above `never` --
+  // so what the invariance costs is a report about the choice, not the shape.
   const { sub } = fixture();
-  expect(castToString(sub, up(sub, TNever, ListP(TMissing)))).toBe("<none>");
-
-  // Nested, the walk fills the rest of the shape rather than stopping at the
-  // first invented argument.
-  const nested = up(sub, TNever, ListP(ListP(TMissing)));
-  expect(typeToString(nested)).toBe("List[List[<bad>]]");
+  expect(typeToString(up(sub, TNever, ListP(TMissing)))).toBe("List[never]");
+  expect(saidBy(sub)).toEqual([
+    "warning: cannot tell what never is a List of: a datatype's arguments " +
+    "are invariant, so List[?] has no least solution, and its arguments " +
+    "were taken to be never",
+  ]);
   sub.diagnostics.length = 0;
 
-  // With every argument written there is nothing to invent, so the same lift
-  // is an answer.
+  // Nested, the walk fills the rest of the shape rather than stopping at the
+  // first argument it had to choose.
+  expect(typeToString(up(sub, TNever, ListP(ListP(TMissing)))))
+    .toBe("List[List[never]]");
+  sub.diagnostics.length = 0;
+
+  // With every argument written there is nothing to choose, so the same lift
+  // is an answer with nothing to say about it.
   expect(castToString(sub, down(sub, TUnknown, ListP(Bool)))).toBe(
     "List[Bool]",
   );
@@ -850,14 +856,19 @@ Deno.test("no widest List, so a hole in one takes the datatype with it", () => {
   expect(saidBy(sub)).toEqual([]);
 });
 
-Deno.test("a datatype lifted out of an extreme is a part that was invented", () => {
-  // Nothing is greatest among the `List`s, so a demanded `List[?]` cannot be
-  // reached from `never`; the shape is still handed back, so a `match` has
-  // something to work with, and the invention is what gets reported.
+Deno.test("a cast out of an extreme warns rather than failing", () => {
+  // An extreme sits under -- or over -- every type there is, so a cast in its
+  // own direction can always be made and a failure here would report the
+  // checker's inability to name *one* answer as the program's mistake. Dual
+  // to the lift out of `never`, and reported the same way.
   const { sub } = fixture();
-  const cast = up(sub, TNever, ListP(TMissing));
-  expect(typeToString(cast)).toBe("List[<bad>]");
-  expect(saidBy(sub)[0]).toContain("cannot tell what never is a List of");
+  expect(typeToString(down(sub, TUnknown, ListP(TMissing))))
+    .toBe("List[unknown]");
+  expect(saidBy(sub)).toEqual([
+    "warning: cannot tell what unknown is a List of: a datatype's arguments " +
+    "are invariant, so List[?] has no greatest solution, and its arguments " +
+    "were taken to be unknown",
+  ]);
 });
 
 Deno.test("a cast out of fuel says so, rather than reporting a mismatch", () => {

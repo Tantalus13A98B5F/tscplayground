@@ -488,18 +488,27 @@ export class Subtyper {
 
     // A datatype's arguments do not: nothing is greatest among the types a
     // `List` can be of, so there is no greatest `List`. The shape is lifted
-    // all the same, so a `match` still has a datatype to work with; what the
-    // invariance costs is a report, which `already` is what decides: a shape
-    // that had to be invented is one the cast did not find.
-    return completePattern(pattern, () =>
-      badUnder(this.#sayCastFailed(
-        type,
-        pattern,
+    // all the same, and an argument with no position to read takes the
+    // extreme it came from -- one `List` out of many, all of them above (or
+    // below) `type`, so the answer is sound and only arbitrary.
+    //
+    // Which is why it *warns* where the rest of this file errors. An extreme
+    // sits under (or over) every type there is, so a cast in this direction
+    // can always be made; failing here would report the checker's inability
+    // to name one answer as the program's mistake, and there is no `TBad` to
+    // hand back either, `badUnder` taking errors alone. Whatever a later
+    // check trips over in the argument is explained by this line.
+    return completePattern(pattern, () => {
+      this.#file(
+        "warning",
         `cannot tell what ${typeToString(type)} is a ${pattern.name} of: a ` +
           `datatype's arguments are invariant, so ${
             typeToString(pattern)
-          } has no ${dir > 0 ? "least" : "greatest"} solution -- write it out`,
-      )));
+          } has no ${dir > 0 ? "least" : "greatest"} solution, and its ` +
+          `arguments were taken to be ${typeToString(head)}`,
+      );
+      return head;
+    });
   }
 
   /**

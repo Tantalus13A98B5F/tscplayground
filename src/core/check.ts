@@ -364,12 +364,19 @@ export class Checker {
   ): Type {
     const callee = this.subtyper.expose(this.infer(term.callee));
     if (callee.kind !== "TFun") {
-      const answer = callee.kind === "TBad" ? callee : badUnder(
-        this.#report(
-          `${typeToString(callee)} is not a function`,
-          term.callee.at,
-        ),
-      );
+      // Two heads stand aside rather than being wrong. `<bad>` because a
+      // report already stands; `never` because it sits under
+      // `unknown -> never` at every arity, so it is callable with whatever is
+      // written and answers `never` -- no shape to read, and nothing to say
+      // about the argument count either.
+      const answer = callee.kind === "TBad" || callee.kind === "TNever"
+        ? callee
+        : badUnder(
+          this.#report(
+            `${typeToString(callee)} is not a function`,
+            term.callee.at,
+          ),
+        );
       // Still walk the arguments: errors inside them are real either way.
       for (const arg of term.args) this.infer(arg);
       return answer;
@@ -479,7 +486,10 @@ export class Checker {
     const args = term.args.map((arg) => this.elaborator.elaborateType(arg));
 
     if (callee.kind !== "TFun") {
-      if (callee.kind === "TBad") return callee;
+      // The same two that stand aside at an application, and `never` for the
+      // same reason: it is under every polymorphic function type, so it takes
+      // the type arguments written and stays `never`.
+      if (callee.kind === "TBad" || callee.kind === "TNever") return callee;
       return badUnder(
         this.#report(
           `${typeToString(callee)} takes no type arguments`,
@@ -594,30 +604,40 @@ export class Checker {
   }
 
   /**
-   * A `match` on something that is no datatype, which is why none of the
-   * analysis above applies: with no set of constructors no arm is covered by
-   * another and none of them together leave a value over, and every name
-   * written is no constructor -- so saying it once about the scrutinee is the
-   * whole of what is wrong, and every binder takes the `<bad>` that licenses.
-   * What is left is the arms' own bodies, checked and joined like any others.
+   * A `match` with no set of constructors to work with, which is why none of
+   * the analysis above applies: no arm is covered by another, none of them
+   * together leave a value over, and no name written resolves. Three heads
+   * arrive here and each answers for the whole match, binders and result
+   * alike -- `<bad>` where a report already stands, `never` where no value
+   * arrives to be taken apart, and a fresh `<bad>` for a head that is simply
+   * not matchable, said once about the scrutinee rather than once per name
+   * that failed to be a constructor of it.
+   *
+   * The arms are still checked, since what is written in them is as wrong as
+   * it would be anywhere else. Their types are dropped rather than joined,
+   * which is the unreachable-arm rule with every arm unreachable: nothing
+   * reaches a `never` scrutinee's arms at all, and past a `<bad>` there is
+   * nothing a join could be trusted to say.
    */
   #checkUnmatchable(
     term: Extract<TermNode, { kind: "Match" }>,
     scrutinee: Type,
     expected: TypePattern,
   ): Type {
-    const bad = scrutinee.kind === "TBad" ? scrutinee : badUnder(this.#report(
-      `cannot match on ${typeToString(scrutinee)}: it is not a datatype`,
-      term.scrutinee.at,
-    ));
-    const types = term.arms.map((arm) =>
+    const answer = scrutinee.kind === "TBad" || scrutinee.kind === "TNever"
+      ? scrutinee
+      : badUnder(this.#report(
+        `cannot match on ${typeToString(scrutinee)}: it is not a datatype`,
+        term.scrutinee.at,
+      ));
+    for (const arm of term.arms) {
       this.#checkArm(
         arm,
-        arm.pattern.kind === "PWild" ? [] : arm.pattern.args.map(() => bad),
+        arm.pattern.kind === "PWild" ? [] : arm.pattern.args.map(() => answer),
         expected,
-      )
-    );
-    return this.subtyper.joinMany(types, term.at);
+      );
+    }
+    return answer;
   }
 
   /**
