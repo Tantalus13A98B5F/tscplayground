@@ -85,8 +85,17 @@ body does not need the parameter's _structure_; `match` on it does, and that is
 where a _later_ parameter list is required, the way Scala's `foldLeft(z)(op)`
 stages it. Currying gives this for free; there is no multi-list function type.
 
-Inferring a `match` joins its arms with LUB, so no arm is privileged by
-position.
+Inferring a `match` joins its arms with LUB, so no arm is privileged by position
+-- but only the arms a value can reach. One-level patterns keep the whole
+analysis one set: what a value could still be on reaching the arm being checked.
+An arm is unreachable when nothing it matches is left in that set, and the arms
+are exhaustive when it is empty at the end. A name that is no constructor of the
+scrutinee's datatype is asked nothing of the set -- it was never in it, so it
+cannot have been taken out, and reporting it as matched above would blame the
+author twice for one thing. An unreachable arm is reported and its body still
+checked, since what is written there is as wrong as it would be anywhere else;
+only its type is dropped, joining it in having widened the answer for an arm
+that never runs.
 
 Some limitations:
 

@@ -990,9 +990,24 @@ export class Subtyper {
    * already standing, which is what solving an EVar wants: joining its lower
    * constraints, meeting its upper ones and comparing the two are parts of one
    * ask, not three.
+   *
+   * Running dry answers `unknown` and *warns*, where the other top-level asks
+   * error: `unknown` is genuinely above every type in the list, so the answer
+   * is sound and only imprecise, and a warning is what this file says of a
+   * loss the program may go on from. It is why there is no `TBad` here to hand
+   * back -- `badUnder` takes errors alone, and rightly, since nothing was
+   * settled arbitrarily. Whatever fails downstream on the widened answer is
+   * explained by this line.
    */
-  joinMany(types: readonly Type[]): Type {
-    return this.#query(undefined, () => this.#joinMany(types), () => TUnknown);
+  joinMany(types: readonly Type[], at?: Position): Type {
+    return this.#query(at, () => this.#joinMany(types), () => {
+      this.#file(
+        "warning",
+        `gave up joining ${types.length} types: too deeply nested, so their ` +
+          `join was taken to be unknown`,
+      );
+      return TUnknown;
+    });
   }
 
   /** The meet of every type in `types`, or `unknown` if there are none. Dual

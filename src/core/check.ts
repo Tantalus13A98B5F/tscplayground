@@ -24,21 +24,14 @@ import {
   bindingHint,
   type BindingIdent,
   type MatchArm,
-  type Param,
   type Program,
   type TermNode,
-  type TypeParam,
 } from "../syntax/ast.ts";
 import { Context } from "./context.ts";
-import {
-  type CtorInfo,
-  type DatatypeInfo,
-  Declarations,
-} from "./declarations.ts";
+import { type CtorInfo, Declarations } from "./declarations.ts";
 import { ctorFieldsAt, Elaborator } from "./elaborate.ts";
 import { Subtyper, type Verdict } from "./subtype.ts";
 import {
-  type BadType,
   badUnder,
   closeFrom,
   completePattern,
@@ -117,27 +110,6 @@ export class Checker {
     }
   }
 
-  /**
-   * What a term of type `actual` is, seen at `expected`: the least supertype
-   * of the one matching the other, reported once if there is none.
-   *
-   * What a checking rule returns, in place of subsuming and then handing back
-   * the expected type. On a type written in full the two agree -- a complete
-   * pattern matches only itself -- and where the pattern is partial the answer
-   * is its shape with the term's own content in the missing parts.
-   *
-   * Nearly the only way a type meets an expected one. What is left beside it
-   * is a written type argument against its declared bound, a relation rather
-   * than a coercion, which asks `isSubtype` directly.
-   *
-   * Nothing comes back but the type: a cast that could not reach some part has
-   * said so already, in that part's own words, which is what the position is
-   * handed over for.
-   */
-  #coerce(actual: Type, expected: TypePattern, at: Position): Type {
-    return this.subtyper.upcast(actual, expected, at);
-  }
-
   // ---------------------------------------------------------------- checking
 
   /**
@@ -148,28 +120,44 @@ export class Checker {
    *
    * The answer is in general neither the pattern nor the term's own type, but
    * the pattern's shape with the term's content in its missing parts, which is
-   * what `#coerce` produces.
+   * what `coerce` produces: the least supertype of the one matching the other,
+   * reported once if there is none. On a type written in full the two agree --
+   * a complete pattern matches only itself.
+   *
+   * This is nearly the only way a type meets an expected one, and every rule
+   * meets it here, at the same term and the same position. What is left beside
+   * it is a written type argument against its declared bound, a relation
+   * rather than a coercion, which asks `isSubtype` directly.
    */
   check(term: TermNode, expected: TypePattern): Type {
+    // Nothing comes back but the type: a cast that could not reach some part
+    // has said so already, in that part's own words, which is what it is given
+    // the position for.
+    const coerce = (actual: Type) =>
+      this.subtyper.upcast(actual, expected, term.at);
+
     switch (term.kind) {
       // The forms with a rule of their own: each pushes the pattern *inward*
       // rather than synthesizing and comparing at the end, which is the only
       // way an unannotated parameter ever gets a type.
       case "Abs":
-        return this.#checkAbs(term, expected);
+        return coerce(this.#checkAbs(term, expected));
       case "Match":
-        return this.#checkMatch(term, expected);
-      case "Let":
-        return this.#checkLet(term, expected);
+        return coerce(this.#checkMatch(term, expected));
       case "App":
-        return this.#checkApp(term, expected);
+        return coerce(this.#applyCall(term, expected));
       // The two forms with nothing to push inward: a name already has a type
       // and a type application already says what it is. They synthesize, and
       // the pattern is applied afterwards.
       case "Var":
-        return this.#coerce(this.#inferVar(term), expected, term.at);
+        return coerce(this.#inferVar(term));
       case "TypeApp":
-        return this.#coerce(this.#inferTypeApp(term), expected, term.at);
+        return coerce(this.#inferTypeApp(term));
+      // The one form that coerces nowhere. A `let` hands the pattern to its
+      // body and the body's own `check` is where it is met, so coercing the
+      // answer again would only ask a settled question twice.
+      case "Let":
+        return this.#checkLet(term, expected);
     }
   }
 
@@ -187,9 +175,9 @@ export class Checker {
    * literal arrow of the same quantifier arity demands nothing of the parts.
    *
    * Every part is taken from the pattern where it has one and from the term
-   * otherwise, and the coercion at the end makes the answer the type asked
-   * for. Nothing in between relates anything: a disagreement with the pattern
-   * is the lambda having the wrong type, and that is said once.
+   * otherwise, and nothing in between relates anything: a disagreement with
+   * the pattern is the lambda having the wrong type, which the coercion in
+   * `check` says once, over the whole arrow.
    */
   #checkAbs(
     term: Extract<TermNode, { kind: "Abs" }>,
@@ -206,16 +194,32 @@ export class Checker {
       // never a member of its own group.
       const binders = this.elaborator.bindTypeParams(
         term.typeParams,
-        term.typeParams.map((declared, j) =>
-          this.#boundType(
-            declared,
-            // Top where there is no pattern, which is what an unbounded type
-            // parameter means anyway. This is the one place the two rules
-            // differ, and it is the whole of the difference: a bound left
-            // unsaid has a sound reading and a parameter type does not.
+        term.typeParams.map((declared, j) => {
+          if (declared.bound !== undefined) {
+            return this.elaborator.elaborateType(declared.bound);
+          }
+          // Top where there is no pattern, which is what an unbounded type
+          // parameter means anyway. The one place this rule and the parameter
+          // rule below differ, and the whole of the difference: a bound left
+          // unsaid has a sound reading and a parameter type does not.
+          //
+          // A bound the pattern reaches only in part could take `unknown` too,
+          // assuming less of a type variable being safe. More precise and
+          // worse: two type parameters that read the same in the source would
+          // answer differently for a reason an author cannot see.
+          return completePattern(
             wanted?.typeParams[j]?.bound ?? TUnknown,
-          )
-        ),
+            () => {
+              const name = bindingHint(declared.name);
+              return badUnder(this.#report(
+                `cannot infer a bound for ${name}: write it, or use this ` +
+                  `function where its bounds are known`,
+                declared.name.at,
+                name.length,
+              ));
+            },
+          );
+        }),
       );
       // One variable per binder, in order, so the group occupies exactly the
       // levels from the mark on.
@@ -231,23 +235,39 @@ export class Checker {
       // binds simultaneously: an annotation may not see a name its own list
       // binds, and `fn [A](A: A, y: A)` resolves both `A`s to the type
       // variable. One per parameter the *term* wrote, whatever the pattern's
-      // arity -- the count is a disagreement the coercion says.
-      const params = term.params.map((param, j) =>
-        this.#paramType(
-          param,
-          // A parameter the pattern does not reach is one it says nothing
-          // about, which is what a missing part means -- so it is asked for
-          // like any other rather than standing `<bad>`, which would claim
-          // something was supplied.
-          wanted === undefined
-            ? TMissing
-            : openMany(wanted.params[j] ?? TMissing, opened),
-        )
-      );
+      // arity.
+      const params = term.params.map((param, j) => {
+        // What is written wins whole and unconditionally, including where it
+        // disagrees with the pattern: the body is typed against what the
+        // author wrote. Relating the two here would buy a message at the
+        // parameter and pay for it by discarding the annotation -- the one
+        // thing this rule promises to keep.
+        if (param.annotation !== undefined) {
+          return this.elaborator.elaborateType(param.annotation);
+        }
+        // A parameter the pattern does not reach is one it says nothing about,
+        // which is what a missing part means -- so it is asked for like any
+        // other rather than standing `<bad>`, which would claim something was
+        // supplied. No pattern at all is that case for every parameter at
+        // once, and needs no arm of its own: opening a missing part leaves it
+        // missing.
+        return completePattern(
+          openMany<unknown>(wanted?.params[j] ?? TMissing, opened),
+          () => {
+            const name = bindingHint(param.name);
+            return badUnder(this.#report(
+              `cannot infer a type for ${name}: annotate it, or use this ` +
+                `function where its parameter types are known`,
+              param.name.at,
+              name.length,
+            ));
+          },
+        );
+      });
       for (const [j, param] of term.params.entries()) {
-        this.#pushBinding(
-          param.name,
+        this.context.pushTermVar(
           params[j] ?? impossible("one type per written parameter"),
+          param.name.text,
         );
       }
 
@@ -256,8 +276,6 @@ export class Checker {
         openMany(wanted?.result ?? TMissing, opened),
       );
 
-      // Closing the parts at the mark is what turns level `mark + j` back
-      // into `BVar j`.
       return TFun(
         binders,
         params.map((param) => closeFrom(param, mark)),
@@ -265,65 +283,7 @@ export class Checker {
       );
     });
     this.context.assertClosed("function", [type]);
-    return this.#coerce(type, expected, term.at);
-  }
-
-  /**
-   * One type parameter's bound: what is written if anything is, else what the
-   * pattern supplies if that is complete, else `<bad>` and the error.
-   *
-   * A missing bound could quietly become `unknown` instead, assuming less of a
-   * type variable being safe. More precise and worse: two positions that read
-   * the same in the source would answer differently for a reason an author
-   * cannot see.
-   */
-  #boundType(declared: TypeParam, supplied: TypePattern): Type {
-    if (declared.bound !== undefined) {
-      return this.elaborator.elaborateType(declared.bound);
-    }
-    return completePattern(supplied, () => {
-      const name = bindingHint(declared.name);
-      return badUnder(this.#report(
-        `cannot infer a bound for ${name}: write it, or use this function ` +
-          `where its bounds are known`,
-        declared.name.at,
-        name.length,
-      ));
-    });
-  }
-
-  /**
-   * One parameter's type, by the same rule as `#boundType`, spelled out twice
-   * rather than shared because the two differ only in their words.
-   *
-   * What is written wins whole and unconditionally, including where it
-   * disagrees with the pattern: the body is typed against what the author
-   * wrote, and the disagreement is the lambda's type not being the one asked
-   * for, which the coercion at `#checkAbs` says once and in full. Relating the
-   * two here would buy a message at the parameter and pay for it by discarding
-   * the annotation -- the one thing this rule promises to keep.
-   */
-  #paramType(param: Param, supplied: TypePattern): Type {
-    if (param.annotation !== undefined) {
-      return this.elaborator.elaborateType(param.annotation);
-    }
-    return completePattern(supplied, () => {
-      const name = bindingHint(param.name);
-      return badUnder(this.#report(
-        `cannot infer a type for ${name}: annotate it, or use this function ` +
-          `where its parameter types are known`,
-        param.name.at,
-        name.length,
-      ));
-    });
-  }
-
-  /**
-   * Bind a source binder: a parameter, a `let`, a pattern field. A wildcard
-   * binds its position and no name, so nothing ever resolves to it.
-   */
-  #pushBinding(binder: BindingIdent, type: Type): void {
-    this.context.pushTermVar(type, binder.text);
+    return type;
   }
 
   /** Report a name bound twice in one group: a parameter list, a pattern. */
@@ -352,7 +312,18 @@ export class Checker {
     expected: TypePattern,
   ): Type {
     const result = this.context.inScope(() => {
-      this.#pushBinding(term.name, this.#letBinding(term));
+      // Ascribed or synthesized. An annotation is what the bound term is
+      // checked against *and* what the binding gets: the two agree, a complete
+      // pattern matching only itself, and the annotation is what this binding
+      // promises to keep.
+      let bound: Type;
+      if (term.annotation === undefined) {
+        bound = this.infer(term.bound);
+      } else {
+        bound = this.elaborator.elaborateType(term.annotation);
+        this.check(term.bound, bound);
+      }
+      this.context.pushTermVar(bound, term.name.text);
       return this.check(term.body, expected);
     });
     // With no dependent types a `let` body's type cannot mention the binding,
@@ -384,15 +355,9 @@ export class Checker {
    * `List[Bool]` pick `Bool`.
    *
    * A constraint and not a demand: the result is still coerced towards it
-   * afterwards, on the solved types, which is where a mismatch is reported.
+   * afterwards by `check`, on the solved types, which is where a mismatch is
+   * reported.
    */
-  #checkApp(
-    term: Extract<TermNode, { kind: "App" }>,
-    expected: TypePattern,
-  ): Type {
-    return this.#coerce(this.#applyCall(term, expected), expected, term.at);
-  }
-
   #applyCall(
     term: Extract<TermNode, { kind: "App" }>,
     expected: TypePattern,
@@ -495,8 +460,8 @@ export class Checker {
 
         // The expected type, last -- though order cannot matter, every
         // constraint being joined at once. The verdict is dropped because the
-        // types it would name still hold EVars; `#checkApp` asks again once
-        // they are solved.
+        // types it would name still hold EVars; `check` coerces towards it
+        // once they are solved.
         this.subtyper.isSubtype(result, demanded);
       },
     );
@@ -551,153 +516,136 @@ export class Checker {
     );
   }
 
-  /** The type a `let` binds, whether ascribed or synthesized. */
-  #letBinding(
-    term: Extract<TermNode, { kind: "Let" } | { kind: "LetItem" }> | {
-      annotation?: Parameters<Elaborator["elaborateType"]>[0];
-      bound: TermNode;
-    },
-  ): Type {
-    if (term.annotation !== undefined) {
-      const ascribed = this.elaborator.elaborateType(term.annotation);
-      this.check(term.bound, ascribed);
-      return ascribed;
-    }
-    return this.infer(term.bound);
-  }
-
   // ------------------------------------------------------------------- match
 
   /**
-   * Every arm is checked against the same pattern and the results joined, so
-   * no arm is privileged by position. With no arms at all the join is `never`,
-   * which is right: a match on an uninhabited scrutinee returns nothing.
+   * The union level: what the arms match on, which of them a value can reach,
+   * whether they leave one over, and the join of the ones that can run. Every
+   * reachable arm is checked against the same pattern, so no arm is privileged
+   * by position.
    *
-   * Joining and *then* coercing lets a missing part be filled by the arms
-   * rather than guessed ahead of them, only the arms having a witness for it.
-   * Sound because the join is above every arm and the coercion only goes
-   * further up.
+   * The join and not a coercion of it: `check` coerces afterwards, and doing
+   * it in that order lets a missing part be filled by the arms rather than
+   * guessed ahead of them, only the arms having a witness for it. Sound
+   * because the join is above every arm and the coercion only goes further up.
+   *
+   * `remaining` is the whole of the analysis: what a value could still be on
+   * reaching the arm being checked. One-level patterns keep it a set of
+   * constructor names, and every question a *list* of arms raises is a
+   * question about that set -- an arm is unreachable when nothing it matches
+   * is left in it, and the arms are exhaustive when it is empty at the end.
+   * Each is about an arm against the ones before it, which is what an arm
+   * cannot see and this method can.
    */
   #checkMatch(
     term: Extract<TermNode, { kind: "Match" }>,
     expected: TypePattern,
   ): Type {
     const scrutinee = this.subtyper.expose(this.infer(term.scrutinee));
-    const joined = this.subtyper.joinMany(
-      this.#armTypes(term, scrutinee, expected),
-    );
-    return this.#coerce(joined, expected, term.at);
+    if (scrutinee.kind !== "TData") {
+      return this.#checkUnmatchable(term, scrutinee, expected);
+    }
+    const datatype = this.declarations.datatypeOf(scrutinee.name) ??
+      impossible("a TData whose name no declaration table holds");
+    const remaining = new Set(datatype.ctors.map((ctor) => ctor.name));
+
+    const types: Type[] = [];
+    for (const arm of term.arms) {
+      // Taken and removed at once: what an arm matches is exactly what is
+      // left after it, and an arm with nothing left is one nothing reaches.
+      let dead: string | undefined;
+      let binderTypes: readonly Type[] = [];
+      if (arm.pattern.kind === "PWild") {
+        if (remaining.size === 0) dead = "every value is matched above";
+        remaining.clear();
+      } else {
+        const name = arm.pattern.name.text;
+        const ctor = this.declarations.ctorOf(datatype.name, name);
+        // A name that is no constructor is a mistake of its own and answers
+        // nothing about coverage: it was never in the set, so it cannot have
+        // been taken out, and reporting it as matched above -- which
+        // `#armBinderTypes` is about to report as no constructor at all --
+        // would blame the author twice for one thing.
+        if (ctor !== undefined && !remaining.delete(name)) {
+          dead = `${name} is matched above`;
+        }
+        binderTypes = this.#armBinderTypes(arm.pattern, ctor, scrutinee);
+      }
+      if (dead !== undefined) {
+        this.#report(`this arm is unreachable: ${dead}`, arm.pattern.at);
+      }
+
+      // Checked whether or not it can be reached: what is written in a dead
+      // arm is as wrong as it would be anywhere else, the way a mistyped
+      // call's arguments are still checked. Only the *type* is dropped -- a
+      // value that cannot arrive here cannot be what the match answers with,
+      // and joining it in would widen the answer for an arm that never runs.
+      const type = this.#checkArm(arm, binderTypes, expected);
+      if (dead === undefined) types.push(type);
+    }
+
+    if (remaining.size > 0) {
+      this.#report(
+        `match is not exhaustive: ${[...remaining].join(", ")} not covered`,
+        term.at,
+      );
+    }
+    return this.subtyper.joinMany(types, term.at);
   }
 
   /**
-   * Check every arm against the pattern, for the caller to join. Also settles
-   * exhaustiveness, which one-level patterns make a set difference rather than
-   * a decision procedure.
+   * A `match` on something that is no datatype, which is why none of the
+   * analysis above applies: with no set of constructors no arm is covered by
+   * another and none of them together leave a value over, and every name
+   * written is no constructor -- so saying it once about the scrutinee is the
+   * whole of what is wrong, and every binder takes the `<bad>` that licenses.
+   * What is left is the arms' own bodies, checked and joined like any others.
    */
-  #armTypes(
+  #checkUnmatchable(
     term: Extract<TermNode, { kind: "Match" }>,
     scrutinee: Type,
     expected: TypePattern,
-  ): Type[] {
-    // What the arms bind against: a datatype to look constructors up in, or
-    // the `<bad>` their binders take instead, which is why the report for a
-    // scrutinee that is not one is made here rather than at the binding.
-    const target: MatchTarget = scrutinee.kind === "TData"
-      ? this.declarations.datatypeOf(scrutinee.name) ??
-        impossible("a TData whose name no declaration table holds")
-      : {
-        bad: scrutinee.kind === "TBad" ? scrutinee : badUnder(this.#report(
-          `cannot match on ${typeToString(scrutinee)}: it is not a datatype`,
-          term.scrutinee.at,
-        )),
-      };
-
-    const args = scrutinee.kind === "TData" ? scrutinee.args : [];
-    const covered = new Set<string>();
-    let wild = false;
-    const types: Type[] = [];
-
-    for (const arm of term.arms) {
-      if (arm.pattern.kind === "PWild") wild = true;
-      else {
-        const name = arm.pattern.name.text;
-        if (covered.has(name)) {
-          this.#report(
-            `constructor ${name} is matched twice`,
-            arm.pattern.at,
-            name.length,
-          );
-        }
-        covered.add(name);
-      }
-      types.push(this.#checkArm(arm, target, args, expected));
-    }
-
-    if (!wild && !("bad" in target)) {
-      const missing = target.ctors
-        .map((ctor) => ctor.name)
-        .filter((name) => !covered.has(name));
-      if (missing.length > 0) {
-        this.#report(
-          `match is not exhaustive: ${missing.join(", ")} not covered`,
-          term.at,
-        );
-      }
-    }
-    return types;
-  }
-
-  #checkArm(
-    arm: MatchArm,
-    target: MatchTarget,
-    args: readonly Type[],
-    expected: TypePattern,
   ): Type {
-    const type = this.context.inScope(() => {
-      if (arm.pattern.kind === "PCtor") {
-        this.#bindPattern(arm.pattern, target, args);
-      }
-      return this.check(arm.body, expected);
-    });
-    this.context.assertClosed("match arm", [type]);
-    return type;
+    const bad = scrutinee.kind === "TBad" ? scrutinee : badUnder(this.#report(
+      `cannot match on ${typeToString(scrutinee)}: it is not a datatype`,
+      term.scrutinee.at,
+    ));
+    const types = term.arms.map((arm) =>
+      this.#checkArm(
+        arm,
+        arm.pattern.kind === "PWild" ? [] : arm.pattern.args.map(() => bad),
+        expected,
+      )
+    );
+    return this.subtyper.joinMany(types, term.at);
   }
 
-  #bindPattern(
+  /**
+   * One type per binder the pattern wrote, so the arm has nothing left to
+   * reconcile: a wrong field count is padded here and said here, and so is a
+   * name that is no constructor of `matched`.
+   *
+   * Settled before the arm's scope opens, which nothing objects to: a field
+   * type is the constructor's own, opened at the scrutinee's type arguments,
+   * and neither that nor a report reads the context.
+   */
+  #armBinderTypes(
     pattern: Extract<MatchArm["pattern"], { kind: "PCtor" }>,
-    target: MatchTarget,
-    args: readonly Type[],
-  ): void {
-    const name = pattern.name.text;
-    // The scrutinee's own datatype names every constructor that can appear,
-    // so no reverse map is needed.
-    const ctor = "bad" in target
-      ? undefined
-      : this.declarations.ctorOf(target.name, name);
-
+    ctor: CtorInfo | undefined,
+    matched: Extract<Type, { kind: "TData" }>,
+  ): readonly Type[] {
     if (ctor === undefined) {
-      const bad = "bad" in target ? target.bad : badUnder(this.#report(
-        `${name} is not a constructor of ${target.name}`,
+      const bad = badUnder(this.#report(
+        `${pattern.name.text} is not a constructor of ${matched.name}`,
         pattern.name.at,
-        name.length,
+        pattern.name.text.length,
       ));
-      for (const binder of pattern.args) this.#pushBinding(binder, bad);
-      return;
+      return pattern.args.map(() => bad);
     }
 
-    this.#bindFields(pattern, ctor, args);
-  }
-
-  #bindFields(
-    pattern: Extract<MatchArm["pattern"], { kind: "PCtor" }>,
-    ctor: CtorInfo,
-    args: readonly Type[],
-  ): void {
     // Fields are stored closed over the datatype's parameters, so the
     // scrutinee's own type arguments are what open them.
-    const fields = ctorFieldsAt(ctor, args);
-    // The binders past the constructor's fields take the `<bad>` this report
-    // licenses, which keeps the arm's body checkable.
+    const fields = ctorFieldsAt(ctor, matched.args);
     const spare = fields.length === pattern.args.length ? undefined : badUnder(
       this.#report(
         `${ctor.name} takes ${fields.length} field${
@@ -707,23 +655,39 @@ export class Checker {
         ctor.name.length,
       ),
     );
-    this.#reportDuplicateBinders(pattern.args, "pattern");
-    for (const [j, binder] of pattern.args.entries()) {
-      this.#pushBinding(
-        binder,
-        fields[j] ?? spare ?? impossible("a binder past a matching arity"),
-      );
-    }
+    return pattern.args.map((_, j) =>
+      fields[j] ?? spare ?? impossible("a binder past a matching arity")
+    );
+  }
+
+  /**
+   * One arm: its binders, and its body under them.
+   *
+   * The binders go into a scope of their own, so the type coming out may not
+   * mention them, which `assertClosed` says out loud. Nothing about the
+   * datatype reaches here -- what each binder is was settled by the caller,
+   * which is the only place that knows what the whole match is over.
+   */
+  #checkArm(
+    arm: MatchArm,
+    binderTypes: readonly Type[],
+    expected: TypePattern,
+  ): Type {
+    const binders = arm.pattern.kind === "PWild" ? [] : arm.pattern.args;
+    const type = this.context.inScope(() => {
+      this.#reportDuplicateBinders(binders, "pattern");
+      for (const [j, binder] of binders.entries()) {
+        this.context.pushTermVar(
+          binderTypes[j] ?? impossible("one type per written binder"),
+          binder.text,
+        );
+      }
+      return this.check(arm.body, expected);
+    });
+    this.context.assertClosed("match arm", [type]);
+    return type;
   }
 }
-
-/**
- * What a `match`'s arms bind against. Either a datatype whose constructors
- * they name, or a scrutinee that is none, carrying the `<bad>` its binders
- * take -- witnessed once, where the scrutinee was read, rather than at each
- * binder that has nothing to be.
- */
-type MatchTarget = DatatypeInfo | { readonly bad: BadType };
 
 /** Check a whole program, handing back its type and every diagnostic. */
 export function checkProgram(

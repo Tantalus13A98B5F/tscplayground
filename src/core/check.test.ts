@@ -334,6 +334,74 @@ Deno.test("a match that misses a constructor is reported", () => {
   expect(messages).toEqual(["match is not exhaustive: Cons not covered"]);
 });
 
+Deno.test("an arm no value reaches is reported, and does not join", () => {
+  // The type is the reachable arm's alone: joining a dead arm in would widen
+  // the answer to `unknown` for an arm that never runs.
+  expect(
+    run(
+      ...BOOL,
+      "datatype Nat where",
+      "  | Zero",
+      "match True with",
+      "  | _ -> True",
+      "  | True -> Zero",
+    ),
+  ).toEqual(["Bool", "this arm is unreachable: True is matched above"]);
+});
+
+Deno.test("a dead arm's body is still checked", () => {
+  const [, ...messages] = run(
+    ...BOOL,
+    "match True with",
+    "  | _ -> True",
+    "  | True -> nosuchname",
+  );
+  expect(messages).toEqual([
+    "this arm is unreachable: True is matched above",
+    "unknown name nosuchname",
+  ]);
+});
+
+Deno.test("a dead arm says what is left, which is what covered it", () => {
+  const dead = (...arms: readonly string[]) =>
+    run(...BOOL, "match True with", ...arms).slice(1);
+
+  // A constructor arm names the constructor, whether an arm of its own or a
+  // wildcard took it; a wildcard has no name to give and says so of values.
+  expect(dead("  | True -> True", "  | True -> False", "  | False -> True"))
+    .toEqual(["this arm is unreachable: True is matched above"]);
+  expect(dead("  | _ -> True", "  | True -> False"))
+    .toEqual(["this arm is unreachable: True is matched above"]);
+  expect(dead("  | True -> True", "  | False -> False", "  | _ -> True"))
+    .toEqual(["this arm is unreachable: every value is matched above"]);
+  expect(dead("  | _ -> True", "  | _ -> False"))
+    .toEqual(["this arm is unreachable: every value is matched above"]);
+});
+
+Deno.test("a name that is no constructor is not also matched above", () => {
+  // It was never in the set, so it cannot have been taken out of it: asking
+  // coverage about it would blame the author twice for one mistake.
+  const [, ...messages] = run(
+    ...BOOL,
+    "match True with",
+    "  | Bogus -> False",
+    "  | Bogus -> True",
+    "  | True -> True",
+    "  | False -> True",
+  );
+  expect(messages).toEqual([
+    "Bogus is not a constructor of Bool",
+    "Bogus is not a constructor of Bool",
+  ]);
+});
+
+Deno.test("a wildcard that still has a constructor to catch is silent", () => {
+  expect(
+    typeOf(...BOOL, "match True with", "  | True -> True", "  | _ -> False"),
+  )
+    .toBe("Bool");
+});
+
 Deno.test("a wildcard makes a match exhaustive", () => {
   expect(
     typeOf(
