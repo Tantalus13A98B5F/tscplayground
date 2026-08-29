@@ -28,7 +28,7 @@ import {
   type TermNode,
 } from "../syntax/ast.ts";
 import { Context } from "./context.ts";
-import { type CtorInfo, Declarations } from "./declarations.ts";
+import { type CtorInfo, Declarations } from "./context.ts";
 import { ctorFieldsAt, Elaborator } from "./elaborate.ts";
 import { Subtyper, type Verdict } from "./subtype.ts";
 import {

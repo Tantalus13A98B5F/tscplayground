@@ -3,7 +3,7 @@
 Datatype arguments used to be invariant by fiat: `#cast` passed a literal `0`
 per argument, and `#subtype`, `#eqtype`, `#join` and `#meet` all reached for an
 `#eqtypeArgs`. This is the pass that replaced that literal with something read
-off the declaration -- `variance.ts`, run by `elaborateDeclarations` once every
+off the declaration -- the last pass of `elaborateDeclarations`, run once every
 datatype's constructors are in, writing into `ParamInfo.variance` and read back
 through `Declarations.argVariance`.
 

@@ -50,9 +50,8 @@ that backwards and put it last.
 
 It reopens part of the variance work rather than building on it. Variance is a
 property of arrow positions, and every walk over an arrow -- `#castFun`,
-`#relateFun`, `#latticeFun`, and `noteField` in `variance.ts` -- assumes the
-result cannot mention the parameter. A result that can is a case each of them
-has to grow.
+`#relateFun`, `#latticeFun`, and `noteField` -- assumes the result cannot
+mention the parameter. A result that can is a case each of them has to grow.
 
 The phantom warning is the other thing to revisit here. A type parameter no
 constructor observes is warned about today as almost certainly a mistake, there
@@ -129,7 +128,7 @@ are gone --
   variance, so a call that would otherwise infer principally does.
 
 The design is [variance.md](./variance.md); the round-by-round behaviour is
-pinned by `variance.test.ts`.
+pinned by the inference tests at the foot of `elaborate.test.ts`.
 
 ## Non-goals for now
 
