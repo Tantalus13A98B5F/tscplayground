@@ -500,6 +500,18 @@ Deno.test("a type name may be applied", () => {
   expect(node.kind === "NameType" && node.args.length).toBe(2);
 });
 
+Deno.test("a bang name may be used but never bound", () => {
+  const bound = "may not be bound: a trailing `!` marks a builtin";
+  expect(parse("let set! = x; x")).toEqual([`set! ${bound}`]);
+  expect(parse("fn (x!: A) -> x!")).toEqual([`x! ${bound}`]);
+  expect(parse("fn [A!](x: A!) -> x")).toEqual([`A! ${bound}`]);
+  expect(parse("datatype Foo! where\n  | Ok\nOk")).toEqual([`Foo! ${bound}`]);
+  expect(parse("datatype Foo where\n  | Ok!\nOk")).toEqual([`Ok! ${bound}`]);
+  expect(parse("match b with\n  | nope! -> x")).toEqual([`nope! ${bound}`]);
+  // A *use* is the whole point, and the only position left.
+  expect(parse("set!(c, x)")).toEqual([]);
+});
+
 Deno.test("a program with no result expression is reported", () => {
   expect(parse("let x = a\n").join("\n")).toContain("result");
 });

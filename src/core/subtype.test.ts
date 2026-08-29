@@ -18,6 +18,7 @@ import {
   TFun,
   TMissing,
   TNever,
+  TRef,
   TUnknown,
   type Type,
   type TypePattern,
@@ -74,6 +75,7 @@ const exact = (sub: Subtyper, type: Type, pattern: TypePattern) =>
 const Bool = TData(mkDataName("Bool"));
 const Int = TData(mkDataName("Int"));
 const Cell = (arg: Type) => TData(mkDataName("Cell"), [arg]);
+const RefP = (arg: TypePattern) => TRef(arg);
 const List = (arg: Type) => TData(mkDataName("List"), [arg]);
 const Sink = (arg: Type) => TData(mkDataName("Sink"), [arg]);
 const fn = (params: readonly Type[], result: Type) => TFun([], params, result);
@@ -137,6 +139,38 @@ Deno.test("an argument moves the way its own parameter says", () => {
   expect(sub.isSubtype(Sink(TUnknown), Sink(TNever))).toBe(true);
   expect(sub.isSubtype(Sink(TNever), Sink(TUnknown))).toBe(false);
   expect(sub.isSubtype(List(Bool), Sink(Bool))).toBe(false);
+});
+
+Deno.test("a cell is invariant without consulting anything", () => {
+  const { sub } = fixture();
+  // Two cells are the same type when their arguments are, and nothing else --
+  // no name to agree on, no table to read, no round in which the answer could
+  // still be moving.
+  expect(sub.isSubtype(TRef(Bool), TRef(Bool))).toBe(true);
+  expect(sub.isSubtype(TRef(TNever), TRef(TUnknown))).toBe(false);
+  expect(sub.isSubtype(TRef(TUnknown), TRef(TNever))).toBe(false);
+  // And it absorbs, so a covariant argument under one may not move either.
+  expect(sub.isSubtype(TRef(List(TNever)), TRef(List(TUnknown)))).toBe(false);
+  expect(sub.isSubtype(List(TRef(Bool)), List(TRef(Bool)))).toBe(true);
+});
+
+Deno.test("nothing sits between two cells of different types", () => {
+  const { sub } = fixture();
+  expect(typeToString(sub.join(TRef(Bool), TRef(Bool)))).toBe("Ref[Bool]");
+  expect(typeToString(sub.join(TRef(Bool), TRef(Int)))).toBe("unknown");
+  expect(typeToString(sub.meet(TRef(Bool), TRef(Int)))).toBe("never");
+  expect(typeToString(sub.join(TRef(Bool), Cell(Bool)))).toBe("unknown");
+});
+
+Deno.test("a cell has no extreme, so lifting one into it warns", () => {
+  const { sub } = fixture();
+  expect(typeToString(up(sub, TNever, RefP(TMissing)))).toBe("Ref[never]");
+  expect(saidBy(sub)).toEqual([
+    "warning: no least Ref[?] to cast never to: a Ref's argument is " +
+    "invariant, so it was taken to be never",
+  ]);
+  // Nor a widest, so a hole in one takes the cell with it.
+  expect(typeToString(sub.widestMatching(RefP(TMissing)))).toBe("unknown");
 });
 
 Deno.test("an argument's position composes with the pair's own", () => {

@@ -45,6 +45,19 @@ Deno.test("`_` is an identifier, so the parser decides what it means", () => {
   expect(kinds("_ _x")).toEqual(["identifier", "identifier", "eof"]);
 });
 
+Deno.test("a trailing bang is part of the name, and only a trailing one", () => {
+  const texts = (text: string) => lex(text).map((token) => token.text);
+  expect(texts("set! x")).toEqual(["set!", "x", ""]);
+  // Only one, and only at the end -- what follows starts a new token or, for
+  // a second `!`, is the stray byte it was before.
+  expect(kinds("set!x")).toEqual(["identifier", "identifier", "eof"]);
+  expect(texts("set!x")).toEqual(["set!", "x", ""]);
+  expect(tokenize(mkSource("set!!", "demo.ga")).diagnostics.length).toBe(1);
+  // A keyword with one is not a keyword, which is a better error than a
+  // syntax error about a stray byte.
+  expect(kinds("fn!")).toEqual(["identifier", "eof"]);
+});
+
 Deno.test("two-character punctuation wins over one", () => {
   expect(kinds("-> <: : =")).toEqual([
     "arrow",

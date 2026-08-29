@@ -65,6 +65,13 @@ export function mkPosition(
   return { file, line, column };
 }
 
+/**
+ * Where something no source file contains was written -- a builtin
+ * declaration. Its file id is one no source can have, so nothing can print a
+ * line for it; nothing points here, which is the property to keep.
+ */
+export const nowhere: Position = { file: mkFileId(-1), line: 0, column: 0 };
+
 /** The very beginning of a file. */
 export function startOf(file: FileId): Position {
   return { file, line: 1, column: 1 };

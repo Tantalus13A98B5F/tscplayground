@@ -657,6 +657,7 @@ class Parser {
   private declName(what: string): Ident {
     const name = this.ident(what);
     if (name.text === WILDCARD) this.cursor.failAt(name.at, what);
+    this.refuseBang(name);
     return name;
   }
 
@@ -664,7 +665,29 @@ class Parser {
   private binderName(what: string): BindingIdent {
     const token = this.cursor.expect("identifier", what);
     const text = token.text === WILDCARD ? undefined : token.text;
-    return { text, at: token.at };
+    const name = { text, at: token.at };
+    this.refuseBang(name);
+    return name;
+  }
+
+  /**
+   * A trailing `!` marks a builtin, and only the checker names one. Refused
+   * everywhere a name is *written to be resolved against* -- a binder, a
+   * declaration, a constructor, the head of a pattern -- which leaves the one
+   * position that matters: a use, so `set!(c, x)` is the point, and a use that
+   * resolves to nothing is an unknown name like any other, which is what a
+   * misspelt `st!` should be told.
+   *
+   * Here for the same reason `_`'s rule is here. Both are ordinary identifiers
+   * to the lexer, so which positions admit them is a decision the parser makes
+   * once, and nothing downstream compares against either again.
+   */
+  private refuseBang(name: BindingIdent | Ident): void {
+    if (name.text === undefined || !name.text.endsWith(BANG)) return;
+    this.cursor.failAt(
+      name.at,
+      `${name.text} may not be bound: a trailing \`${BANG}\` marks a builtin`,
+    );
   }
 }
 
@@ -674,6 +697,12 @@ class Parser {
  * no pass walking binders compares against this again.
  */
 export const WILDCARD = "_";
+
+/**
+ * The suffix that marks a builtin operation. Lexically part of the name, so
+ * this is what tells a use from a declaration of one -- see `refuseBang`.
+ */
+export const BANG = "!";
 
 function wildcard(at: Position): BindingIdent {
   return { text: undefined, at };

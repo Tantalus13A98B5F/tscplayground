@@ -19,6 +19,7 @@
 
 import {
   type Diagnostic,
+  nowhere,
   type Position,
   reportError,
   reportWarning,
@@ -55,6 +56,7 @@ import {
   TData,
   TFun,
   TNever,
+  TRef,
   TUnknown,
   type Type,
   type TypeParamInfo,
@@ -384,6 +386,57 @@ export class Elaborator {
       }
     }
   }
+
+  /**
+   * `Ref` and the three operations over it, before the program's own
+   * declarations.
+   *
+   * The type is seeded as a *transparent alias* for the former, which is
+   * exactly what an alias is -- expanded during elaboration, with nothing
+   * downstream learning it existed. Its body is one this language has no
+   * syntax for, and that is the only thing unusual about it.
+   *
+   * A name and not a keyword, so `Ref` obeys whatever rule every other type
+   * name obeys rather than a rule of its own. Today that means a program
+   * declaring one is told the name is taken, a type parameter spelling it is
+   * told the same, and a wrong arity is reported the way `Pair[Bool]`'s is --
+   * all of it by machinery that was already there. If type names are ever made
+   * shadowable, this one follows without being revisited.
+   *
+   *     ref! : [T](T) -> Ref[T]
+   *     get! : [T](Ref[T]) -> T
+   *     set! : [T](Ref[T], T) -> T
+   *
+   * `set!` answers the value written rather than the cell, so a write is an
+   * expression with the type its right-hand side had, and nothing has to be
+   * read back to use it.
+   *
+   * Built here rather than parsed from a prelude, which would need a `Ref` a
+   * program could declare -- and the point of a type former is that none can.
+   *
+   * The names carry a `!` because these are the operations that will have an
+   * effect once there is an evaluator to have it in. Nothing enforces the
+   * convention; what makes these three the only such names is that the parser
+   * admits a bang at no position where a name is bound.
+   */
+  seedBuiltins(): void {
+    const T = BVar(0);
+    const cell = TRef(T);
+    this.declarations.addAlias({
+      name: "Ref",
+      params: ["T"],
+      body: cell,
+      at: nowhere,
+    });
+    const over = (params: readonly Type[], result: Type) =>
+      TFun([mkTypeParamInfo("T", TUnknown)], params, result);
+    const builtins: readonly (readonly [string, Type])[] = [
+      ["ref!", over([T], cell)],
+      ["get!", over([cell], T)],
+      ["set!", over([cell, T], T)],
+    ];
+    for (const [name, type] of builtins) this.context.pushTermVar(type, name);
+  }
 }
 
 /**
@@ -568,6 +621,13 @@ function noteField(
       noteField(type.result, inner, variance, row, snapshot);
       return;
     }
+
+    // A cell's argument is invariant, and says so itself -- there is no
+    // declaration to consult and so no round in which the answer could still
+    // be moving.
+    case "TRef":
+      noteField(type.arg, depth, 0, row, snapshot);
+      return;
 
     case "TData": {
       // Reading the table here is what makes this walk terminate on a

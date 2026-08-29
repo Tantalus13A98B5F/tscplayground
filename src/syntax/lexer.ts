@@ -123,7 +123,19 @@ const PUNCTUATION: readonly (readonly [string, TokenKind])[] = [
   ["}", "rbrace"],
 ];
 
-const IDENTIFIER = /[A-Za-z_][A-Za-z0-9_]*/y;
+/**
+ * A trailing `!` is part of the name, so `set!` is one identifier and not a
+ * name beside a stray byte. It is what the builtins are spelled with -- there
+ * is nothing else `!` could mean, and a bare one is still an unexpected
+ * character.
+ *
+ * Lexically ordinary, which is the point: nothing here knows which names the
+ * checker will seed, and nothing has to. Which positions admit the spelling is
+ * the parser's decision -- it refuses one at every position that *binds*, so a
+ * bang name can only ever be used -- and it is made in the same place, and for
+ * the same reason, as the one about `_`.
+ */
+const IDENTIFIER = /[A-Za-z_][A-Za-z0-9_]*!?/y;
 
 /**
  * Tokenize every line. Blank lines contribute nothing, so they cannot affect
