@@ -286,6 +286,34 @@ Deno.test("calling a non-function is reported without cascading", () => {
   expect(type).toBe("<bad>");
 });
 
+Deno.test("never is callable, at any arity and with type arguments", () => {
+  // `never` sits under `unknown -> never` at every arity, and under every
+  // polymorphic function type, so calling one is not a mistake and there is
+  // nothing to say about how many arguments it was written with either.
+  expect(typeOf(...BOOL, "fn (loop: never) -> loop(True, False)"))
+    .toBe("never -> never");
+  expect(typeOf(...BOOL, "fn (loop: never) -> loop[Bool](True)"))
+    .toBe("never -> never");
+});
+
+Deno.test("never in an invariant argument is a choice, not a mismatch", () => {
+  // `never` is a `List` of anything and nothing picks which. The call goes
+  // through on `List[never]` -- a type comes back at all, so this was no
+  // error -- and the report is what says a choice was made here.
+  const [type, ...messages] = run(
+    ...LIST,
+    ...BOOL,
+    "let len = fn [A](xs: List[A]) -> True;",
+    "fn (loop: never) -> len(loop)",
+  );
+  expect(messages).toEqual([
+    "cannot tell what never is a List of: a datatype's arguments are " +
+    "invariant, so List[?] has no least solution, and its arguments were " +
+    "taken to be never",
+  ]);
+  expect(type).toBe("never -> Bool");
+});
+
 Deno.test("an unknown name is reported once, not at every later use", () => {
   const [, ...messages] = run("let f = nope; f(f)");
   expect(messages).toEqual(["unknown name nope"]);
@@ -449,6 +477,29 @@ Deno.test("matching a non-datatype is reported", () => {
   expect(messages).toEqual([
     "cannot match on Bool -> Bool: it is not a datatype",
   ]);
+});
+
+Deno.test("matching on never is not a mistake, and answers never", () => {
+  // Nothing reaches a `never` scrutinee, so there is no datatype to resolve
+  // names against, nothing to leave uncovered, and no arm whose type the
+  // match could answer with -- every one of them is unreachable, and the
+  // rule for those is that the type is dropped and the body checked anyway.
+  expect(typeOf(
+    ...BOOL,
+    "fn (x: never) ->",
+    "  match x with",
+    "  | True -> True",
+    "  | Cons(y) -> y(True)",
+  )).toBe("never -> never");
+
+  const [type, ...messages] = run(
+    ...BOOL,
+    "fn (x: never) ->",
+    "  match x with",
+    "  | True -> nosuchname",
+  );
+  expect(messages).toEqual(["unknown name nosuchname"]);
+  expect(type).toBe("never -> never");
 });
 
 Deno.test("inferring a match joins its arms, privileging none by position", () => {

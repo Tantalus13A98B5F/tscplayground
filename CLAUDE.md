@@ -24,6 +24,23 @@ got back, or hands on a bad type it already holds. `completePattern` takes the
 report lazily -- it is asked for only where a part was missing, and at most once
 however many were, which is the question callers used to ask as `already`.
 
+`never` is not a bad type and does not merge with one. `bad` is below and above
+everything -- it takes whatever shape is demanded, in whatever arity, so filling
+from it invents nothing. `never` is only below, so it lifts into a shape whose
+holes have a variance and no further: `unknown -> never` is the least function
+type at every arity, which is why a `never` is callable, takes type arguments,
+and answers `never`; a datatype's arguments are invariant and have no extreme of
+their own, so a demanded `List[?]` has no least solution. Where a rule needs a
+shape and there is none to read at all -- a `match` demands a datatype without
+knowing which -- `never` answers for the whole form: nothing arrives, so no name
+resolves, nothing is left uncovered, and no arm is reachable to be joined.
+
+A cast out of an extreme in its own direction can always be made, so it never
+errors. Choosing an invariant argument _warns_, the way a `joinMany` that runs
+dry does: the answer is sound and only arbitrary, blaming the program for what
+the checker could not name principally would be wrong, and there is no `TBad` to
+hand back anyway, `badUnder` taking errors alone.
+
 Walk types structurally. A function over types dispatches on the kind of each
 node and recurses on what that kind contains; a whole-type equality test like
 `alphaEq` is not a case, and standing one in front of the switch as a fast path
