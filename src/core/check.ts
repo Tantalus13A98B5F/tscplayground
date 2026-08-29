@@ -64,8 +64,12 @@ export class Checker {
     this.subtyper = new Subtyper(this.context, this.diagnostics);
   }
 
-  /** Declarations first, then constructors, then the one term they serve. */
+  /**
+   * Builtins, then the program's declarations, then constructors, then the one
+   * term they all serve.
+   */
   checkProgram(program: Program): Type {
+    this.elaborator.seedBuiltins();
     this.elaborator.elaborateDeclarations(program.decls);
     this.elaborator.seedConstructors();
     return this.infer(program.term);
@@ -618,6 +622,12 @@ export class Checker {
    * arrives to be taken apart, and a fresh `<bad>` for a head that is simply
    * not matchable, said once about the scrutinee rather than once per name
    * that failed to be a constructor of it.
+   *
+   * A `Ref` is the interesting member of that third group. It is *inhabited*
+   * and still has nothing to take apart, which is exactly why it is not a
+   * datatype with no constructors: the analysis above would read an empty
+   * constructor set as an empty type, call every arm unreachable and answer
+   * `never`.
    *
    * The arms are still checked, since what is written in them is as wrong as
    * it would be anywhere else. Their types are dropped rather than joined,

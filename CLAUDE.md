@@ -55,6 +55,35 @@ has the walk, the stopping criterion and the worked examples. Everything after
 that reads one number per argument through `Declarations.argVariance`, which
 answers invariant wherever it cannot answer at all.
 
+A mutable cell is a type _former_, `TRef`, and not a datatype the checker
+declares for itself. Almost nothing a datatype is would be true of it: it has no
+constructors, nothing takes one apart, and its argument is invariant for a
+reason no walk over constructor fields could find -- `get!` reads a `T` out
+where `set!` puts one in, and neither of those is a field. So the invariance is
+a literal `0` in every walk rather than a stipulation in a table, and a `Ref`
+carries no name, two cells being the same type when their arguments are.
+
+`match` refuses it along with the other heads that are no datatype, which is the
+right answer for a type that is inhabited and still has nothing to take apart.
+It is worth seeing why the alternative fails: as a constructorless datatype, the
+exhaustiveness set reads "no constructors" as "no values", calls every arm
+unreachable and answers `never`.
+
+The _name_ `Ref` is nothing special, though -- a transparent alias for the
+former, seeded before the program's own declarations, which is what an alias
+already is. So it obeys whatever rule every other type name obeys rather than a
+rule of its own: a program declaring one is told the name is taken, a type
+parameter spelling it is told the same, a wrong arity is reported the way
+`Pair[Bool]`'s is, and if type names are ever made shadowable this one follows
+without being revisited.
+
+`ref!`, `get!` and `set!` are ordinary term bindings, seeded outermost like the
+constructors. A trailing `!` is part of an identifier to the lexer, which knows
+no list of builtins; what reserves the spelling is that the parser refuses it at
+every position where a name is _bound_, so a bang name can only ever be used.
+That rule lives beside the one about `_`, both being ordinary identifiers whose
+admitting positions the parser decides once.
+
 Walk types structurally. A function over types dispatches on the kind of each
 node and recurses on what that kind contains; a whole-type equality test like
 `alphaEq` is not a case, and standing one in front of the switch as a fast path

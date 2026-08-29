@@ -384,6 +384,69 @@ Deno.test("arms join at the argument, not only at the datatype", () => {
   ).toBe("Bool -> List[unknown]");
 });
 
+Deno.test("the reference builtins are seeded, and Ref is a type", () => {
+  expect(typeOf(...BOOL, "let c = ref!(True);", "set!(c, False)")).toBe("Bool");
+  expect(typeOf(...BOOL, "fn (c: Ref[Bool]) -> get!(c)"))
+    .toBe("Ref[Bool] -> Bool");
+  // `set!` answers the value written, so a write is an expression.
+  expect(typeOf(...BOOL, "fn (c: Ref[Bool]) -> set!(c, True)"))
+    .toBe("Ref[Bool] -> Bool");
+});
+
+Deno.test("a cell is invariant, and so is anything holding one", () => {
+  // Stipulated, not inferred -- and the stipulation is what every datatype
+  // holding a `Ref` reads, so `Holder` comes out invariant without anything
+  // in it standing both ways on its own.
+  const [type, ...messages] = run(
+    ...BOOL,
+    "datatype Holder[A] where",
+    "  | H(Ref[A])",
+    "let widen = fn (h: Holder[unknown]) -> True;",
+    "fn (h: Holder[Bool]) -> widen(h)",
+  );
+  expect(messages).toEqual(["expected unknown, found Bool"]);
+  expect(type).toBe("Holder[Bool] -> Bool");
+});
+
+Deno.test("a cell is not a datatype, so it is not matchable", () => {
+  // Refused with the other unmatchable heads rather than analysed. A `Ref` is
+  // inhabited and still has nothing to take apart, which is why it is not a
+  // datatype with no constructors: the exhaustiveness set would read that as
+  // an empty *type*, call the arm unreachable and answer `never`.
+  const [type, ...messages] = run(
+    ...BOOL,
+    "fn (c: Ref[Bool]) -> match c with",
+    "  | _ -> True",
+  );
+  expect(messages).toEqual(["cannot match on Ref[Bool]: it is not a datatype"]);
+  expect(type).toBe("Ref[Bool] -> <bad>");
+});
+
+Deno.test("Ref is a name, so it obeys the rules every type name obeys", () => {
+  // Seeded as a transparent alias for the former rather than spelled in the
+  // grammar, so none of these is a rule of its own -- each is the message the
+  // machinery already had for a `Pair` or a `List`.
+  expect(run(...BOOL, "datatype Ref[A] where", "  | MkRef(A)", "True")[1])
+    .toBe("type Ref is already declared");
+  expect(run(...BOOL, "typedef Ref = Bool", "True")[1])
+    .toBe("type Ref is already declared");
+  expect(run(...BOOL, "fn [Ref](x: Bool) -> x")[1])
+    .toBe("type Ref is already declared");
+  expect(run(...BOOL, "fn (c: Ref) -> True")[1])
+    .toBe("type alias Ref takes 1 type argument, given 0");
+});
+
+Deno.test("only the checker declares a bang name, so none can be shadowed", () => {
+  // The lexer takes a trailing `!` on any identifier and knows no list of
+  // builtins; what makes the three of them the only ones is that no *binding*
+  // position admits the spelling.
+  expect(run(...BOOL, "let set! = fn (x: Bool) -> x;", "set!(True)")[1])
+    .toBe("set! may not be bound: a trailing `!` marks a builtin");
+  // A use that resolves to nothing is an unknown name like any other, which
+  // is what a misspelt builtin should be told.
+  expect(run(...BOOL, "st!(True)")[1]).toBe("unknown name st!");
+});
+
 Deno.test("an unknown name is reported once, not at every later use", () => {
   const [, ...messages] = run("let f = nope; f(f)");
   expect(messages).toEqual(["unknown name nope"]);

@@ -50,8 +50,14 @@ negation. See §7 for what is said about it instead.
 
 One walk per constructor field, entered at variance `+1` -- a field is projected
 by `match` and never assigned, which is why there is no contravariant entry and
-why mutability has to arrive as a builtin `Ref` rather than as a declared
-datatype the walk would have to model.
+why mutability arrives as a builtin `Ref` rather than as a declared datatype the
+walk would have to model. `Ref` is a type former of its own -- `TRef`, not a
+`TData` -- so this pass has nothing to compute for it and nothing to leave out:
+the walk has a `TRef` case that recurses at `0`, and a datatype holding a cell
+comes out invariant with no table entry involved. Had it been a datatype
+instead, optimism would have been exactly the unsound kind: no constructor field
+of it mentions a `T`, so the walk would find nothing and conclude that nothing
+observes one.
 
 Carrying a `Variance` end to end:
 

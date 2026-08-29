@@ -58,6 +58,7 @@ import {
   TData,
   TFun,
   TNever,
+  TRef,
   TUnknown,
   type Type,
   type TypeParamInfo,
@@ -425,6 +426,13 @@ export class Subtyper {
         return TData(from.name, args);
       }
 
+      case "TRef": {
+        const from = this.#castHead(type, pattern, dir);
+        if (from.kind !== "TRef") return this.#castFailed(type, pattern);
+        // A cell's argument moves neither way, however this node was reached.
+        return TRef(this.#cast(from.arg, pattern.arg, 0));
+      }
+
       // A leaf is written in full, so it matches only itself and the whole
       // question is whether `type` reaches it in this direction. Left to the
       // relation whole, which promotes a variable on its own and knows
@@ -461,7 +469,7 @@ export class Subtyper {
    */
   #castHead(
     type: Type,
-    pattern: Extract<TypePattern, { kind: "TFun" | "TData" }>,
+    pattern: Extract<TypePattern, { kind: "TFun" | "TData" | "TRef" }>,
     dir: Variance,
   ): Type {
     // Promotion first, and only upward, which is the whole of what a variable
@@ -528,7 +536,7 @@ export class Subtyper {
   #liftExtreme(
     type: Type,
     head: Type,
-    pattern: Extract<TypePattern, { kind: "TFun" | "TData" }>,
+    pattern: Extract<TypePattern, { kind: "TFun" | "TData" | "TRef" }>,
     dir: Variance,
   ): Type {
     let warned = false;
@@ -572,6 +580,8 @@ export class Subtyper {
               );
             }),
           );
+        case "TRef":
+          return TRef(lift(want.arg, 0, "a Ref's argument"));
         default:
           return completeLeafPattern(want);
       }
@@ -712,6 +722,11 @@ export class Subtyper {
       return this.#relateData(s, t, 1);
     }
 
+    // A cell is invariant whichever relation asked, `0` composing to `0`.
+    if (s.kind === "TRef" && t.kind === "TRef") {
+      return this.#eqtype(s.arg, t.arg);
+    }
+
     if (s.kind === "TFun" && t.kind === "TFun") {
       return this.#relateFun(s, t, 1);
     }
@@ -763,6 +778,9 @@ export class Subtyper {
 
     if (s.kind === "TData" && t.kind === "TData") {
       return this.#relateData(s, t, 0);
+    }
+    if (s.kind === "TRef" && t.kind === "TRef") {
+      return this.#eqtype(s.arg, t.arg);
     }
     if (s.kind === "TFun" && t.kind === "TFun") {
       return this.#relateFun(s, t, 0);
@@ -1036,6 +1054,12 @@ export class Subtyper {
         }
         return TData(type.name, args);
       }
+      case "TRef": {
+        // Invariant, so the argument has to be named exactly and one that
+        // cannot be takes the cell with it.
+        const avoided = this.#avoid(type.arg, levels, 0);
+        return avoided === undefined ? undefined : TRef(avoided);
+      }
       case "TFun": {
         const flipped = flip(dir);
         const typeParams = [];
@@ -1169,6 +1193,13 @@ export class Subtyper {
       return this.#latticeData(s, t, true) ?? TUnknown;
     }
 
+    // Nothing is above two cells of different types: the argument may not
+    // move, so unless they are already the same type there is no `Ref`
+    // between them.
+    if (s.kind === "TRef" && t.kind === "TRef") {
+      return this.#eqtype(s.arg, t.arg) ? s : TUnknown;
+    }
+
     // A `BVar` is only itself, though no binder is open here for one to
     // escape from.
     if (s.kind === "BVar" && t.kind === "BVar" && s.index === t.index) return s;
@@ -1199,6 +1230,10 @@ export class Subtyper {
 
     if (s.kind === "TData" && t.kind === "TData") {
       return this.#latticeData(s, t, false) ?? TNever;
+    }
+
+    if (s.kind === "TRef" && t.kind === "TRef") {
+      return this.#eqtype(s.arg, t.arg) ? s : TNever;
     }
 
     if (s.kind === "BVar" && t.kind === "BVar" && s.index === t.index) return s;

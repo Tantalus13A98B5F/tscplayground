@@ -98,6 +98,20 @@ export type TypeMaybe<M> =
     readonly name: DataName;
     readonly args: readonly TypeMaybe<M>[];
   }
+  /**
+   * `Ref[T]`, a mutable cell. Its own kind rather than a `TData` the checker
+   * declares for itself, because almost nothing a datatype is would be true of
+   * it: it has no constructors, nothing takes one apart, and its argument is
+   * invariant for a reason no walk over constructor fields could find --
+   * `get!` reads a `T` out where `set!` puts one in, and neither of those is a
+   * field.
+   *
+   * So the invariance is written where every walk can see it, as a literal
+   * `0`, rather than stipulated in a table and looked up. A cell is a type
+   * *former* like the arrow, not a nominal type, which is also why it carries
+   * no name: two `Ref`s are the same type when their arguments are.
+   */
+  | { readonly kind: "TRef"; readonly arg: TypeMaybe<M> }
   | MissingPart<M>;
 
 /** A complete type: every part supplied. */
@@ -180,6 +194,10 @@ export function TData<M = never>(
   args: readonly TypeMaybe<M>[] = [],
 ): TypeMaybe<M> {
   return { kind: "TData", name, args };
+}
+
+export function TRef<M = never>(arg: TypeMaybe<M>): TypeMaybe<M> {
+  return { kind: "TRef", arg };
 }
 
 export function mkTypeParamInfo<M = never>(
@@ -310,6 +328,11 @@ function openAt<M>(
           )
         ),
       );
+    // Invariant, written here rather than looked up: a cell's argument moves
+    // neither way, and `0` is its own flip, so everything below it is
+    // invariant however deep it sits.
+    case "TRef":
+      return TRef(openAt(type.arg, depth, rule, 0, args));
   }
 }
 
@@ -389,6 +412,8 @@ function closeAt<M>(
         type.name,
         type.args.map((arg) => closeAt(arg, depth, mark)),
       );
+    case "TRef":
+      return TRef(closeAt(type.arg, depth, mark));
   }
 }
 
@@ -449,6 +474,8 @@ export function isClosed<M>(
     }
     case "TData":
       return type.args.every((arg) => isClosed(arg, levels, depth));
+    case "TRef":
+      return isClosed(type.arg, levels, depth);
   }
 }
 
@@ -488,6 +515,8 @@ export function completePattern(
         );
       case "TData":
         return TData(pattern.name, pattern.args.map(walk));
+      case "TRef":
+        return TRef(walk(pattern.arg));
       default:
         return completeLeafPattern(pattern);
     }
@@ -501,7 +530,10 @@ export function completePattern(
  * a cast.
  */
 export function completeLeafPattern(
-  pattern: Exclude<TypePattern, { kind: "TFun" | "TData" | "TMissing" }>,
+  pattern: Exclude<
+    TypePattern,
+    { kind: "TFun" | "TData" | "TRef" | "TMissing" }
+  >,
 ): Type {
   switch (pattern.kind) {
     case "TUnknown":
@@ -563,6 +595,8 @@ export function alphaEq<M>(
       return right.kind === "TData" &&
         left.name === right.name &&
         allPairs(left.args, right.args, alphaEq);
+    case "TRef":
+      return right.kind === "TRef" && alphaEq(left.arg, right.arg);
   }
 }
 
@@ -611,6 +645,8 @@ function toStringAt<M>(
         : `${type.name}[${
           type.args.map((arg) => toStringAt(arg, names)).join(", ")
         }]`;
+    case "TRef":
+      return `Ref[${toStringAt(type.arg, names)}]`;
   }
 }
 

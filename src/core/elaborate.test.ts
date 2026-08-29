@@ -67,6 +67,9 @@ function elaborated(source: string): Fixture {
   const context = new Context();
   const diagnostics: Diagnostic[] = [];
   const elaborator = new Elaborator(declarations, context, diagnostics);
+  // As `checkProgram` runs it: `Ref` is a seeded name like any other, so a
+  // fixture that skipped this would not resolve one.
+  elaborator.seedBuiltins();
   elaborator.elaborateDeclarations(program.decls);
   return {
     elaborator,
@@ -430,6 +433,18 @@ Deno.test("a datatype argument composes rather than merging", () => {
     "datatype Once[A] where",
     "  | MkOnce(Sink[Cell[A]])",
   )).toEqual(["Sink[-A]", "Cell[=A]", "Twice[+A]", "Once[=A]"]);
+});
+
+Deno.test("a cell says its own variance, so a field holding one is invariant", () => {
+  // No table entry to read and no round to wait for: `TRef` carries the `0`
+  // itself, which is what taking the cell out of `TData` bought.
+  expect(variancesOf(
+    ...BOOL,
+    "datatype Holder[A] where",
+    "  | H(Ref[A])",
+    "datatype Deep[A] where",
+    "  | D((Ref[A]) -> Bool)",
+  )).toEqual(["Holder[=A]", "Deep[=A]"]);
 });
 
 Deno.test("the recursive occurrence is read from the table, not unfolded", () => {

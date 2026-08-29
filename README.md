@@ -6,9 +6,10 @@ drive a browser-based playground later.
 
 Work in progress, but it runs end to end: `deno task run file.ga` will lex, lay
 out, parse, elaborate, and check a program, and print its type. Full Fsub
-subtyping with local type inference, datatypes with one-level pattern matching,
-transparent type aliases, and multi-file `#require` are all in. There is no
-evaluator: the checker checks, nothing runs.
+subtyping with local type inference, datatypes with inferred variance and
+one-level pattern matching, transparent type aliases, mutable references, and
+multi-file `#require` are all in. There is no evaluator: the checker checks,
+nothing runs -- so `ref!` and `set!` typecheck, and nothing has an effect yet.
 
 [`docs/roadmap.md`](./docs/roadmap.md) is what stands between here and a first
 release.

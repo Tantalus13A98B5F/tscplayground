@@ -2,32 +2,17 @@
 
 GaML runs end to end today -- lex, lay out, parse, elaborate, check, print a
 type. What follows is the work between here and a version anyone else should
-use. Five items, in a rough order, each with the reason it is on the list rather
+use. Four items, in a rough order, each with the reason it is on the list rather
 than merely desirable -- then what has landed, and then the things deliberately
 left off, which are limitations the design chose rather than corners left
 unfinished.
 
 The order is not a dependency chain, and necessity is not the same axis as cost.
-(3) is the one the language is _for_, so it outranks the two below it even
-though neither needs it. (4) sits above (5) only because it gets measurably
-harder once (5) lands.
+(2) is the one the language is _for_, so it outranks the two below it even
+though neither needs it. (3) sits above (4) only because it gets measurably
+harder once (4) lands.
 
-## 1. A separate invariant `Ref[]`
-
-Mutability arrives as a builtin type constructor rather than as something
-declarable, and this is a consequence of the variance pass rather than an
-independent wish. The variance walk enters each constructor field at `+1`
-because a field is _projected_ by `match` and never assigned. A mutable field
-would break that, and the walk cannot see assignment -- it reads field types,
-not operations. So either mutability is a builtin whose invariance is
-stipulated, or the variance inference is wrong about every datatype that has a
-mutable field.
-
-Stipulating it is the smaller thing: `Ref` is invariant by fiat, and the
-relation already has that case -- an invariant argument is what a declared
-datatype gets whenever its parameter stands both ways.
-
-## 2. Nullary constructors in the surface syntax
+## 1. Nullary constructors in the surface syntax
 
 The checker already draws the line -- a nullary constructor of a _monomorphic_
 datatype is a value, so `True` is a `Bool` and `True()` is applying a
@@ -40,7 +25,7 @@ method.
 Presentational rather than semantic, which is why it is third. It is on the list
 because the current rule is discoverable only by trying both.
 
-## 3. Dependent arrows
+## 2. Dependent arrows
 
 The largest item, and the one that changes the calculus rather than extending
 it. It sits above evaluation and recursion because it is what the rest is
@@ -58,7 +43,7 @@ constructor observes is warned about today as almost certainly a mistake, there
 being no way to use one; dependent arrows are the feature that would give
 phantoms a use.
 
-## 4. Evaluation
+## 3. Evaluation
 
 Six term forms -- `Var`, `Abs`, `App`, `TypeApp`, `Let`, `Match` -- over values
 that are closures and tagged constructor applications. Type application erases:
@@ -68,16 +53,16 @@ a value joins the type it currently returns alone.
 It is small _because_ of what is not here yet. `#checkLet` pushes the binder
 after checking the bound term, so nothing is in its own scope and no program can
 diverge -- the evaluator is total, needs no step limit, and cannot be wrong
-about a case that never arises. That stops being true the moment (5) lands,
+about a case that never arises. That stops being true the moment (4) lands,
 which is the argument for doing this one first: written now it is an
 interpreter, written later it is an interpreter plus a fuel counter plus a story
 about what a diverging playground tab does.
 
-Independent of (1) through (3), so it could come earlier still. The bundle
-targets a browser playground, and a playground that prints a type and runs
-nothing is half a demo.
+Independent of (1) and (2), so it could come earlier still. The bundle targets a
+browser playground, and a playground that prints a type and runs nothing is half
+a demo.
 
-## 5. Recursive functions, and how far to infer them
+## 4. Recursive functions, and how far to infer them
 
 Two halves, and they are not equally hard.
 
@@ -129,6 +114,47 @@ are gone --
 
 The design is [variance.md](./variance.md); the round-by-round behaviour is
 pinned by the inference tests at the foot of `elaborate.test.ts`.
+
+**A separate invariant `Ref[]`.** Mutability is a builtin rather than something
+declarable, and that was a consequence of the variance pass rather than an
+independent wish: the walk enters each constructor field at `+1` because a field
+is _projected_ by `match` and never assigned, and it reads field types rather
+than operations, so it cannot see a write. Either mutability is a builtin, or
+the inference is wrong about every datatype with a mutable field.
+
+    ref! : [T](T) -> Ref[T]
+    get! : [T](Ref[T]) -> T
+    set! : [T](Ref[T], T) -> T
+
+A cell is a type _former_, `TRef`, rather than a datatype the checker declares
+for itself -- which is where this landed after trying it the other way, and the
+attempt is what showed why. Almost nothing a datatype is would be true of it: it
+has no constructors, nothing takes one apart, and its invariance comes from
+`get!` and `set!`, which are terms rather than fields. Every one of those had to
+be a flag or an exception on a `TData`; as its own kind they are all structural.
+The invariance is a literal `0` in each walk, and `match` refuses it along with
+everything else that is no datatype.
+
+The _name_ is ordinary: a transparent alias for the former, seeded before the
+program's own declarations -- which is exactly what an alias is, its body simply
+being one this language has no syntax for. A keyword would have worked and was
+tried; a name is better because it obeys whatever rule every other type name
+obeys, so "already declared" and the arity message come from machinery that was
+already there, and a later decision to make type names shadowable reaches this
+one for free.
+
+That last one found a latent bug on the way through. As a constructorless
+datatype, the exhaustiveness analysis read an empty constructor set as an empty
+_type_, so a wildcard arm over a cell was called unreachable and the match
+answered `never` -- a false unreachability and an unsound type, on a value that
+plainly exists.
+
+The lexer takes a trailing `!` on any identifier and knows no list of builtins.
+What reserves the spelling is that the parser refuses one at every position
+where a name is _bound_, so a bang name can only ever be used -- and a use that
+resolves to nothing is an ordinary unknown name, which is what a misspelt `st!`
+should be told. The rule sits beside the one about `_`, both being ordinary
+identifiers whose admitting positions the parser decides once.
 
 ## Non-goals for now
 
