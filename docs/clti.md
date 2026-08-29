@@ -89,8 +89,10 @@ on the way is exactly what the relation it replaces used to record.
   separate, it is this one against top.
 - both `TFun`: recurse, flipping direction at the parameters and at the bounds.
   Same flip as `#avoid`.
-- both `TData`, same name: arguments are invariant, so a missing one takes `T`'s
-  and a written one must be `#equiv` to it. Otherwise fail.
+- both `TData`, same name: each argument recurses at its own parameter's
+  variance composed with the direction. (Written before variance was inferred,
+  when the rule was that every argument is invariant -- a missing one takes
+  `T`'s and a written one must be `#equiv` to it.)
 - `T` is an `FVar`: going up it stands aside for its bound and the cast goes on
   there, since the bound is a supertype. Going down it may not -- nothing says
   the bound sits under it -- so unless `P` is missing or names that same
@@ -150,11 +152,11 @@ nothing that matches -- reported where it happens instead of the silent
 `unknown` we give today.
 
 It degrades along the axis we already know about. Arms `List[Bool]` and
-`List[Int]` against `List[?]` join to `unknown` under invariance, and nothing
-above `unknown` is a `List`, so it fails. Once datatype arguments carry variance
-the join is `List[Bool ⊔ Int]` -- top, for want of a union, but a `List` of it
--- and the cast is a no-op. `match` needs no special case for a missing part; it
-inherits whatever the join can do.
+`List[Int]` against `List[?]` joined to `unknown` under invariance, and nothing
+above `unknown` is a `List`, so it failed. Datatype arguments carry variance
+now, so the join is `List[Bool ⊔ Int]` -- top, for want of a union, but a `List`
+of it -- and the cast is a no-op. `match` needs no special case for a missing
+part; it inherits whatever the join can do.
 
 ## Plan
 

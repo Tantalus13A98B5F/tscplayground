@@ -19,7 +19,7 @@
  */
 
 import type { Position } from "../diagnostics/diagnostic.ts";
-import type { DataName, Type } from "./types.ts";
+import type { DataName, Type, Variance } from "./types.ts";
 
 export type CtorInfo = {
   readonly name: string;
@@ -28,10 +28,35 @@ export type CtorInfo = {
   readonly at: Position;
 };
 
+/**
+ * One type parameter of a datatype: what it prints as, where it was written,
+ * and how an argument filling it may move.
+ *
+ * A record and not a name, because the variance has to live somewhere and the
+ * parameter is what it is about -- and because the site a phantom is reported
+ * at is the parameter itself, not the declaration around it.
+ *
+ * `named` is false for a wildcard `_`, which is how an author says a parameter
+ * is deliberately unused; nothing resolves to it and it is not reported as a
+ * phantom.
+ */
+export type ParamInfo = {
+  /** What diagnostics print. `_` for a wildcard. */
+  readonly hint: string;
+  readonly named: boolean;
+  readonly at: Position;
+  /**
+   * Filled by `inferDatatypeVariance`, once, after every datatype's
+   * constructors are in. Invariant until then, so a table read before the pass
+   * has run concludes less rather than something unsound.
+   */
+  variance: Variance;
+};
+
 export type DatatypeInfo = {
   readonly name: DataName;
-  /** Parameter names, in order. Its length is the arity. */
-  readonly params: readonly string[];
+  /** Parameters, in order. Its length is the arity. */
+  readonly params: readonly ParamInfo[];
   /**
    * Filled by the second pass, so these two are assignable where the rest of
    * the entry is fixed at declaration. The array itself is replaced, never
@@ -71,6 +96,19 @@ export class Declarations {
   /** Every datatype, in declaration order. */
   datatypes(): readonly DatatypeInfo[] {
     return [...this.#datatypes.values()];
+  }
+
+  /**
+   * How `name`'s `index`th argument may move -- the `ArgVariance` every walk
+   * over a `TData` consults.
+   *
+   * Invariant where the table cannot answer: an undeclared name, an argument
+   * past the arity, or a call made before the variance pass. Each of those is
+   * either already reported or a checker asking less than it could, and
+   * invariance is the reading that assumes nothing.
+   */
+  argVariance(name: string, index: number): Variance {
+    return this.#datatypes.get(name)?.params[index]?.variance ?? 0;
   }
 
   /**

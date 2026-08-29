@@ -29,17 +29,31 @@ everything -- it takes whatever shape is demanded, in whatever arity, so filling
 from it invents nothing. `never` is only below, so it lifts into a shape whose
 holes have a variance and no further: `unknown -> never` is the least function
 type at every arity, which is why a `never` is callable, takes type arguments,
-and answers `never`; a datatype's arguments are invariant and have no extreme of
-their own, so a demanded `List[?]` has no least solution. Where a rule needs a
-shape and there is none to read at all -- a `match` demands a datatype without
-knowing which -- `never` answers for the whole form: nothing arrives, so no name
-resolves, nothing is left uncovered, and no arm is reachable to be joined.
+and answers `never`; the least `List[?]` is a `List` of the least thing and the
+least `Sink[?]` a `Sink` of the greatest, the argument's own variance saying
+which; an invariant argument has no extreme of its own, so a demanded `Cell[?]`
+has no least solution. Where a rule needs a shape and there is none to read at
+all -- a `match` demands a datatype without knowing which -- `never` answers for
+the whole form: nothing arrives, so no name resolves, nothing is left uncovered,
+and no arm is reachable to be joined.
 
 A cast out of an extreme in its own direction can always be made, so it never
 errors. Choosing an invariant argument _warns_, the way a `joinMany` that runs
 dry does: the answer is sound and only arbitrary, blaming the program for what
 the checker could not name principally would be wrong, and there is no `TBad` to
 hand back anyway, `badUnder` taking errors alone.
+
+A datatype's variance is inferred, not declared -- read off its constructor
+fields by a fixed point over the whole declaration table, since two datatypes
+may name each other. `Variance` and _position_ stay the two things they were:
+variance is a direction of travel, three-state, composed by multiplication, and
+the inference carries it; a position is an accumulated record, four-state,
+merged and never composed, and the inference writes it down. Bivariance -- a
+parameter nothing observes -- has no direction, so it collapses to covariant on
+the way out and is warned about at the declaration instead. `docs/variance.md`
+has the walk, the stopping criterion and the worked examples. Everything after
+that reads one number per argument through `Declarations.argVariance`, which
+answers invariant wherever it cannot answer at all.
 
 Walk types structurally. A function over types dispatches on the kind of each
 node and recurses on what that kind contains; a whole-type equality test like
@@ -58,19 +72,19 @@ arguments, but it does say something about the type arguments, which is what
 lets `Nil()` know what it is empty of. Then check the lower bound sits under the
 upper, and pick between them by how the EVar occurs in the application's result
 type -- covariant takes the lower, contravariant the upper, which is what makes
-the answer principal. Occurring both ways, or inside an invariant `TData`
-argument, neither bound is the answer by position, since widening either way
-breaks the other. Bounded from one side only, there is still nothing to choose:
-the other bound is the default extreme, which nobody recorded, and a demand
-weighed against a default settles it silently -- this is what lets a staged
-`apply(True)(fn (y) -> y)` infer its type argument. Bounded both ways by
-equivalent types, likewise. Bounded both ways by types that differ, take the
-lower for being the demand and _warn_: either bound would check, so nothing is
-unsound, but neither is above the other and settling silently would hide that a
-choice was made. A variable occurring nowhere in the result is not this case at
-all: the solution goes into the result type, which has no place for it, so
-nothing can tell the bounds apart and no choice is one. It takes the lower.
-Bounded from neither side is not a case either: both bounds are then the
+the answer principal. Occurring both ways, which is what an invariant `TData`
+argument makes of a single occurrence, neither bound is the answer by position,
+since widening either way breaks the other. Bounded from one side only, there is
+still nothing to choose: the other bound is the default extreme, which nobody
+recorded, and a demand weighed against a default settles it silently -- this is
+what lets a staged `apply(True)(fn (y) -> y)` infer its type argument. Bounded
+both ways by equivalent types, likewise. Bounded both ways by types that differ,
+take the lower for being the demand and _warn_: either bound would check, so
+nothing is unsound, but neither is above the other and settling silently would
+hide that a choice was made. A variable occurring nowhere in the result is not
+this case at all: the solution goes into the result type, which has no place for
+it, so nothing can tell the bounds apart and no choice is one. It takes the
+lower. Bounded from neither side is not a case either: both bounds are then the
 extreme, and the occurrence reads them as it reads any pair -- `Nil()` is
 `List[never]` because that is what the program says, not because something was
 left out.
@@ -86,14 +100,14 @@ A constraint picked up under a binder may mention variables that binder
 introduced, which an EVar's solution must not. Avoidance removes them, widening
 a lower bound and narrowing an upper one, swapping direction at every
 contravariant position: a rigid variable goes to its declared bound or to
-top/bottom, and an invariant `TData` argument cannot be touched at all, so the
-whole type collapses. An unsolved EVar of the same batch is _interdependent_ and
-is rejected rather than approximated -- there is no bound to widen to, and
-collapsing it would silently drop the constraint. Say so and ask for an
-annotation. In either direction, not only rightward: selection reads the result
-type alone, so a sibling standing in a pending bound is a dependency it cannot
-see. An EVar of an _enclosing_ batch is ordinary, and is how a bare lambda's
-parameter gets its type.
+top/bottom, and a `TData` argument goes at its parameter's variance -- an
+invariant one cannot be touched at all, so the whole type collapses. An unsolved
+EVar of the same batch is _interdependent_ and is rejected rather than
+approximated -- there is no bound to widen to, and collapsing it would silently
+drop the constraint. Say so and ask for an annotation. In either direction, not
+only rightward: selection reads the result type alone, so a sibling standing in
+a pending bound is a dependency it cannot see. An EVar of an _enclosing_ batch
+is ordinary, and is how a bare lambda's parameter gets its type.
 
 Unannotated lambda parameters are never EVars -- a parameter's type comes from
 annotations or from the checking context. In an argument list the parameter

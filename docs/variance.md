@@ -1,9 +1,15 @@
 # Inferring datatype variance
 
-Datatype arguments are invariant today: `#cast` passes a literal `0` per
-argument, and `#subtype`, `#eqtype`, `#join` and `#meet` all reach for
-`#eqtypeArgs`. This is the pass that replaces that literal with something read
-off the declaration.
+Datatype arguments used to be invariant by fiat: `#cast` passed a literal `0`
+per argument, and `#subtype`, `#eqtype`, `#join` and `#meet` all reached for an
+`#eqtypeArgs`. This is the pass that replaced that literal with something read
+off the declaration -- `variance.ts`, run by `elaborateDeclarations` once every
+datatype's constructors are in, writing into `ParamInfo.variance` and read back
+through `Declarations.argVariance`.
+
+Written as a design note before any of it existed, and kept as the description
+of what was built; where the two would differ, the note has been brought to the
+code.
 
 Inferred, not declared. Checking a written `+A` needs the same walk over the
 constructor fields that inferring it does, so the inference is the part we need
@@ -49,8 +55,8 @@ datatype the walk would have to model.
 
 Carrying a `Variance` end to end:
 
-- a parameter `BVar j` at direction `d`: merge `d` into position `j`. This is
-  `noteOccurrence`, unchanged.
+- a parameter `BVar j` at direction `d`: merge `d` into position `j` -- the same
+  two-line rule `EVarEntry.noteOccurrence` applies, over the same pair of flags.
 - `S -> T` at `d`: recurse into `S` at `flip(d)`, into `T` at `d`, and into each
   type parameter's bound at `flip(d)`.
 - `TData(Foo, args)` at `d`: for each argument, branch on `Foo`'s current
@@ -73,6 +79,12 @@ approximation.
 
 Aliases are not a case. They are transparent and expanded during elaboration, so
 by the time `ctors` is walked no field holds one.
+
+The **checker** side of this is not the same walk and does not want the
+four-point branch. It carries a `Variance` into a `TData` and composes with what
+the table says, which is multiplication -- `composeVariance`, of which `flip` is
+the case that composes with `-1`, and `0` absorbs. Bivariance never reaches it,
+having collapsed at the read-back. See §8 for where it is read.
 
 ## 3. Two recursions, one criterion
 
@@ -121,7 +133,7 @@ catch a one-pass bug.
 Bivariant is the _most permissive_ point, so seeding there and only ever
 descending computes the best sound answer rather than a merely safe one.
 Starting at invariant instead would be sound and useless -- everything would
-stay invariant, which is where we are now.
+stay invariant, which is where the checker was before this pass.
 
 The obvious worry is whether optimism can be _wrong_ about a recursive datatype.
 It cannot, and the case that shows why is worth keeping:
@@ -138,7 +150,9 @@ point is what states it.
 
 ## 6. Worked examples
 
-Notation: `T` bivariant, `+` covariant, `-` contravariant, `X` invariant.
+Notation: `T` bivariant, `+` covariant, `-` contravariant, `X` invariant. (The
+tests print the settled answer, where bivariance has already collapsed, and
+spell invariance `=`.)
 
 **Covariance, the base case.**
 
@@ -213,24 +227,56 @@ once and stops produces exactly this.
 
 ## 7. What gets reported
 
-A parameter that ends **bivariant occurs in no field, transitively** -- a
+A parameter that ends **bivariant is observed by nothing, transitively** -- a
 phantom, and worth a warning at the declaration, which is the site that knows.
 Reported once there rather than at every use, which also keeps `#castHead`
 silent when it lifts an extreme into such an argument.
 
-It needs the fixed point, not a pass: `Data(C)` alone never looks unused, and
-only the closure shows that nothing observes it.
+    nothing observes the type parameter A of Opaque, so it makes no
+    difference to the type; write it `_` if that is meant
+
+"Observed" and not "used": `Opaque[A]` in §5 mentions `A` in a field and is
+still a phantom, so a message about the parameter being unused would be false
+there. It needs the fixed point and not a pass, for the same reason -- `Data(C)`
+alone never looks unused, and only the closure shows that nothing observes it.
+
+**Not reported for a wildcard.** `datatype Tag[_]` is how an author says a
+parameter is deliberately unobserved, which is what the message asks for; saying
+it again would be noise.
 
 **Not reported when a field is bad.** An unresolved field type elaborates to
 `<bad>` with a report already standing, and a parameter that occurred only there
 then looks unused -- blaming the author twice for one mistake. A datatype with a
 bad field is excluded from this warning, not from the inference.
 
-`DatatypeInfo.params` is `readonly string[]` today: names, no positions. It has
-to grow a record to hold the variance anyway, and a parameter's own position is
-what this message wants to point at.
+`DatatypeInfo.params` grew from `readonly string[]` to a `ParamInfo` record for
+this: the variance has to live somewhere, and a parameter's own position is what
+this message points at.
 
-## 8. Deliberately not here
+## 8. What reads it
+
+Six places, and each of them had a hard-coded invariance before:
+
+| site                   | what changed                                     |
+| ---------------------- | ------------------------------------------------ |
+| `#relateData`          | one walk for `#subtype` and `#eqtype`, composing |
+| `#cast`'s `TData` case | the argument's variance, not `0`                 |
+| `#liftExtreme`         | an extreme per position, and the warning         |
+| `#avoidPart`'s `TData` | a directed argument widens; invariant collapses  |
+| `#latticeData`         | join and meet go argumentwise                    |
+| `openAt`'s `TData`     | where an EVar occurs, so `solveEVar` can choose  |
+
+The last is the one that is easy to miss. `types.ts` is the representation and
+must not know about declarations, so `openWith` takes an `ArgVariance` callback
+and defaults it to `invariantArgs`; only `#applyCall`, which is recording where
+each EVar stands in the result type, passes the real one.
+
+`Subtyper` reads the table through `Context`, which now holds a `Declarations`.
+Declarations sit _beneath_ the typing context -- unscoped, fixed before the
+first binder is pushed -- so that is where a thing holding a context can find
+them.
+
+## 9. Deliberately not here
 
 - **No annotations.** Adding `+A`/`-A` later means checking the written variance
   against the inferred one and reporting at the declaration; nothing above

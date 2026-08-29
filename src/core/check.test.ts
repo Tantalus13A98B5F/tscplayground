@@ -21,6 +21,10 @@ function typeOf(...lines: readonly string[]): string {
 
 const BOOL = ["datatype Bool where", "  | True", "  | False"];
 const LIST = ["datatype List[A] where", "  | Nil", "  | Cons(A, List[A])"];
+/** Invariant, `A` standing both ways in the one field. */
+const CELL = ["datatype Cell[A] where", "  | MkCell((A) -> A)"];
+/** Contravariant, and the only shape that gets there. */
+const SINK = ["datatype Sink[A] where", "  | MkSink((A) -> Bool)"];
 
 Deno.test("a constructor is a function of its fields", () => {
   expect(typeOf(...BOOL, "True")).toBe("Bool");
@@ -297,21 +301,87 @@ Deno.test("never is callable, at any arity and with type arguments", () => {
 });
 
 Deno.test("never in an invariant argument is a choice, not a mismatch", () => {
-  // `never` is a `List` of anything and nothing picks which. The call goes
-  // through on `List[never]` -- a type comes back at all, so this was no
+  // `never` is a `Cell` of anything and nothing picks which. The call goes
+  // through on `Cell[never]` -- a type comes back at all, so this was no
   // error -- and the report is what says a choice was made here.
   const [type, ...messages] = run(
-    ...LIST,
+    ...CELL,
     ...BOOL,
-    "let len = fn [A](xs: List[A]) -> True;",
-    "fn (loop: never) -> len(loop)",
+    "let use = fn [A](c: Cell[A]) -> True;",
+    "fn (loop: never) -> use(loop)",
   );
   expect(messages).toEqual([
-    "cannot tell what never is a List of: a datatype's arguments are " +
-    "invariant, so List[?] has no least solution, and its arguments were " +
-    "taken to be never",
+    "no least Cell[?] to cast never to: Cell's argument A is invariant, so " +
+    "it was taken to be never",
   ]);
   expect(type).toBe("never -> Bool");
+});
+
+Deno.test("a covariant argument has an extreme, so nothing is chosen", () => {
+  // The same call against a `List`, where `List[never]` *is* the least one:
+  // there is nothing arbitrary left to report.
+  expect(
+    typeOf(
+      ...LIST,
+      ...BOOL,
+      "let len = fn [A](xs: List[A]) -> True;",
+      "fn (loop: never) -> len(loop)",
+    ),
+  ).toBe("never -> Bool");
+});
+
+Deno.test("a datatype's arguments move the way its parameters say", () => {
+  // Three declarations, three answers, and the only difference between them
+  // is where the parameter stood in the field that used it.
+  expect(
+    typeOf(
+      ...LIST,
+      ...BOOL,
+      "let widen = fn (xs: List[unknown]) -> True;",
+      "fn (bs: List[Bool]) -> widen(bs)",
+    ),
+  ).toBe("List[Bool] -> Bool");
+  expect(
+    typeOf(
+      ...SINK,
+      ...BOOL,
+      "let narrow = fn (s: Sink[Bool]) -> True;",
+      "fn (s: Sink[unknown]) -> narrow(s)",
+    ),
+  ).toBe("Sink[unknown] -> Bool");
+  const [type, ...messages] = run(
+    ...CELL,
+    ...BOOL,
+    "let hold = fn (c: Cell[unknown]) -> True;",
+    "fn (c: Cell[Bool]) -> hold(c)",
+  );
+  // The mismatch is the argument's, and is reported there.
+  expect(messages).toEqual(["expected unknown, found Bool"]);
+  expect(type).toBe("Cell[Bool] -> Bool");
+});
+
+Deno.test("an empty list takes its element type from its neighbours", () => {
+  // `Nil()` is a `List[never]`, and a covariant argument lets that sit under
+  // the `List[?A]` the outer call is collecting -- so `?A` takes `Bool` from
+  // the first argument and nothing has to be written. Invariance had no such
+  // reading: `?A` would have had to be `never` *and* `Bool`.
+  expect(typeOf(...LIST, ...BOOL, "Cons(True, Nil())")).toBe("List[Bool]");
+});
+
+Deno.test("arms join at the argument, not only at the datatype", () => {
+  // Two `List`s that are not the same type still have a `List` above them,
+  // which is `#latticeData` going argumentwise where it used to ask for
+  // equivalence and give up on top.
+  expect(
+    typeOf(
+      ...LIST,
+      ...BOOL,
+      "let bs : List[Bool] = Cons(True, Nil());",
+      "fn (b: Bool) -> match b with",
+      "  | True -> bs",
+      "  | False -> Nil[unknown]()",
+    ),
+  ).toBe("Bool -> List[unknown]");
 });
 
 Deno.test("an unknown name is reported once, not at every later use", () => {

@@ -38,6 +38,7 @@
  * argument list rather than speculatively, so no operation is ever undone.
  */
 
+import { Declarations } from "./declarations.ts";
 import {
   FVar,
   type FVarRef,
@@ -210,6 +211,20 @@ export type Binding<E extends Entry = Entry> = {
 
 export class Context {
   readonly #entries: Entry[] = [];
+
+  /**
+   * The declaration table, which sits *beneath* the context: unscoped, fixed
+   * before the first binder is pushed, and the same for every scope opened
+   * over it. Kept here so that whoever holds a context can read a datatype's
+   * variance -- the subtyper does at every `TData` -- without being handed the
+   * table separately.
+   *
+   * Its own object all the same, since the elaborator builds it and only it
+   * writes to it. A context made with no table has an empty one, and an empty
+   * table answers invariant to everything, which is what every walk over a
+   * `TData` did before variance was inferred.
+   */
+  constructor(readonly declarations: Declarations = new Declarations()) {}
 
   /**
    * Every named entry's levels, innermost last, so resolving a name is the top

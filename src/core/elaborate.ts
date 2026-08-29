@@ -33,6 +33,7 @@ import type {
   CtorInfo,
   DatatypeInfo,
   Declarations,
+  ParamInfo,
 } from "./declarations.ts";
 import {
   badUnder,
@@ -49,6 +50,7 @@ import {
   type Type,
   type TypeParamInfo,
 } from "./types.ts";
+import { inferDatatypeVariance } from "./variance.ts";
 
 export class Elaborator {
   constructor(
@@ -229,7 +231,7 @@ export class Elaborator {
   }
 
   /**
-   * Build the declaration table in two passes.
+   * Build the declaration table in three passes.
    *
    * The first takes a datatype's name and arity, an alias whole, *in source
    * order* -- so the first declaration of a name keeps it whichever kind it
@@ -241,6 +243,11 @@ export class Elaborator {
    * shortlist of winners is needed: `initCtors` refuses a name the first pass
    * gave away. A loser is still elaborated -- bad types inside it are reported
    * -- but has nowhere to land.
+   *
+   * The third infers every datatype's variance, which is a property of the
+   * whole table at once: two declarations may name each other, so there is no
+   * order in which one datatype's fields could be walked to a final answer
+   * before the next one's.
    */
   elaborateDeclarations(decls: readonly TypeDecl[]): void {
     for (const decl of decls) {
@@ -256,6 +263,10 @@ export class Elaborator {
       if (decl.kind !== "DatatypeDecl") continue;
       this.declarations.initCtors(decl.name.text, this.#elaborateCtors(decl));
     }
+
+    // A third pass, and it has to be: variance is a property of the whole
+    // table at once, since two datatypes may name each other.
+    inferDatatypeVariance(this.declarations.datatypes(), this.diagnostics);
   }
 
   /** Report `name` if the table refused it in favour of `previous`. */
@@ -274,7 +285,7 @@ export class Elaborator {
   ): DatatypeInfo {
     return {
       name: mkDataName(decl.name.text),
-      params: decl.typeParams.map(bindingHint),
+      params: decl.typeParams.map(mkParamInfo),
       ctors: [],
       initialized: false,
       at: decl.at,
@@ -386,7 +397,7 @@ export function constructorType(
   const result = TData(datatype.name, datatype.params.map((_, j) => BVar(j)));
   if (datatype.params.length === 0 && ctor.fields.length === 0) return result;
   return TFun(
-    datatype.params.map((param) => mkTypeParamInfo(param, TUnknown)),
+    datatype.params.map((param) => mkTypeParamInfo(param.hint, TUnknown)),
     ctor.fields,
     result,
   );
@@ -406,4 +417,18 @@ export function aliasBodyAt(
   args: readonly Type[],
 ): Type {
   return openMany(alias.body, args);
+}
+
+/**
+ * A declared type parameter before anything is known about how it is used.
+ * Invariant to begin with, which `inferDatatypeVariance` replaces once every
+ * datatype's fields are in.
+ */
+function mkParamInfo(name: BindingIdent): ParamInfo {
+  return {
+    hint: bindingHint(name),
+    named: name.text !== undefined,
+    at: name.at,
+    variance: 0,
+  };
 }

@@ -214,6 +214,29 @@ export function flip(variance: Variance): Variance {
 }
 
 /**
+ * A position reached through another position: multiplication, which is why
+ * `flip` is the special case of composing with a contravariant one, and why
+ * `0` absorbs -- anything inside an invariant position is invariant, however
+ * deep below it sits.
+ */
+export function composeVariance(outer: Variance, inner: Variance): Variance {
+  return (outer * inner) as Variance;
+}
+
+/**
+ * How a datatype's `index`th argument may move. A rule and not the table
+ * itself: variance is read off a declaration, and declarations are built on
+ * top of this file rather than known to it.
+ *
+ * `invariantArgs` is the answer where there is nothing to consult, and is what
+ * every argument had before variance was inferred: sound, since an invariant
+ * argument demands the most and so concludes the least.
+ */
+export type ArgVariance = (name: DataName, index: number) => Variance;
+
+export const invariantArgs: ArgVariance = () => 0;
+
+/**
  * What an opening puts in a bound variable's place, told the index and *where
  * it stands*. A rule rather than an array so the replacement may depend on the
  * variance, and so reaching a position can be recorded: `#applyCall` learns
@@ -241,6 +264,7 @@ function openAt<M>(
   depth: number,
   rule: OpenRule<M>,
   here: Variance,
+  args: ArgVariance,
 ): TypeMaybe<M> {
   switch (type.kind) {
     case "TUnknown":
@@ -259,19 +283,32 @@ function openAt<M>(
       const inner = depth + type.typeParams.length;
       return TFun(
         type.typeParams.map((b) =>
-          mkTypeParamInfo(b.hint, openAt(b.bound, depth, rule, flip(here)))
+          mkTypeParamInfo(
+            b.hint,
+            openAt(b.bound, depth, rule, flip(here), args),
+          )
         ),
-        type.params.map((param) => openAt(param, inner, rule, flip(here))),
-        openAt(type.result, inner, rule, here),
+        type.params.map((param) =>
+          openAt(param, inner, rule, flip(here), args)
+        ),
+        openAt(type.result, inner, rule, here, args),
       );
     }
     case "TData":
       // Not a binder, but skipping it leaves stale `BVar`s and nothing objects.
-      // Arguments are invariant, and `0` is its own flip, so everything inside
-      // one is invariant however deep it sits.
+      // An argument stands where its parameter's variance says, composed with
+      // wherever this node itself stands.
       return TData(
         type.name,
-        type.args.map((arg) => openAt(arg, depth, rule, 0)),
+        type.args.map((arg, i) =>
+          openAt(
+            arg,
+            depth,
+            rule,
+            composeVariance(here, args(type.name, i)),
+            args,
+          )
+        ),
       );
   }
 }
@@ -283,8 +320,9 @@ function openAt<M>(
 export function openWith<M = never>(
   type: TypeMaybe<M>,
   rule: OpenRule<M>,
+  args: ArgVariance = invariantArgs,
 ): TypeMaybe<M> {
-  return openAt(type, 0, rule, 1);
+  return openAt(type, 0, rule, 1, args);
 }
 
 /** Instantiate a binder's variables, `BVar j` taking `replacements[j]`. */
@@ -486,11 +524,11 @@ export function completeLeafPattern(
 export function allPairs<A, B>(
   left: readonly A[],
   right: readonly B[],
-  relate: (a: A, b: B) => boolean,
+  relate: (a: A, b: B, index: number) => boolean,
 ): boolean {
   return left.length === right.length && left.every((item, i) => {
     const other = right[i];
-    return other !== undefined && relate(item, other);
+    return other !== undefined && relate(item, other, i);
   });
 }
 
