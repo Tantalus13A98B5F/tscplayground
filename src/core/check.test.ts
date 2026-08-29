@@ -5,7 +5,7 @@ import { typeToString } from "./types.ts";
 
 /** Check a program, as a `[type, ...messages]` tuple the tests can read. */
 function run(...lines: readonly string[]): [string, ...string[]] {
-  const result = checkSource(mkSource(lines.join("\n"), "test.tg"));
+  const result = checkSource(mkSource(lines.join("\n"), "test.ga"));
   return [
     result.value === undefined ? "<none>" : typeToString(result.value),
     ...result.diagnostics.map((d) => d.message),
@@ -569,9 +569,9 @@ Deno.test("a require directive is skipped by the lexer, not lexed", () => {
   // is a filesystem holding just itself, so the directive resolves to nothing
   // and is reported in the walker's words -- the same ones a real run gives a
   // path that is not there.
-  const [type, ...messages] = run('#require "other.tg"', ...BOOL, "True");
+  const [type, ...messages] = run('#require "other.ga"', ...BOOL, "True");
   expect(type).toBe("Bool");
-  expect(messages).toEqual(['cannot resolve "other.tg"']);
+  expect(messages).toEqual(['cannot resolve "other.ga"']);
 });
 
 Deno.test("a term binding shadows a type variable of the same name", () => {

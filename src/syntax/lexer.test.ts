@@ -3,7 +3,7 @@ import { isCloser, stripComment, type Token, tokenize } from "./lexer.ts";
 import { mkSource } from "../diagnostics/diagnostic.ts";
 
 function lex(text: string): readonly Token[] {
-  const result = tokenize(mkSource(text, "demo.tg"));
+  const result = tokenize(mkSource(text, "demo.ga"));
   expect(result.diagnostics).toEqual([]);
   return result.value ?? [];
 }
@@ -134,7 +134,7 @@ Deno.test("blank lines contribute nothing, so layout cannot see them", () => {
 
 Deno.test("an unexpected character is reported, then stepped over", () => {
   // Recovery: one stray byte must not swallow the rest of the line.
-  const result = tokenize(mkSource("a ? b", "demo.tg"));
+  const result = tokenize(mkSource("a ? b", "demo.ga"));
   expect(result.diagnostics.length).toBe(1);
   expect(result.diagnostics[0]?.message).toContain("?");
   expect(result.diagnostics[0]?.at.column).toBe(3);

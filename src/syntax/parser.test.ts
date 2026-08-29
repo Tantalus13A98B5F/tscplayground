@@ -13,7 +13,7 @@ import {
 
 /** The pipeline as the driver runs it: layout is resolved before parsing. */
 function scan(text: string) {
-  const tokens = tokenize(mkSource(text, "demo.tg")).value ?? [];
+  const tokens = tokenize(mkSource(text, "demo.ga")).value ?? [];
   return layout(tokens);
 }
 

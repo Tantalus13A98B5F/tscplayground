@@ -1,14 +1,17 @@
 # tscground
 
-An experimental type checker for a small research calculus (currently shaped as
-bare System F-sub), written in TypeScript so the same code can drive a
-browser-based playground later.
+The type checker for **GaML**, a small experimental language shaped as bare
+System F-sub. Source files are `.ga`. Written in TypeScript so the same code can
+drive a browser-based playground later.
 
-Work in progress, but it runs end to end: `deno task run file.tg` will lex, lay
+Work in progress, but it runs end to end: `deno task run file.ga` will lex, lay
 out, parse, elaborate, and check a program, and print its type. Full Fsub
 subtyping with local type inference, datatypes with one-level pattern matching,
-transparent type aliases, and multi-file `#require` are all in. Not yet done:
-there is no evaluator.
+transparent type aliases, and multi-file `#require` are all in. There is no
+evaluator: the checker checks, nothing runs.
+
+[`docs/roadmap.md`](./docs/roadmap.md) is what stands between here and a first
+release.
 
 ## Requirements
 
@@ -70,3 +73,14 @@ Tests live next to their modules as `*.test.ts`. Tests marked `ignore: true` are
 pending specs for behavior not yet implemented.
 
 `legacy/` holds earlier work and is excluded from fmt, lint, and type checking.
+
+## Docs
+
+| Doc                                      | What it covers                                                                       |
+| ---------------------------------------- | ------------------------------------------------------------------------------------ |
+| [`docs/roadmap.md`](./docs/roadmap.md)   | The four items before a first release, and the gaps deliberately left off that list  |
+| [`docs/variance.md`](./docs/variance.md) | Inferring datatype variance: the lattice, the walk, the fixed point, worked examples |
+| [`docs/clti.md`](./docs/clti.md)         | The colored local type inference design the checker was built to                     |
+
+`CLAUDE.md` is the working description of how the checker is put together and
+why -- shorter than the docs above, and the first thing to read.

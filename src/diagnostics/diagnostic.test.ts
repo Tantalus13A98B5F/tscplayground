@@ -14,13 +14,13 @@ import {
   showDiagnosticWithLine,
 } from "./diagnostic.ts";
 
-const source = mkSource("let x = 1\nlet y = zz\n", "demo.tg");
+const source = mkSource("let x = 1\nlet y = zz\n", "demo.ga");
 const file = source.id;
 
 Deno.test("mkSource splits into lines and normalizes CRLF", () => {
-  const crlf = mkSource("a\r\nb\r\n", "demo.tg");
+  const crlf = mkSource("a\r\nb\r\n", "demo.ga");
   expect(crlf.lines).toEqual(["a", "b", ""]);
-  expect(crlf.lines).toEqual(mkSource("a\nb\n", "demo.tg").lines);
+  expect(crlf.lines).toEqual(mkSource("a\nb\n", "demo.ga").lines);
 });
 
 Deno.test("a trailing newline leaves a final empty line", () => {
@@ -41,14 +41,14 @@ Deno.test("showDiagnostic names the file, line and column", () => {
     ]),
   )
     .toBe(
-      "demo.tg:2:9: error: unbound variable",
+      "demo.ga:2:9: error: unbound variable",
     );
 });
 
 Deno.test("showDiagnosticWithLine underlines using the caret width", () => {
   const diagnostic = reportError("unbound variable", mkPosition(file, 2, 9), 2);
   expect(showDiagnosticWithLine(diagnostic, [source])).toBe(
-    "demo.tg:2:9: error: unbound variable\nlet y = zz\n        ^^",
+    "demo.ga:2:9: error: unbound variable\nlet y = zz\n        ^^",
   );
 });
 

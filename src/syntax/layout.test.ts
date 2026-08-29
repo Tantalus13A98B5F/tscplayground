@@ -5,7 +5,7 @@ import { layout } from "./layout.ts";
 
 /** The whole contract is the emitted stream, so every case asserts one. */
 function scan(text: string): { stream: string; errors: readonly string[] } {
-  const tokens = tokenize(mkSource(text, "demo.tg")).value ?? [];
+  const tokens = tokenize(mkSource(text, "demo.ga")).value ?? [];
   const result = layout(tokens);
   return {
     stream: showTokens(result.value ?? []),

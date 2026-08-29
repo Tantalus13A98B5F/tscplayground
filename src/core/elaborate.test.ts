@@ -30,7 +30,7 @@ function tokensOf(source: Source) {
 }
 
 function programOf(text: string): Program {
-  const parsed = parseProgram(tokensOf(mkSource(text, "test.tg")));
+  const parsed = parseProgram(tokensOf(mkSource(text, "test.ga")));
   if (parsed.value === undefined) {
     throw new Error(
       `did not parse: ${parsed.diagnostics.map((d) => d.message).join("; ")}`,
@@ -40,7 +40,7 @@ function programOf(text: string): Program {
 }
 
 function typeNodeOf(text: string): TypeNode {
-  const parsed = parseType(tokensOf(mkSource(text, "type.tg")));
+  const parsed = parseType(tokensOf(mkSource(text, "type.ga")));
   if (parsed.value === undefined) {
     throw new Error(`did not parse type: ${text}`);
   }
