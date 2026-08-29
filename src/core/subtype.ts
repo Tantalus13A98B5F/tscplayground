@@ -1238,11 +1238,9 @@ export class Subtyper {
    * it, so nothing can tell the bounds apart and no choice is one. It takes
    * the lower for having nothing to argue with.
    *
-   * A variable nothing constrained at all is a warning, not a failure. Every
-   * type satisfies no constraints, so the selection is sound and even
-   * principal where the variable occurs one way; what it is not is
-   * *actionable*, since the `never` or `unknown` it settles on is a type the
-   * author never wrote and will meet again further out.
+   * A variable nothing constrained at all is not a further case: both bounds
+   * are then the default extreme, and the occurrence reads that pair as it
+   * reads any other.
    *
    * The relation tests here mutate, as everywhere -- but never this batch.
    * Every recorded bound is closed by `batch`, so no sibling can pick up a
