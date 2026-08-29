@@ -5,7 +5,7 @@ import {
   reportError,
 } from "../diagnostics/diagnostic.ts";
 import { Context, type EVarEntry } from "./context.ts";
-import { type DatatypeInfo, Declarations } from "./declarations.ts";
+import { type DatatypeInfo, Declarations } from "./context.ts";
 import { Subtyper } from "./subtype.ts";
 import {
   badUnder,
@@ -81,7 +81,7 @@ const fn = (params: readonly Type[], result: Type) => TFun([], params, result);
 /**
  * A one-parameter datatype whose variance is *stated* rather than inferred.
  * This file's subject is what the relation does with a variance once it has
- * one; where the variance comes from is `variance.test.ts`.
+ * one; where the variance comes from is `elaborate.test.ts`.
  */
 function declare(name: string, variance: Variance): DatatypeInfo {
   return {

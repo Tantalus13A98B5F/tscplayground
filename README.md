@@ -51,9 +51,8 @@ src/
     parser.ts                 tokens -> AST
   core/
     types.ts                  internal type representation (locally nameless)
-    context.ts                the ordered typing context
-    declarations.ts           datatype and alias table
-    elaborate.ts              surface types -> internal types
+    context.ts                the ordered typing context, over the declarations
+    elaborate.ts              surface types -> internal types, and variance
     subtype.ts                the subtyping relation
     check.ts                  bidirectional infer / check
   diagnostics/
