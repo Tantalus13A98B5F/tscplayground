@@ -50,7 +50,7 @@ import {
 
 export class Checker {
   readonly declarations = new Declarations();
-  readonly context = new Context();
+  readonly context = new Context(this.declarations);
   readonly diagnostics: Diagnostic[] = [];
   readonly elaborator: Elaborator;
   readonly subtyper: Subtyper;
@@ -432,18 +432,24 @@ export class Checker {
         // Opened before anything is related, so every entry is fully
         // described from the start: opening the result is what records where
         // each EVar occurs.
-        const result = openWith(callee.result, (j, variance) => {
-          const evar = evars[j] ??
-            impossible("the result binds only this binder");
-          // Once per occurrence, so two placements accumulate -- which is how
-          // a variable comes to occur both ways with neither occurrence
-          // invariant. Reached from a type and not from the batch, so the
-          // entry is looked up here.
-          const entry = this.context.evarAt(evar) ??
-            impossible("the batch's variables name EVar entries");
-          entry.noteOccurrence(variance);
-          return evar;
-        });
+        const result = openWith(
+          callee.result,
+          (j, variance) => {
+            const evar = evars[j] ??
+              impossible("the result binds only this binder");
+            // Once per occurrence, so two placements accumulate -- which is
+            // how a variable comes to occur both ways with neither occurrence
+            // invariant. Reached from a type and not from the batch, so the
+            // entry is looked up here.
+            const entry = this.context.evarAt(evar) ??
+              impossible("the batch's variables name EVar entries");
+            entry.noteOccurrence(variance);
+            return evar;
+          },
+          // A `List[?A]` says where `?A` stands only once the declaration is
+          // consulted, and where it stands is what decides between its bounds.
+          (name, i) => this.declarations.argVariance(name, i),
+        );
 
         // Nothing is decided until the whole list is in, so the solution is a
         // join and not a race, and the order here cannot matter.

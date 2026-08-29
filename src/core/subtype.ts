@@ -47,6 +47,8 @@ import {
   closeFrom,
   completeLeafPattern,
   completePattern,
+  composeVariance,
+  type DataName,
   flip,
   FVar,
   type FVarRef,
@@ -142,6 +144,21 @@ export class Subtyper {
     readonly budget: number = FUEL,
   ) {
     this.#fuel = budget;
+  }
+
+  /**
+   * How a datatype's `index`th argument may move. The declarations sit beneath
+   * the context, which is what lets every walk here ask -- and every walk here
+   * has to, since nothing in a `TData` says which way its arguments go.
+   */
+  #argVariance(name: DataName, index: number): Variance {
+    return this.context.declarations.argVariance(name, index);
+  }
+
+  /** `Foo`'s parameter `index`, as a diagnostic names it. */
+  #argName(name: DataName, index: number): string {
+    const param = this.context.declarations.datatypeOf(name)?.params[index];
+    return `${name}'s argument ${param?.hint ?? index + 1}`;
   }
 
   // --------------------------------------------------------------- variables
@@ -391,8 +408,9 @@ export class Subtyper {
         ) {
           return this.#castFailed(type, pattern);
         }
-        // Arguments are invariant however deep they sit, as `openAt` says by
-        // passing `0` and never flipping out of it again.
+        // An argument stands where its parameter's variance says, composed
+        // with wherever this node itself stands -- the same rule `openAt`
+        // follows, so a position means the same thing to both.
         //
         // Every argument is walked even where the head already filled one:
         // re-entering a filled argument is a no-op, `<bad>` being absorbing,
@@ -401,7 +419,7 @@ export class Subtyper {
           this.#cast(
             from.args[i] ?? impossible("an argument per argument"),
             want,
-            0,
+            composeVariance(dir, this.#argVariance(pattern.name, i)),
           )
         );
         return TData(from.name, args);
@@ -469,46 +487,96 @@ export class Subtyper {
       return head;
     }
 
-    // A function's parts have variance, so each has an extreme of its own and
-    // the lift is total: the greatest arrow takes the smallest parameters and
-    // the largest result, and the walk that follows lifts again wherever it
-    // meets an extreme further in.
-    if (pattern.kind === "TFun") {
-      // Only a direction reaches here -- an invariant position moves neither
-      // way, and the guard above let nothing else through -- so each part has
-      // an extreme, taken at the flip of `dir` inside and at `dir` itself for
-      // the result.
-      const inner = dir > 0 ? TUnknown : TNever;
-      return TFun(
-        pattern.typeParams.map((b) => mkTypeParamInfo(b.hint, inner)),
-        pattern.params.map(() => inner),
-        dir < 0 ? TUnknown : TNever,
-      );
-    }
+    // Only a direction reaches here -- an invariant position moves neither
+    // way, and the guard above let nothing else through.
+    return this.#liftExtreme(type, head, pattern, dir);
+  }
 
-    // A datatype's arguments do not: nothing is greatest among the types a
-    // `List` can be of, so there is no greatest `List`. The shape is lifted
-    // all the same, and an argument with no position to read takes the
-    // extreme it came from -- one `List` out of many, all of them above (or
-    // below) `type`, so the answer is sound and only arbitrary.
-    //
-    // Which is why it *warns* where the rest of this file errors. An extreme
-    // sits under (or over) every type there is, so a cast in this direction
-    // can always be made; failing here would report the checker's inability
-    // to name one answer as the program's mistake, and there is no `TBad` to
-    // hand back either, `badUnder` taking errors alone. Whatever a later
-    // check trips over in the argument is explained by this line.
-    return completePattern(pattern, () => {
-      this.#file(
-        "warning",
-        `cannot tell what ${typeToString(type)} is a ${pattern.name} of: a ` +
-          `datatype's arguments are invariant, so ${
-            typeToString(pattern)
-          } has no ${dir > 0 ? "least" : "greatest"} solution, and its ` +
-          `arguments were taken to be ${typeToString(head)}`,
-      );
-      return head;
-    });
+  /**
+   * The extreme `head` lifted into the shape `pattern` asks for: the pattern
+   * read back as a type, with every part it left out standing for the extreme
+   * *that* position demands.
+   *
+   * One walk and not a rule per shape, because the question is the same
+   * everywhere: the least type of a given shape takes the least thing at each
+   * position that grows with it and the greatest at each position that shrinks.
+   * The greatest arrow takes the smallest parameters and the largest result;
+   * the least `List[+A]` is a `List` of the least thing, and the least
+   * `Foo[-A]` a `Foo` of the greatest. `d` is where a part stands relative to
+   * the whole, which is all that has to be carried.
+   *
+   * Written parts are kept rather than replaced by extremes. Nothing rests on
+   * it -- `#castFun` and the `TData` case walk them against the pattern again
+   * -- but a part the author wrote is not a part this had to invent.
+   *
+   * Only the walk below lifts one level; the ordinary walk lifts again
+   * wherever it meets an extreme further in.
+   *
+   * An **invariant** part is the one position with no extreme of its own, and
+   * so the one place this *warns*. It is not the program's mistake: an extreme
+   * sits under (or over) every type there is, so a cast in this direction can
+   * always be made, and reporting the checker's inability to name one answer
+   * as an error would blame the author for it -- there is no `TBad` to hand
+   * back either, `badUnder` taking errors alone. Whatever a later check trips
+   * over in that argument is explained by this line.
+   *
+   * Said once per cast however many parts were missing, the ask and not any
+   * one hole in it being what it is about. `blame` names the argument the walk
+   * went invariant at, which is always the outermost such: everything below an
+   * invariant position is invariant too, so that is the one that decided.
+   */
+  #liftExtreme(
+    type: Type,
+    head: Type,
+    pattern: Extract<TypePattern, { kind: "TFun" | "TData" }>,
+    dir: Variance,
+  ): Type {
+    let warned = false;
+    const lift = (
+      want: TypePattern,
+      d: Variance,
+      blame: string | undefined,
+    ): Type => {
+      switch (want.kind) {
+        case "TMissing":
+          if (d !== 0) return d > 0 ? TNever : TUnknown;
+          if (!warned) {
+            warned = true;
+            this.#file(
+              "warning",
+              `no ${dir > 0 ? "least" : "greatest"} ${typeToString(pattern)} ` +
+                `to cast ${typeToString(type)} to: ${blame} is invariant, so ` +
+                `it was taken to be ${typeToString(head)}`,
+            );
+          }
+          return head;
+        case "TFun": {
+          const inner = flip(d);
+          return TFun(
+            want.typeParams.map((b) =>
+              mkTypeParamInfo(b.hint, lift(b.bound, inner, blame))
+            ),
+            want.params.map((param) => lift(param, inner, blame)),
+            lift(want.result, d, blame),
+          );
+        }
+        case "TData":
+          return TData(
+            want.name,
+            want.args.map((arg, i) => {
+              const inner = composeVariance(d, this.#argVariance(want.name, i));
+              return lift(
+                arg,
+                inner,
+                d !== 0 && inner === 0 ? this.#argName(want.name, i) : blame,
+              );
+            }),
+          );
+        default:
+          return completeLeafPattern(want);
+      }
+    };
+    return lift(pattern, dir, undefined);
   }
 
   /**
@@ -641,9 +709,7 @@ export class Subtyper {
     if (s.kind === "TBad" || t.kind === "TBad") return true;
 
     if (s.kind === "TData" && t.kind === "TData") {
-      // Invariant: a datatype's parameters have no declared variance, so
-      // `List[never]` is not a `List[unknown]`.
-      return s.name === t.name && this.#eqtypeArgs(s.args, t.args);
+      return this.#relateData(s, t, 1);
     }
 
     if (s.kind === "TFun" && t.kind === "TFun") {
@@ -696,17 +762,12 @@ export class Subtyper {
     if (t.kind === "TNever") return this.#subtype(s, TNever);
 
     if (s.kind === "TData" && t.kind === "TData") {
-      return s.name === t.name && this.#eqtypeArgs(s.args, t.args);
+      return this.#relateData(s, t, 0);
     }
     if (s.kind === "TFun" && t.kind === "TFun") {
       return this.#relateFun(s, t, 0);
     }
     return false;
-  }
-
-  /** Elementwise equivalence of two argument lists. */
-  #eqtypeArgs(s: readonly Type[], t: readonly Type[]): boolean {
-    return allPairs(s, t, (a, b) => this.#eqtype(a, b));
   }
 
   /**
@@ -717,6 +778,37 @@ export class Subtyper {
   #relate(s: Type, t: Type, variance: Variance): boolean {
     if (variance === 0) return this.#eqtype(s, t);
     return variance > 0 ? this.#subtype(s, t) : this.#subtype(t, s);
+  }
+
+  /**
+   * Two datatypes, related at a position of `variance`. Nominal, so the names
+   * have to agree and there is nothing to unfold; what is left is the
+   * arguments, each taken at its own parameter's variance composed with
+   * wherever the pair itself stands.
+   *
+   * Which is why equivalence needs no case of its own: `0` absorbs, so asking
+   * two datatypes to be the same asks it of every argument whatever its
+   * parameter says.
+   *
+   * Arity is part of the type -- an arity mismatch is reported where the type
+   * was written, so a `Foo[A]` and a `Foo[A, B]` reaching here simply do not
+   * relate.
+   */
+  #relateData(
+    s: Extract<Type, { kind: "TData" }>,
+    t: Extract<Type, { kind: "TData" }>,
+    variance: Variance,
+  ): boolean {
+    return s.name === t.name && allPairs(
+      s.args,
+      t.args,
+      (a, b, i) =>
+        this.#relate(
+          a,
+          b,
+          composeVariance(variance, this.#argVariance(s.name, i)),
+        ),
+    );
   }
 
   /**
@@ -842,9 +934,10 @@ export class Subtyper {
    * stands in this context, so nothing in it is at or past the watermark.
    *
    * Total, needing no `undefined` case of its own: the ask has a direction, so
-   * the outer half always has an extreme to put down. Where a datatype's
-   * invariant argument goes missing there is no widest `List`, and the whole
-   * type gives way to `unknown`.
+   * the outer half always has an extreme to put down -- and an argument with a
+   * direction has one too, so a missing `List[?]` is `List[unknown]`. Only an
+   * *invariant* argument has none, and there the whole type gives way to
+   * `unknown`: no widest one of those exists to name.
    */
   widestMatching(pattern: TypePattern): Type {
     return this.#avoid(pattern, this.context.size, 1) ??
@@ -928,12 +1021,16 @@ export class Subtyper {
         return this.#avoid(entry.bound, levels, dir);
       }
       case "TData": {
-        // A datatype's arguments have no declared variance, so each is asked
-        // invariantly however this node was reached: an argument that cannot
-        // be named exactly takes the whole type with it.
+        // An argument with a direction widens like anything else; an invariant
+        // one admits no wider guess, so one that cannot be named *exactly*
+        // takes the whole type with it.
         const args = [];
-        for (const arg of type.args) {
-          const avoided = this.#avoid(arg, levels, 0);
+        for (const [i, arg] of type.args.entries()) {
+          const avoided = this.#avoid(
+            arg,
+            levels,
+            composeVariance(dir, this.#argVariance(type.name, i)),
+          );
           if (avoided === undefined) return undefined;
           args.push(avoided);
         }
@@ -1068,14 +1165,8 @@ export class Subtyper {
       return this.#latticeFun(s, t, true) ?? TUnknown;
     }
 
-    // Datatypes are nominal and their arguments invariant, so there is no
-    // structure left to walk: either the two are the same type or they have
-    // nothing above them but top. `#eqtype` and not `alphaEq`, since a
-    // `never`-bounded variable is equivalent to types it is not spelled like.
     if (s.kind === "TData" && t.kind === "TData") {
-      return s.name === t.name && this.#eqtypeArgs(s.args, t.args)
-        ? s
-        : TUnknown;
+      return this.#latticeData(s, t, true) ?? TUnknown;
     }
 
     // A `BVar` is only itself, though no binder is open here for one to
@@ -1106,10 +1197,8 @@ export class Subtyper {
       return this.#latticeFun(s, t, false) ?? TNever;
     }
 
-    // Dual to `#join`: invariance leaves equivalence as the only question to
-    // ask about two datatypes, and nothing below.
     if (s.kind === "TData" && t.kind === "TData") {
-      return s.name === t.name && this.#eqtypeArgs(s.args, t.args) ? s : TNever;
+      return this.#latticeData(s, t, false) ?? TNever;
     }
 
     if (s.kind === "BVar" && t.kind === "BVar" && s.index === t.index) return s;
@@ -1119,6 +1208,38 @@ export class Subtyper {
   /** `#join` when `up`, `#meet` otherwise -- so one arrow case serves both. */
   #lattice(left: Type, right: Type, up: boolean): Type {
     return up ? this.#join(left, right) : this.#meet(left, right);
+  }
+
+  /**
+   * Join or meet two datatypes argumentwise, or `undefined` where their shapes
+   * leave nothing better than top or bottom to say.
+   *
+   * Nominal, so two names that differ have nothing between them either way --
+   * there is no structure to walk and no third datatype to appeal to. Same
+   * name, and each argument goes where its parameter's variance sends it: a
+   * covariant one the way the pair went, a contravariant one the other way.
+   *
+   * An invariant argument may not move at all, so unless the two are already
+   * equivalent there is no `Foo` between them and the whole answer collapses.
+   * `#eqtype` and not `alphaEq`, since a `never`-bounded variable is
+   * equivalent to types it is not spelled like.
+   */
+  #latticeData(
+    s: Extract<Type, { kind: "TData" }>,
+    t: Extract<Type, { kind: "TData" }>,
+    up: boolean,
+  ): Type | undefined {
+    if (s.name !== t.name || s.args.length !== t.args.length) return undefined;
+    const args = [];
+    for (const [i, mine] of s.args.entries()) {
+      const other = t.args[i] ?? impossible("arities agree above");
+      const variance = this.#argVariance(s.name, i);
+      if (variance === 0) {
+        if (!this.#eqtype(mine, other)) return undefined;
+        args.push(mine);
+      } else args.push(this.#lattice(mine, other, variance > 0 ? up : !up));
+    }
+    return TData(s.name, args);
   }
 
   /**

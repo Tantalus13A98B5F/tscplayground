@@ -143,7 +143,7 @@ Deno.test("a constructor field may name a datatype declared later", () => {
   const fixture = elaborated(
     [
       "datatype Wrap[A] where",
-      "  | MkWrap(Flag)",
+      "  | MkWrap(A, Flag)",
       "datatype Flag where",
       "  | On",
     ].join("\n") + END,
