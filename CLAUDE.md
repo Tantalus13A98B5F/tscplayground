@@ -52,8 +52,12 @@ merged and never composed, and the inference writes it down. Bivariance -- a
 parameter nothing observes -- has no direction, so it collapses to covariant on
 the way out and is warned about at the declaration instead. `docs/variance.md`
 has the walk, the stopping criterion and the worked examples. Everything after
-that reads one number per argument through `Declarations.argVariance`, which
-answers invariant wherever it cannot answer at all.
+reads that number off the `TData` in front of it: a node carries its
+declaration's parameters by reference, so where an argument stands is a property
+of the type rather than a lookup, and a walk in `types.ts` can ask without
+knowing declarations exist. The parameters alone, not the whole declaration --
+that reaches its constructors' field types, and a `Type` that reached back into
+itself would not be a finite value.
 
 A mutable cell is a type _former_, `TRef`, and not a datatype the checker
 declares for itself. Almost nothing a datatype is would be true of it: it has no

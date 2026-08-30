@@ -12,7 +12,6 @@ import {
   BVar,
   FVar,
   type Level,
-  mkDataName,
   mkTypeParamInfo,
   TData,
   TFun,
@@ -29,6 +28,45 @@ import {
 /** Somewhere for a diagnostic to point at; no test reads it back. */
 const somewhere = mkPosition(mkFileId(0), 1, 1);
 
+/**
+ * A datatype whose variance is *stated* rather than inferred. This file's
+ * subject is what the relation does with a variance once it has one; where the
+ * variance comes from is `elaborate.test.ts`.
+ *
+ * A `DatatypeInfo` is a `DataHead`, so the one record both declares the
+ * datatype and heads every node made of it -- which is the point of the head
+ * living on the node: two `Cell`s cannot come to disagree about how their
+ * argument moves.
+ */
+function declare(
+  name: string,
+  ...variances: readonly Variance[]
+): DatatypeInfo {
+  return {
+    name: name,
+    params: variances.map((variance, j) => ({
+      hint: String.fromCharCode(65 + j),
+      named: true,
+      at: somewhere,
+      variance,
+    })),
+    ctors: [],
+    ctorsReported: false,
+    initialized: true,
+    at: somewhere,
+  };
+}
+
+/**
+ * One of each variance, so a walk that reads the wrong slot or forgets to
+ * compose shows up as a difference rather than as a coincidence.
+ */
+const CELL = declare("Cell", 0);
+const LIST = declare("List", 1);
+const SINK = declare("Sink", -1);
+const BOOL = declare("Bool");
+const INT = declare("Int");
+
 /** A `<bad>` to hand the relation, under a report a test stands in for. */
 const TBad = badUnder(reportError("something was already wrong", somewhere));
 
@@ -43,9 +81,9 @@ function saidBy(sub: Subtyper): string[] {
   return sub.diagnostics.map((d) => `${d.severity}: ${d.message}`);
 }
 
-const CellP = (arg: TypePattern) => TData(mkDataName("Cell"), [arg]);
-const ListP = (arg: TypePattern) => TData(mkDataName("List"), [arg]);
-const SinkP = (arg: TypePattern) => TData(mkDataName("Sink"), [arg]);
+const CellP = (arg: TypePattern) => TData(CELL, [arg]);
+const ListP = (arg: TypePattern) => TData(LIST, [arg]);
+const SinkP = (arg: TypePattern) => TData(SINK, [arg]);
 const fnP = (params: readonly TypePattern[], result: TypePattern) =>
   TFun([], params, result);
 
@@ -72,38 +110,24 @@ const down = (sub: Subtyper, type: Type, pattern: TypePattern) =>
 const exact = (sub: Subtyper, type: Type, pattern: TypePattern) =>
   sub.exactcast(type, pattern, somewhere);
 
-const Bool = TData(mkDataName("Bool"));
-const Int = TData(mkDataName("Int"));
-const Cell = (arg: Type) => TData(mkDataName("Cell"), [arg]);
+const Bool = TData(BOOL);
+const Int = TData(INT);
+const Cell = (arg: Type) => TData(CELL, [arg]);
 const RefP = (arg: TypePattern) => TRef(arg);
-const List = (arg: Type) => TData(mkDataName("List"), [arg]);
-const Sink = (arg: Type) => TData(mkDataName("Sink"), [arg]);
+const List = (arg: Type) => TData(LIST, [arg]);
+const Sink = (arg: Type) => TData(SINK, [arg]);
 const fn = (params: readonly Type[], result: Type) => TFun([], params, result);
 
 /**
- * A one-parameter datatype whose variance is *stated* rather than inferred.
- * This file's subject is what the relation does with a variance once it has
- * one; where the variance comes from is `elaborate.test.ts`.
- */
-function declare(name: string, variance: Variance): DatatypeInfo {
-  return {
-    name: mkDataName(name),
-    params: [{ hint: "A", named: true, at: somewhere, variance }],
-    ctors: [],
-    initialized: true,
-    at: somewhere,
-  };
-}
-
-/**
- * One of each, so a walk that reads the wrong slot or forgets to compose shows
- * up as a difference rather than as a coincidence.
+ * The table is still filled, though nothing in `subtype.ts` reads it any more:
+ * a node carries its own head, so the relation asks the type in front of it
+ * rather than a declaration behind it.
  */
 function fixture(): { context: Context; sub: Subtyper } {
   const declarations = new Declarations();
-  declarations.addDatatype(declare("Cell", 0));
-  declarations.addDatatype(declare("List", 1));
-  declarations.addDatatype(declare("Sink", -1));
+  for (const datatype of [CELL, LIST, SINK, BOOL, INT]) {
+    declarations.addDatatype(datatype);
+  }
   const context = new Context(declarations);
   return { context, sub: new Subtyper(context) };
 }
@@ -520,8 +544,7 @@ Deno.test("the lattice does not promote an EVar to a bound it has not got", () =
   //
   // Not a no-write guarantee: the lattice is never handed a type naming an
   // EVar in the first place. It joins a `match`'s arms and the bounds already
-  // recorded, and those are complete and EVar-free. What used to be `probe`
-  // enforced this from the inside; the invariant makes it unnecessary.
+  // recorded, and those are complete and EVar-free.
   const { context, sub } = fixture();
   const a = context.pushEVar("a");
   const evar = a.ref;
@@ -750,11 +773,11 @@ Deno.test("one batch's EVars may not depend on each other", () => {
 
 Deno.test("the bar for a refused dependency is the batch, not the context", () => {
   // An EVar pushed before the batch is ordinary: it is not a sibling, so the
-  // selection that cannot see a sibling has nothing to miss. The checker no
-  // longer builds this -- the batch is pushed after every argument is
-  // checked, so two batches never overlap -- but the rule is the batch's
-  // and is stated as such, and a bar of "any EVar anywhere" would be a
-  // different rule that happened to agree.
+  // selection that cannot see a sibling has nothing to miss. Nothing in the
+  // checker builds this -- the batch is pushed after every argument is checked,
+  // so two batches never overlap -- but the rule is the batch's and is stated
+  // as such, where a bar of "any EVar anywhere" would be a different rule that
+  // happened to agree.
   const { context, sub } = fixture();
   const outer = context.pushEVar("A");
   const [inner] = context.pushEVarBatch(["B"]);
@@ -996,9 +1019,24 @@ Deno.test("an extreme lifts into an argument that has an extreme", () => {
     .toBe("List[unknown]");
   expect(castToString(sub, down(sub, TUnknown, SinkP(TMissing))))
     .toBe("Sink[never]");
-  // And nested, where the two flips cancel.
+  // And nested, where the two flips cancel. The head lifts one level only --
+  // the inner `Sink` is filled by `#cast` walking what came back against the
+  // pattern again, which is what makes a deeper lift here redundant.
   expect(castToString(sub, up(sub, TNever, SinkP(SinkP(TMissing)))))
     .toBe("Sink[Sink[never]]");
+});
+
+Deno.test("a lift one level down reports about the shape it was asked for", () => {
+  // `List`'s argument has a least solution, so the head says nothing filling
+  // it; it is the walk back over `Cell[?]` that has to choose, and the report
+  // names the shape *that* lift could not name rather than the whole ask.
+  const { sub } = fixture();
+  expect(typeToString(up(sub, TNever, ListP(CellP(TMissing)))))
+    .toBe("List[Cell[never]]");
+  expect(saidBy(sub)).toEqual([
+    "warning: no least Cell[?] to cast never to: Cell's argument A is " +
+    "invariant, so it was taken to be never",
+  ]);
 });
 
 Deno.test("a cast out of an extreme warns rather than failing", () => {

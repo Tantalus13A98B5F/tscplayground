@@ -6,8 +6,8 @@
  * Two things in one file because they are one layer seen at two scales. The
  * declarations are the outermost scope: unscoped, fixed before the first binder
  * is pushed, and the same for every scope opened above them. Everything holding
- * a context is entitled to ask them a question -- the subtyper does at every
- * `TData`, for its variance -- and threading the table separately alongside the
+ * a context is entitled to ask them a question -- `#checkMatch` does, for a
+ * datatype's constructors -- and threading the table separately alongside the
  * context would only be the same reach spelled twice.
  *
  * Order is the point twice over. An EVar's solution may only mention
@@ -49,7 +49,7 @@
 
 import type { Position } from "../diagnostics/diagnostic.ts";
 import {
-  type DataName,
+  type DatatypeParam,
   FVar,
   type FVarRef,
   isClosed,
@@ -81,7 +81,7 @@ import {
  * a constructor's function type is derived rather than separately built.
  */
 
-export type CtorInfo = {
+export type DataCtorInfo = {
   readonly name: string;
   /** Field types, closed over the owning datatype's parameters. */
   readonly fields: readonly Type[];
@@ -89,46 +89,45 @@ export type CtorInfo = {
 };
 
 /**
- * One type parameter of a datatype: what it prints as, where it was written,
- * and how an argument filling it may move.
+ * A declared type parameter: the `DatatypeParam` every `TData` of this datatype
+ * shares, plus what only the declaration knows. The one record and not a copy
+ * -- `DatatypeInfo` is a `DataHead`, so the variance a node reads is the
+ * variance the inference wrote.
  *
- * A record and not a name, because the variance has to live somewhere and the
- * parameter is what it is about -- and because the site a phantom is reported
- * at is the parameter itself, not the declaration around it.
- *
- * `named` is false for a wildcard `_`, which is how an author says a parameter
- * is deliberately unused; nothing resolves to it and it is not reported as a
- * phantom.
+ * Both extras are the phantom warning's: `at` is the parameter itself rather
+ * than the declaration around it, which is where the caret points, and `named`
+ * is false for a wildcard `_` -- an author saying a parameter is deliberately
+ * unobserved, so nothing resolves to it and nothing is reported.
  */
-export type ParamInfo = {
-  /** What diagnostics print. `_` for a wildcard. */
-  readonly hint: string;
+export type DataParamInfo = DatatypeParam & {
   readonly named: boolean;
   readonly at: Position;
-  /**
-   * Filled by `inferDatatypeVariance`, once, after every datatype's
-   * constructors are in. Invariant until then, so a table read before the pass
-   * has run concludes less rather than something unsound.
-   */
-  variance: Variance;
 };
 
 export type DatatypeInfo = {
-  readonly name: DataName;
+  readonly name: string;
   /** Parameters, in order. Its length is the arity. */
-  readonly params: readonly ParamInfo[];
+  readonly params: readonly DataParamInfo[];
   /**
    * Filled by the second pass, so these two are assignable where the rest of
    * the entry is fixed at declaration. The array itself is replaced, never
    * pushed to.
    */
-  ctors: readonly CtorInfo[];
+  ctors: readonly DataCtorInfo[];
   /**
    * Whether `initCtors` has run. Not the same question as `ctors` being empty:
    * the two passes leave a signature standing with no constructors yet, and
    * this is what tells that apart from a datatype that turned out to have none.
    */
   initialized: boolean;
+  /**
+   * Whether elaborating those constructors reported anything, so a report
+   * already stands against this declaration. Recorded where it is known rather
+   * than read back off the fields, which cannot answer it: a failure stands as
+   * `<bad>` at any depth, and a duplicate constructor is dropped with its
+   * fields never walked.
+   */
+  ctorsReported: boolean;
   readonly at: Position;
 };
 
@@ -156,19 +155,6 @@ export class Declarations {
   /** Every datatype, in declaration order. */
   datatypes(): readonly DatatypeInfo[] {
     return [...this.#datatypes.values()];
-  }
-
-  /**
-   * How `name`'s `index`th argument may move -- the `ArgVariance` every walk
-   * over a `TData` consults.
-   *
-   * Invariant where the table cannot answer: an undeclared name, an argument
-   * past the arity, or a call made before the variance pass. Each of those is
-   * either already reported or a checker asking less than it could, and
-   * invariance is the reading that assumes nothing.
-   */
-  argVariance(name: string, index: number): Variance {
-    return this.#datatypes.get(name)?.params[index]?.variance ?? 0;
   }
 
   /**
@@ -205,16 +191,21 @@ export class Declarations {
    * constructors are refused here for the same reason, so the datatype that
    * owns the name owns the constructors that came with it.
    */
-  initCtors(name: string, ctors: readonly CtorInfo[]): boolean {
+  initCtors(
+    name: string,
+    ctors: readonly DataCtorInfo[],
+    reported: boolean,
+  ): boolean {
     const info = this.#datatypes.get(name);
     if (info === undefined || info.initialized) return false;
     info.ctors = ctors;
+    info.ctorsReported = reported;
     info.initialized = true;
     return true;
   }
 
   /** The constructor `name` of datatype `owner`, or `undefined`. */
-  ctorOf(owner: string, name: string): CtorInfo | undefined {
+  ctorOf(owner: string, name: string): DataCtorInfo | undefined {
     return this.#datatypes.get(owner)?.ctors.find(
       (ctor) => ctor.name === name,
     );
@@ -253,10 +244,8 @@ export type TypeVarEntry = {
  * invariants over it. Nothing it does consults the context -- the bar for a
  * bound is `batch`, which it carries -- so the operations sit here, leaving
  * `Context` only the push that allocates a batch and the lookup that finds one.
- *
- * No solution field: `Subtyper.withEVars` decides a batch all at once and
- * collects the answers in order, so nothing has to represent "not solved yet",
- * which is a state only that loop was ever in a position to observe.
+ * No solution field either: `Subtyper.withEVars` decides a batch all at once,
+ * so "not solved yet" is a state only that loop is in a position to observe.
  *
  * `hint` and not `name`: an EVar is reached from an `FVar` carrying its level,
  * never by name, so this is what a diagnostic prints and nothing else.
@@ -290,11 +279,6 @@ export class EVarEntry {
    * alone, blind to `?a` standing inside `?b`'s pending bounds. Refusing the
    * dependency keeps every batch a set of independent variables, which is the
    * condition under which each variable's own occurrences are the whole story.
-   *
-   * Stated as the batch's rule even though nothing tells batch from context
-   * apart any more -- `withEVars` runs only once every argument is checked, so
-   * two batches never overlap -- because the group deciding together is what
-   * makes the dependency unseeable.
    */
   readonly batch: number;
 
@@ -327,14 +311,13 @@ export class EVarEntry {
    * by `batch` -- since an EVar's constraints may only mention what stands to
    * the left of its group, exactly as its eventual solution must.
    *
-   * The bar is the batch and not this variable's own level: between the two
-   * stand only its siblings, and a sibling is refused even leftward (see
-   * `batch`). A caller decides that first and reports it where it is the
-   * program's doing, so reaching here with one is a checker bug and throws.
+   * The bar is the batch and not this variable's own level, nor the context's
+   * watermark: between the two stand only its siblings, and a sibling is
+   * refused even leftward (see `batch`), while everything to the batch's right
+   * is legitimately still standing. A caller avoids first and reports where it
+   * is the program's doing, so reaching here with one is a checker bug.
    */
   addConstraint(side: ConstraintSide, type: Type): void {
-    // Not `Context.assertClosed`: the bar is this batch, not the context's
-    // watermark, and everything to its right is legitimately still standing.
     if (!isClosed(type, this.batch)) {
       throw new Error(
         `bound on ?${this.hint}: mentions something at or past level ` +
@@ -388,15 +371,11 @@ export class Context {
 
   /**
    * The declaration table, which sits *beneath* the context: unscoped, fixed
-   * before the first binder is pushed, and the same for every scope opened
-   * over it. Kept here so that whoever holds a context can read a datatype's
-   * variance -- the subtyper does at every `TData` -- without being handed the
-   * table separately.
-   *
-   * Its own object all the same, since the elaborator builds it and only it
-   * writes to it. A context made with no table has an empty one, and an empty
-   * table answers invariant to everything, which is what every walk over a
-   * `TData` did before variance was inferred.
+   * before the first binder is pushed, and the same for every scope opened over
+   * it. Kept here so whoever holds a context can reach it without being handed
+   * the table separately. Its own object all the same, since the elaborator
+   * builds it and only it writes to it; a context made with none has an empty
+   * one.
    */
   constructor(readonly declarations: Declarations = new Declarations()) {}
 
@@ -430,7 +409,7 @@ export class Context {
    * indexing the entry under its name if it has one.
    */
   #push(entry: Entry): Level {
-    const level = mkLevel(this.#entries.length);
+    const level = mkLevel(this.size);
     this.#entries.push(entry);
 
     const name = entry.kind === "EVar" ? undefined : entry.name;

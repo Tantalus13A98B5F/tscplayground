@@ -472,28 +472,34 @@ Deno.test("two datatypes that name each other settle together", () => {
 
 Deno.test("a rotation is invariant, which one pass over the fields is not", () => {
   // Round 1 is `Foo[-A, +B, +C]` -- complete, plausible, and unsound: taking
-  // `+B` on faith licenses `Foo[A,B,C] <: Foo[A,B',C]` for `B <: B'`, and
-  // projecting `Shift` from the supertype then wants `B' <: B`. Any
+  // `+B` on faith licenses `Foo[A,B,C] <: Foo[A,B\',C]` for `B <: B\'`, and
+  // projecting `Shift` from the supertype then wants `B\' <: B`. Any
   // implementation that walks the fields once and stops answers round 1.
+  //
+  // `Shift` is written *first* on purpose, this being the one test where the
+  // constructor order is load-bearing. The rounds update one table in place, so
+  // a recursive occurrence read *after* the fields that decide it settles in
+  // the same pass -- move `Shift` last and one pass answers correctly here, by
+  // luck rather than by being right, and this stops catching anything.
   expect(variancesOf(
     ...BOOL,
     "datatype Foo[A, B, C] where",
+    "  | Shift(Foo[B, C, A])",
     "  | Arrow((A) -> B)",
     "  | Data(C)",
-    "  | Shift(Foo[B, C, A])",
   )).toEqual(["Foo[=A, =B, =C]"]);
 });
 
 Deno.test("a rotation that never returns to its start settles all the same", () => {
   // `Foo[A,B,C] > Foo[B,C,A->B] > Foo[C,A->B,B->C]`: the unfolding does not
   // come back, so no argument about permutations reaches the answer and the
-  // fixed point is the only way to it.
+  // fixed point is the only way to it. `Shift` first, for the reason above.
   expect(variancesOf(
     ...BOOL,
     "datatype Foo[A, B, C] where",
+    "  | Shift(Foo[B, C, (A) -> B])",
     "  | Arrow((A) -> B)",
     "  | Data(C)",
-    "  | Shift(Foo[B, C, (A) -> B])",
   )).toEqual(["Foo[=A, =B, =C]"]);
 });
 
@@ -545,4 +551,24 @@ Deno.test("a datatype with a bad field is not also blamed for a phantom", () => 
     "datatype Tag[A] where",
     "  | MkTag(Nosuchtype)",
   )).toEqual(["error: unknown type Nosuchtype"]);
+
+  // However deep the bad type sits, and under whatever kind. Asking the
+  // *report* rather than searching the field types is what makes this hold
+  // for a kind nobody thought to look under.
+  expect(saidOf(
+    ...BOOL,
+    "datatype Tag[A] where",
+    "  | MkTag(Ref[Nosuchtype[A]])",
+  )).toEqual(["error: unknown type Nosuchtype"]);
+});
+
+Deno.test("a dropped duplicate takes its fields, so no phantom either", () => {
+  // The second `MkTag` is refused, and with it the only occurrence of `A`.
+  // The parameter is not what went wrong there either.
+  expect(saidOf(
+    ...BOOL,
+    "datatype Tag[A] where",
+    "  | MkTag(Bool)",
+    "  | MkTag(A)",
+  )).toEqual(["error: datatype Tag already has a constructor MkTag"]);
 });
