@@ -3,14 +3,15 @@ import { Context, type EVarEntry } from "./context.ts";
 import {
   alphaEq,
   BVar,
+  type DataHead,
   FVar,
-  mkDataName,
   mkLevel,
   TData,
   TUnknown,
 } from "./types.ts";
 
-const Bool = mkDataName("Bool");
+/** Nothing here reads a parameter back, so a nullary head is enough. */
+const Bool: DataHead = { name: "Bool", params: [] };
 
 /** Levels are positions, so a context has to be built to have any. */
 function withEVar(): { context: Context; a: EVarEntry } {
@@ -121,7 +122,7 @@ Deno.test("truncate ends a scope, keeping what came before it", () => {
 Deno.test("truncate past the end leaves the context alone", () => {
   const context = new Context();
   context.pushTermVar(TUnknown, "x");
-  context.truncate(99);
+  context.truncate(mkLevel(99));
   expect(context.size).toBe(1);
 });
 
@@ -152,7 +153,10 @@ Deno.test("assertClosed allows the binders a stored type was closed into", () =>
   // A constructor field over a 2-parameter datatype: no free levels, but two
   // legitimate `BVar`s. Checking it at depth zero would reject valid output.
   const context = new Context();
-  const field = TData(Bool, [BVar(0), BVar(1)]);
+  const field = TData(
+    { name: "Pair", params: [] },
+    [BVar(0), BVar(1)],
+  );
   expect(() => context.assertClosed("field", [field], 2)).not.toThrow();
   expect(() => context.assertClosed("field", [field])).toThrow();
 });

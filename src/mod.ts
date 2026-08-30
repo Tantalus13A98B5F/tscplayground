@@ -22,7 +22,7 @@ export type { Loaded, Require } from "./syntax/require.ts";
 export { loadSources, scanRequires } from "./syntax/require.ts";
 export type { TermNode, TypeNode } from "./syntax/ast.ts";
 export type { Token, TokenKind } from "./syntax/lexer.ts";
-export type { DataName, Level, Type } from "./core/types.ts";
+export type { Level, Type } from "./core/types.ts";
 export type {
   Binding,
   Entry,

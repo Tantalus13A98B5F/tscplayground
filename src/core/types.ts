@@ -27,10 +27,14 @@ import type { Diagnostic } from "../diagnostics/diagnostic.ts";
  * Sharing the space is why they share a node. An `FVar` names a level and
  * nothing more; whether that level holds a rigid variable or one still being
  * inferred is the entry's business, asked through `Context.evarAt`.
+ *
+ * Branded because a level is a *valid pointer* into the context, and the other
+ * numbers in every walk are not: a `BVar`'s index counts inward from its
+ * binder, and a bound like `isClosed`'s `levels` or a `truncate` mark names one
+ * past the end. Those stay plain numbers. Arithmetic drops the brand, so
+ * `mkLevel(mark + j)` is a caller saying the sum still points at an entry.
  */
 export type Level = number & { readonly __brand: "Level" };
-export type DataName = string & { readonly __brand: "DataName" };
-
 export const mkLevel = (n: number): Level => n as Level;
 
 /**
@@ -42,7 +46,45 @@ export const mkLevel = (n: number): Level => n as Level;
 export function impossible(what: string): never {
   throw new Error(`${what}: a case that cannot arise, did`);
 }
-export const mkDataName = (s: string): DataName => s as DataName;
+
+/**
+ * One type parameter of a *datatype*, as the types made of it read it: what an
+ * argument filling it prints as, and which way it may move. Not
+ * `TypeParamInfo`, which is a quantifier's binder and carries a bound instead.
+ *
+ * These two and no more, because a node carries this record and a node is not a
+ * declaration: where the parameter was written is the declaration's business,
+ * which is what `DataParamInfo` adds, so nothing in a type carries a source
+ * position around.
+ */
+export type DatatypeParam = {
+  /** What diagnostics print. `_` for a wildcard. */
+  readonly hint: string;
+  /**
+   * Filled by `inferDatatypeVariance`, once, after every datatype's
+   * constructors are in. Invariant until then, so a walk reading it before the
+   * pass has run concludes less rather than something unsound.
+   */
+  variance: Variance;
+};
+
+/**
+ * What a `TData` needs to name the datatype it is one of: the name it prints
+ * as, and the parameters it saturates. A `DatatypeInfo` is one, so a node keeps
+ * what elaboration resolved and no walk over a type consults a table to learn
+ * which way an argument may move.
+ *
+ * Two invariants hold it to this shape. The parameters are *by reference*, not
+ * copied: variance is inferred a pass after the fields mentioning it are built,
+ * so a copied number would be the seed forever. And this much of the
+ * declaration and no more, so that `Type` stays a finite value -- a
+ * `DatatypeInfo` reaches its constructors' field types, and those are types
+ * again.
+ */
+export type DataHead = {
+  readonly name: string;
+  readonly params: readonly DatatypeParam[];
+};
 
 /**
  * One of a `TFun`'s quantified parameters. `hint` is for printing only -- the
@@ -95,21 +137,19 @@ export type TypeMaybe<M> =
   /** Saturated nominal constructor. Primitives are the nullary case. */
   | {
     readonly kind: "TData";
-    readonly name: DataName;
+    readonly name: string;
+    /** The declaration's own, by reference -- see `DataHead`. */
+    readonly params: readonly DatatypeParam[];
     readonly args: readonly TypeMaybe<M>[];
   }
   /**
-   * `Ref[T]`, a mutable cell. Its own kind rather than a `TData` the checker
-   * declares for itself, because almost nothing a datatype is would be true of
-   * it: it has no constructors, nothing takes one apart, and its argument is
-   * invariant for a reason no walk over constructor fields could find --
-   * `get!` reads a `T` out where `set!` puts one in, and neither of those is a
-   * field.
-   *
-   * So the invariance is written where every walk can see it, as a literal
-   * `0`, rather than stipulated in a table and looked up. A cell is a type
-   * *former* like the arrow, not a nominal type, which is also why it carries
-   * no name: two `Ref`s are the same type when their arguments are.
+   * `Ref[T]`, a mutable cell -- a type *former* like the arrow, not a nominal
+   * type, which is why it carries no name: two `Ref`s are the same type when
+   * their arguments are. Not a `TData` the checker declares for itself, since
+   * it has no constructors, nothing takes one apart, and its argument is
+   * invariant for a reason no walk over constructor fields could find: `get!`
+   * reads a `T` out where `set!` puts one in, and neither is a field. So every
+   * walk writes that invariance as a literal `0` rather than looking it up.
    */
   | { readonly kind: "TRef"; readonly arg: TypeMaybe<M> }
   | MissingPart<M>;
@@ -149,10 +189,6 @@ const TBad: BadType = { kind: "TBad" };
  *
  * An error, and not a warning: a warning is something the program may go on
  * from, so it licenses nothing to stop saying. Nor `info`.
- *
- * Propagating an existing one needs nothing: `<bad>` is a singleton and its
- * witness is whatever put it there, so a rule that already holds one hands
- * that same value on.
  */
 export function badUnder(witness: Diagnostic): BadType {
   if (witness.severity !== "error") {
@@ -189,11 +225,27 @@ export function TFun<M = never>(
   return { kind: "TFun", typeParams, params, result };
 }
 
+/**
+ * `head` is the declaration when elaboration builds one, and the node being
+ * rebuilt when a walk does -- a `TData` is its own `DataHead`, so a walk
+ * mapping over the arguments passes the node it is standing on.
+ */
 export function TData<M = never>(
-  name: DataName,
+  head: DataHead,
   args: readonly TypeMaybe<M>[] = [],
 ): TypeMaybe<M> {
-  return { kind: "TData", name, args };
+  return { kind: "TData", name: head.name, params: head.params, args };
+}
+
+/**
+ * Where `type`'s `index`th argument stands.
+ *
+ * Invariant where there is no parameter to read -- an over-long argument list,
+ * which elaboration reports rather than builds. The reading that assumes
+ * nothing, should a walk ever build one anyway.
+ */
+export function argVarianceOf(type: DataHead, index: number): Variance {
+  return type.params[index]?.variance ?? 0;
 }
 
 export function TRef<M = never>(arg: TypeMaybe<M>): TypeMaybe<M> {
@@ -213,9 +265,8 @@ export function mkTypeParamInfo<M = never>(
  * move at all.
  *
  * Numbers because the only operation is flipping, and flipping is negation --
- * which is also why `0` is its own flip, and so why a position inside an
- * invariant one stays invariant however deep below it sits. Testing is by
- * sign.
+ * which is why `0` is its own flip, and so why a position inside an invariant
+ * one stays invariant however deep below it sits. Testing is by sign.
  *
  * Not what a *variable* comes to: that is a set of the positions it was found
  * in, which `EVarEntry` keeps, and whose empty case has no variance to name.
@@ -223,36 +274,29 @@ export function mkTypeParamInfo<M = never>(
 export type Variance = -1 | 0 | 1;
 
 /**
- * Contravariant positions swap the two directions and fix invariance.
- *
- * Negation, which is why invariance needs no case: `0` is its own flip.
+ * A variance that is actually going somewhere. Invariance is the case with no
+ * extreme, no lattice answer and nothing to widen towards, so the operations
+ * that have nothing to say about it say so here rather than in a comment.
  */
+export type Direction = Exclude<Variance, 0>;
+
+/**
+ * Contravariant positions swap the two directions and fix invariance: negation,
+ * so `0` needs no case and a direction flips to a direction.
+ */
+export function flip(variance: Direction): Direction;
+export function flip(variance: Variance): Variance;
 export function flip(variance: Variance): Variance {
   return -variance as Variance;
 }
 
 /**
  * A position reached through another position: multiplication, which is why
- * `flip` is the special case of composing with a contravariant one, and why
- * `0` absorbs -- anything inside an invariant position is invariant, however
- * deep below it sits.
+ * `flip` is composing with a contravariant one and why `0` absorbs.
  */
 export function composeVariance(outer: Variance, inner: Variance): Variance {
   return (outer * inner) as Variance;
 }
-
-/**
- * How a datatype's `index`th argument may move. A rule and not the table
- * itself: variance is read off a declaration, and declarations are built on
- * top of this file rather than known to it.
- *
- * `invariantArgs` is the answer where there is nothing to consult, and is what
- * every argument had before variance was inferred: sound, since an invariant
- * argument demands the most and so concludes the least.
- */
-export type ArgVariance = (name: DataName, index: number) => Variance;
-
-export const invariantArgs: ArgVariance = () => 0;
 
 /**
  * What an opening puts in a bound variable's place, told the index and *where
@@ -269,83 +313,64 @@ export type OpenRule<M = never> = (
 ) => TypeMaybe<M>;
 
 /**
- * Replace the variables of the nearest enclosing binder. A datatype binds its
- * parameters the same way, so instantiating a constructor and a quantifier are
- * one operation.
+ * Replace the variables of the nearest enclosing binder, reading the whole type
+ * as a covariant position. A datatype binds its parameters the same way, so
+ * instantiating a constructor and a quantifier are one operation. The general
+ * form; `openMany` is this with a rule that only looks up.
  *
- * `here` is the variance of the position being rebuilt, flipped at the same
- * places `#avoid` swaps direction on -- the two have to agree about what a
- * position is.
- */
-function openAt<M>(
-  type: TypeMaybe<M>,
-  depth: number,
-  rule: OpenRule<M>,
-  here: Variance,
-  args: ArgVariance,
-): TypeMaybe<M> {
-  switch (type.kind) {
-    case "TUnknown":
-    case "TNever":
-    case "TBad":
-    case "TMissing":
-    case "FVar":
-      return type;
-    case "BVar":
-      // Bound by a binder inside the one being opened: leave it alone.
-      return type.index < depth ? type : rule(type.index - depth, here);
-    case "TFun": {
-      // Bounds are parallel, so they stay at `depth`; only what the binder
-      // scopes over -- the parameters and the result -- moves inward. Both
-      // bounds and parameters are contravariant; the result alone is not.
-      const inner = depth + type.typeParams.length;
-      return TFun(
-        type.typeParams.map((b) =>
-          mkTypeParamInfo(
-            b.hint,
-            openAt(b.bound, depth, rule, flip(here), args),
-          )
-        ),
-        type.params.map((param) =>
-          openAt(param, inner, rule, flip(here), args)
-        ),
-        openAt(type.result, inner, rule, here, args),
-      );
-    }
-    case "TData":
-      // Not a binder, but skipping it leaves stale `BVar`s and nothing objects.
-      // An argument stands where its parameter's variance says, composed with
-      // wherever this node itself stands.
-      return TData(
-        type.name,
-        type.args.map((arg, i) =>
-          openAt(
-            arg,
-            depth,
-            rule,
-            composeVariance(here, args(type.name, i)),
-            args,
-          )
-        ),
-      );
-    // Invariant, written here rather than looked up: a cell's argument moves
-    // neither way, and `0` is its own flip, so everything below it is
-    // invariant however deep it sits.
-    case "TRef":
-      return TRef(openAt(type.arg, depth, rule, 0, args));
-  }
-}
-
-/**
- * Open a binder by rule, reading the whole type as a covariant position. The
- * general form; `openMany` is this with a rule that only looks up.
+ * `here` is the variance of the position being rebuilt, and it flips where
+ * `#avoid` swaps direction -- the two have to agree about what a position is.
  */
 export function openWith<M = never>(
   type: TypeMaybe<M>,
   rule: OpenRule<M>,
-  args: ArgVariance = invariantArgs,
 ): TypeMaybe<M> {
-  return openAt(type, 0, rule, 1, args);
+  const openAt = (
+    type: TypeMaybe<M>,
+    depth: number,
+    here: Variance,
+  ): TypeMaybe<M> => {
+    switch (type.kind) {
+      case "TUnknown":
+      case "TNever":
+      case "TBad":
+      case "TMissing":
+      case "FVar":
+        return type;
+      case "BVar":
+        // Bound by a binder inside the one being opened: leave it alone.
+        return type.index < depth ? type : rule(type.index - depth, here);
+      case "TFun": {
+        // Bounds are parallel, so they stay at `depth`; only what the binder
+        // scopes over -- the parameters and the result -- moves inward. Both
+        // bounds and parameters are contravariant; the result alone is not.
+        const inner = depth + type.typeParams.length;
+        return TFun(
+          type.typeParams.map((b) =>
+            mkTypeParamInfo(b.hint, openAt(b.bound, depth, flip(here)))
+          ),
+          type.params.map((param) => openAt(param, inner, flip(here))),
+          openAt(type.result, inner, here),
+        );
+      }
+      case "TData":
+        // Not a binder, but skipping it leaves stale `BVar`s and nothing
+        // objects. An argument stands where its parameter's variance says,
+        // composed with wherever this node itself stands -- and the node knows
+        // its own parameters, so nothing has to be threaded in to ask.
+        return TData(
+          type,
+          type.args.map((arg, i) =>
+            openAt(arg, depth, composeVariance(here, argVarianceOf(type, i)))
+          ),
+        );
+      // A cell's argument moves neither way, and `0` absorbs, so everything
+      // below it is invariant however deep it sits.
+      case "TRef":
+        return TRef(openAt(type.arg, depth, 0));
+    }
+  };
+  return openAt(type, 0, 1);
 }
 
 /** Instantiate a binder's variables, `BVar j` taking `replacements[j]`. */
@@ -408,10 +433,7 @@ function closeAt<M>(
       );
     }
     case "TData":
-      return TData(
-        type.name,
-        type.args.map((arg) => closeAt(arg, depth, mark)),
-      );
+      return TData(type, type.args.map((arg) => closeAt(arg, depth, mark)));
     case "TRef":
       return TRef(closeAt(type.arg, depth, mark));
   }
@@ -491,8 +513,7 @@ export function isClosed<M>(
  * `bad` is asked for only where a part is missing, and asked at most once
  * however many are: what a caller does there is report, and the report is
  * about the pattern rather than about any one hole in it. A pattern that was
- * complete never calls it, which is how a caller learns it invented nothing --
- * the question it used to ask as `already`.
+ * complete never calls it, which is how a caller learns it invented nothing.
  */
 export function completePattern(
   pattern: TypePattern,
@@ -514,7 +535,7 @@ export function completePattern(
           walk(pattern.result),
         );
       case "TData":
-        return TData(pattern.name, pattern.args.map(walk));
+        return TData(pattern, pattern.args.map(walk));
       case "TRef":
         return TRef(walk(pattern.arg));
       default:

@@ -37,20 +37,18 @@ import {
 import type {
   AliasInfo,
   Context,
-  CtorInfo,
+  DataCtorInfo,
+  DataParamInfo,
   DatatypeInfo,
   Declarations,
-  ParamInfo,
 } from "./context.ts";
 import {
   badUnder,
   BVar,
   closeFrom,
-  type DataName,
   flip,
   FVar,
   impossible,
-  mkDataName,
   mkTypeParamInfo,
   openMany,
   TData,
@@ -133,7 +131,7 @@ export class Elaborator {
         at,
       );
       if (wrong !== undefined) return badUnder(wrong);
-      return TData(datatype.name, args);
+      return TData(datatype, args);
     }
 
     return badUnder(this.#report(`unknown type ${text}`, at, width));
@@ -195,11 +193,10 @@ export class Elaborator {
     params: readonly TypeParam[],
     decided?: readonly Type[],
   ): TypeParamInfo[] {
-    // Bounds already decided, where the caller has more to go on than what is
-    // written -- a checking context supplying one an author left out. Deciding
-    // is then the caller's whole business, including which of the two wins, so
-    // `param.bound` is not consulted. What stays either way is the group:
-    // parallel elaboration, and the names.
+    // Where the caller has more to go on than what is written -- a checking
+    // context supplying a bound an author left out -- deciding is the caller's
+    // whole business, including which of the two wins, so `param.bound` is not
+    // consulted at all.
     const bounds = decided ??
       params.map((param) =>
         param.bound === undefined ? TUnknown : this.elaborateType(param.bound)
@@ -272,11 +269,17 @@ export class Elaborator {
 
     for (const decl of decls) {
       if (decl.kind !== "DatatypeDecl") continue;
-      this.declarations.initCtors(decl.name.text, this.#elaborateCtors(decl));
+      // Measured here because nothing read back off the field types answers
+      // it -- see `DatatypeInfo.ctorsReported`.
+      const before = this.diagnostics.length;
+      const ctors = this.#elaborateCtors(decl);
+      this.declarations.initCtors(
+        decl.name.text,
+        ctors,
+        this.diagnostics.length > before,
+      );
     }
 
-    // A third pass, and it has to be: variance is a property of the whole
-    // table at once, since two datatypes may name each other.
     inferDatatypeVariance(this.declarations.datatypes(), this.diagnostics);
   }
 
@@ -295,9 +298,10 @@ export class Elaborator {
     decl: DatatypeDecl,
   ): DatatypeInfo {
     return {
-      name: mkDataName(decl.name.text),
-      params: decl.typeParams.map(mkParamInfo),
+      name: decl.name.text,
+      params: decl.typeParams.map(mkDataParamInfo),
       ctors: [],
+      ctorsReported: false,
       initialized: false,
       at: decl.at,
     };
@@ -306,7 +310,7 @@ export class Elaborator {
   /** Elaborate a datatype's constructors under its type parameters. */
   #elaborateCtors(
     decl: DatatypeDecl,
-  ): CtorInfo[] {
+  ): DataCtorInfo[] {
     const ctors = this.context.inScope((mark) => {
       this.#bindPlainParams(decl.typeParams);
 
@@ -314,7 +318,7 @@ export class Elaborator {
       // datatype for its `Nil`, so two may each have one. The duplicate drops
       // out and the name stays, so a later `| Nil ->` is not a second error.
       const seen = new Set<string>();
-      return decl.ctors.flatMap((ctor): CtorInfo[] => {
+      return decl.ctors.flatMap((ctor): DataCtorInfo[] => {
         if (seen.has(ctor.name.text)) {
           this.#report(
             `datatype ${decl.name.text} already has a constructor ` +
@@ -397,11 +401,9 @@ export class Elaborator {
    * syntax for, and that is the only thing unusual about it.
    *
    * A name and not a keyword, so `Ref` obeys whatever rule every other type
-   * name obeys rather than a rule of its own. Today that means a program
-   * declaring one is told the name is taken, a type parameter spelling it is
-   * told the same, and a wrong arity is reported the way `Pair[Bool]`'s is --
-   * all of it by machinery that was already there. If type names are ever made
-   * shadowable, this one follows without being revisited.
+   * name obeys -- being taken, being refused to a type parameter, being
+   * reported at the wrong arity -- by machinery that was already there. If type
+   * names are ever made shadowable, this one follows without being revisited.
    *
    *     ref! : [T](T) -> Ref[T]
    *     get! : [T](Ref[T]) -> T
@@ -414,10 +416,10 @@ export class Elaborator {
    * Built here rather than parsed from a prelude, which would need a `Ref` a
    * program could declare -- and the point of a type former is that none can.
    *
-   * The names carry a `!` because these are the operations that will have an
-   * effect once there is an evaluator to have it in. Nothing enforces the
-   * convention; what makes these three the only such names is that the parser
-   * admits a bang at no position where a name is bound.
+   * The `!` marks these as the operations that will have an effect once there
+   * is an evaluator to have it in. Nothing enforces the convention; what
+   * reserves the spelling is that the parser admits a bang at no position where
+   * a name is bound.
    */
   seedBuiltins(): void {
     const T = BVar(0);
@@ -454,9 +456,9 @@ export class Elaborator {
  */
 export function constructorType(
   datatype: DatatypeInfo,
-  ctor: CtorInfo,
+  ctor: DataCtorInfo,
 ): Type {
-  const result = TData(datatype.name, datatype.params.map((_, j) => BVar(j)));
+  const result = TData(datatype, datatype.params.map((_, j) => BVar(j)));
   if (datatype.params.length === 0 && ctor.fields.length === 0) return result;
   return TFun(
     datatype.params.map((param) => mkTypeParamInfo(param.hint, TUnknown)),
@@ -467,7 +469,7 @@ export function constructorType(
 
 /** Instantiate a constructor's fields at a scrutinee's type arguments. */
 export function ctorFieldsAt(
-  ctor: CtorInfo,
+  ctor: DataCtorInfo,
   args: readonly Type[],
 ): readonly Type[] {
   return ctor.fields.map((field) => openMany(field, args));
@@ -486,7 +488,7 @@ export function aliasBodyAt(
  * Invariant to begin with, which `inferDatatypeVariance` replaces once every
  * datatype's fields are in.
  */
-function mkParamInfo(name: BindingIdent): ParamInfo {
+function mkDataParamInfo(name: BindingIdent): DataParamInfo {
   return {
     hint: bindingHint(name),
     named: name.text !== undefined,
@@ -501,16 +503,16 @@ function mkParamInfo(name: BindingIdent): ParamInfo {
  * What a datatype's parameters do to its arguments, read off its constructor
  * fields rather than declared.
  *
- * Inferred and not written, because checking a written `+A` needs the same
- * walk that inferring it does -- so the inference is the part we need either
- * way, and an annotation would be a layer on top. The usual reason to demand
- * one is separate compilation, a library's variance being part of its
- * published interface; the require walk is textual and flat, so there is no
- * library boundary here to protect.
+ * Inferred and not written, because checking a written `+A` needs the same walk
+ * that inferring it does, so an annotation would be a layer on top of the part
+ * needed either way. The usual reason to demand one is separate compilation,
+ * where a library's variance is part of its published interface; the require
+ * walk is textual and flat, so there is no such boundary to protect.
  *
  * Run once, after every datatype's constructors are in, and it writes its
- * answer into `ParamInfo.variance`. Everything downstream reads that through
- * `Declarations.argVariance`.
+ * answer into `DataParamInfo.variance`, which every `TData` of that datatype
+ * already holds by reference -- so this pass makes the answer visible to every
+ * node built before it ran.
  */
 
 /**
@@ -525,8 +527,12 @@ function mkParamInfo(name: BindingIdent): ParamInfo {
  */
 type Occurrence = { covariantly: boolean; contravariantly: boolean };
 
-/** One row per datatype, one entry per parameter. */
-type Table = ReadonlyMap<DataName, readonly Occurrence[]>;
+/**
+ * One row per datatype, one entry per parameter -- and one table for the whole
+ * fixed point, read and written in place. Neither the map nor a row is ever
+ * replaced; only the flags move, and only ever from false to true.
+ */
+type Table = ReadonlyMap<string, readonly Occurrence[]>;
 
 /**
  * Every parameter of every datatype at the *most permissive* point, which is
@@ -545,7 +551,7 @@ type Table = ReadonlyMap<DataName, readonly Occurrence[]>;
  * is correct rather than hopeful: soundness for a nominal recursive type is a
  * coinductive property, and the greatest permissive fixed point states it.
  */
-function seed(datatypes: readonly DatatypeInfo[]): Map<DataName, Occurrence[]> {
+function seed(datatypes: readonly DatatypeInfo[]): Map<string, Occurrence[]> {
   return new Map(datatypes.map((datatype) => [
     datatype.name,
     datatype.params.map(() => ({
@@ -579,16 +585,18 @@ function flagsSet(table: Table): number {
  * is why there is no contravariant entry, and why a mutable cell has to arrive
  * as a builtin rather than as a datatype this walk would have to model.
  *
- * `depth` tracks binders the way `openAt` does, because a field may hold a
- * function type of its own and those `BVar`s are not the datatype's. `snapshot`
- * is last round's table, read and never written -- see `inferDatatypeVariance`.
+ * `depth` tracks binders the way `openWith` does, because a field may hold a
+ * function type of its own and those `BVar`s are not the datatype's. `row` is
+ * this datatype's entry in `table` and the only thing written -- and `table` is
+ * that same table, so a `TData` may read a row this round has already moved,
+ * its own included.
  */
 function noteField(
   type: Type,
   depth: number,
   variance: Variance,
   row: readonly Occurrence[],
-  snapshot: Table,
+  table: Table,
 ): void {
   switch (type.kind) {
     case "TUnknown":
@@ -613,12 +621,12 @@ function noteField(
       // Bounds are parallel, so they stay at `depth`; both they and the
       // parameters are contravariant, and the result alone is not.
       for (const binder of type.typeParams) {
-        noteField(binder.bound, depth, flipped, row, snapshot);
+        noteField(binder.bound, depth, flipped, row, table);
       }
       for (const param of type.params) {
-        noteField(param, inner, flipped, row, snapshot);
+        noteField(param, inner, flipped, row, table);
       }
-      noteField(type.result, inner, variance, row, snapshot);
+      noteField(type.result, inner, variance, row, table);
       return;
     }
 
@@ -626,14 +634,14 @@ function noteField(
     // declaration to consult and so no round in which the answer could still
     // be moving.
     case "TRef":
-      noteField(type.arg, depth, 0, row, snapshot);
+      noteField(type.arg, depth, 0, row, table);
       return;
 
     case "TData": {
       // Reading the table here is what makes this walk terminate on a
       // recursive datatype: `Foo[X]` recurses into `X`, a proper subterm, and
       // never unfolds `Foo`. Only the *table* iterates.
-      const target = snapshot.get(type.name);
+      const target = table.get(type.name);
       type.args.forEach((arg, i) => {
         // An undeclared name is already reported; invariance asks the least of
         // this walk and so concludes the least.
@@ -644,11 +652,11 @@ function noteField(
         // contributes nothing, so the sub-walk is dropped rather than run at
         // some position it would then have to invent.
         if (occurrence.covariantly && occurrence.contravariantly) {
-          noteField(arg, depth, 0, row, snapshot);
+          noteField(arg, depth, 0, row, table);
         } else if (occurrence.covariantly) {
-          noteField(arg, depth, variance, row, snapshot);
+          noteField(arg, depth, variance, row, table);
         } else if (occurrence.contravariantly) {
-          noteField(arg, depth, flip(variance), row, snapshot);
+          noteField(arg, depth, flip(variance), row, table);
         }
       });
       return;
@@ -656,21 +664,16 @@ function noteField(
   }
 }
 
-/** Every field of every datatype, once, against `snapshot`. */
-function oneRound(
-  datatypes: readonly DatatypeInfo[],
-  snapshot: Table,
-): Map<DataName, Occurrence[]> {
-  const fresh = seed(datatypes);
+/** Every field of every datatype, once, merged into `table` as it goes. */
+function oneRound(datatypes: readonly DatatypeInfo[], table: Table): void {
   for (const datatype of datatypes) {
-    const row = fresh.get(datatype.name) ?? impossible("a row per datatype");
+    const row = table.get(datatype.name) ?? impossible("a row per datatype");
     for (const ctor of datatype.ctors) {
       for (const field of ctor.fields) {
-        noteField(field, 0, 1, row, snapshot);
+        noteField(field, 0, 1, row, table);
       }
     }
   }
-  return fresh;
 }
 
 /**
@@ -687,22 +690,26 @@ function oneRound(
  * termination argument: at most `2n` rounds change anything and one more
  * notices.
  *
- * Each round reads last round's table and writes a fresh one (Jacobi) rather
- * than updating in place. In place reaches the same fixed point and often
- * sooner, but the round *counts* are then implementation-defined, and those
- * counts are what catches a one-pass bug: round 1 of a recursive datatype is a
- * complete, plausible, unsound answer, because every recursive occurrence was
- * still being pruned.
+ * One table, read and written in place: a field sees what the fields before it
+ * found. Sound for the same reason the whole thing is -- the walk only sets
+ * flags, so a row that has already moved concludes at least as much as the row
+ * it moved from, and the least fixed point above the seed is the same either
+ * way. Only the round count changes, and only downwards.
+ *
+ * Which makes a round count declaration-order dependent, and so worth nothing
+ * on its own: a recursive occurrence read after the fields that decide it
+ * settles a pass earlier than one read before them. Nothing asserts a count.
+ * `docs/variance.md` §6 has the traces, and says why an example meant to catch
+ * a checker that never loops has to write its recursive constructor first.
  */
 export function inferDatatypeVariance(
   datatypes: readonly DatatypeInfo[],
   diagnostics: Diagnostic[],
 ): void {
-  let table: Table = seed(datatypes);
+  const table = seed(datatypes);
   for (let flags = 0;;) {
-    const next = oneRound(datatypes, table);
-    table = next;
-    const grown = flagsSet(next);
+    oneRound(datatypes, table);
+    const grown = flagsSet(table);
     if (grown === flags) break;
     flags = grown;
   }
@@ -710,9 +717,29 @@ export function inferDatatypeVariance(
   for (const datatype of datatypes) {
     const row = table.get(datatype.name) ?? impossible("a row per datatype");
     datatype.params.forEach((param, j) => {
-      const occurrence = row[j] ?? impossible("an entry per parameter");
-      param.variance = varianceOf(occurrence);
-      if (isPhantom(occurrence) && param.named && !anyFieldIsBad(datatype)) {
+      const { covariantly, contravariantly } = row[j] ??
+        impossible("an entry per parameter");
+
+      // Read back as a `Variance`, which has to answer for bivariance and has
+      // no point to answer with. It collapses to covariant: sound, and
+      // incomplete only for a parameter no program can observe -- which is
+      // what the warning below says instead, once, at the declaration that
+      // knows.
+      param.variance = covariantly && contravariantly
+        ? 0
+        : contravariantly
+        ? -1
+        : 1;
+
+      // A phantom: observed by nothing, transitively. Not reported for a
+      // wildcard, which is how an author says a parameter is deliberately
+      // unobserved, nor where a report already stands against the declaration
+      // -- a parameter occurring only in a field that failed to elaborate
+      // looks unused, and one mistake should not be blamed twice.
+      if (
+        !covariantly && !contravariantly && param.named &&
+        !datatype.ctorsReported
+      ) {
         diagnostics.push(reportWarning(
           `nothing observes the type parameter ${param.hint} of ` +
             `${datatype.name}, so it makes no difference to the type; write ` +
@@ -723,44 +750,4 @@ export function inferDatatypeVariance(
       }
     });
   }
-}
-
-/**
- * A position read back as a `Variance`, which has to answer for bivariance and
- * has no point to answer with. It collapses to covariant: sound, and
- * incomplete only for a parameter no program can observe -- which is what the
- * phantom warning says instead, once, at the declaration that knows.
- */
-function varianceOf(occurrence: Occurrence): Variance {
-  if (occurrence.covariantly && occurrence.contravariantly) return 0;
-  if (occurrence.contravariantly) return -1;
-  return 1;
-}
-
-function isPhantom(occurrence: Occurrence): boolean {
-  return !occurrence.covariantly && !occurrence.contravariantly;
-}
-
-/**
- * Whether anything in this datatype failed to elaborate. A field that did
- * stands as `<bad>` with a report already made, and a parameter that occurred
- * only there then looks unused -- so the phantom warning is dropped for the
- * whole declaration rather than blaming the author twice for one mistake. The
- * inference itself still runs.
- */
-function anyFieldIsBad(datatype: DatatypeInfo): boolean {
-  const holdsBad = (type: Type): boolean => {
-    switch (type.kind) {
-      case "TBad":
-        return true;
-      case "TFun":
-        return type.typeParams.some((binder) => holdsBad(binder.bound)) ||
-          type.params.some(holdsBad) || holdsBad(type.result);
-      case "TData":
-        return type.args.some(holdsBad);
-      default:
-        return false;
-    }
-  };
-  return datatype.ctors.some((ctor) => ctor.fields.some(holdsBad));
 }

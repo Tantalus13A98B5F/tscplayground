@@ -4,8 +4,9 @@ Datatype arguments used to be invariant by fiat: `#cast` passed a literal `0`
 per argument, and `#subtype`, `#eqtype`, `#join` and `#meet` all reached for an
 `#eqtypeArgs`. This is the pass that replaced that literal with something read
 off the declaration -- the last pass of `elaborateDeclarations`, run once every
-datatype's constructors are in, writing into `ParamInfo.variance` and read back
-through `Declarations.argVariance`.
+datatype's constructors are in, writing into `DataParamInfo.variance` -- which
+every `TData` holds by reference, so a node says where its own arguments stand
+and no walk consults a table to find out.
 
 Written as a design note before any of it existed, and kept as the description
 of what was built; where the two would differ, the note has been brought to the
@@ -109,10 +110,9 @@ walk reads positions that the same round is computing.
 
 Seed every parameter of every datatype at bivariant. Then repeat:
 
-1. Snapshot the table.
-2. For every datatype, for every constructor, for every field, walk it at `+1`
-   against the snapshot, merging what it finds into a fresh table.
-3. Stop when the fresh table equals the snapshot.
+1. For every datatype, for every constructor, for every field, walk it at `+1`
+   against the table, merging what it finds into that same table.
+2. Stop when a round set no flag that was not set already.
 
 Concretely, and easier to assert in a test than a deep comparison: positions
 only ever descend, and a merge only ever flips a flag from false to true. So the
@@ -129,10 +129,20 @@ The fixed point is **global over the table, not per datatype**: two declarations
 may name each other, so it is one worklist over every parameter of every
 datatype.
 
-Snapshot (Jacobi) and not update-in-place (Gauss-Seidel). In-place reaches the
-same fixed point and often in fewer rounds, but the round _counts_ below are
-then implementation-defined, and those counts are the thing a test can use to
-catch a one-pass bug.
+One table, read and written in place (Gauss-Seidel), rather than a snapshot per
+round (Jacobi). A field sees what the fields before it found, which is sound for
+the same reason the whole thing is: the walk only ever sets flags, so a row that
+has already moved concludes at least as much as the row it moved from. The
+answer is the same either way -- it is the least fixed point above the seed, and
+the order contributions arrive in cannot change which one that is. Only the
+number of rounds changes, and only downwards.
+
+What that costs is a round _count_ that means anything on its own. It now
+depends on the order the constructors were declared in: a recursive occurrence
+read _after_ the fields that decide it settles within the same pass, where one
+read before them sees the seed, prunes, and waits for the round after. The
+tables in §6 therefore say which order they assume, and the one-pass trap at the
+foot of them only springs in one of the two.
 
 ## 5. Why the seed is optimistic
 
@@ -172,26 +182,34 @@ spell invariance `=`.)
 | 1     | +                |
 | 2     | + -- fixed point |
 
-Round 1 prunes the recursive occurrence, since `vA` is still bivariant; round 2
-reads `+` and merges `+` into `+`. Two rounds, `n = 1`, bound 3.
+`Cons`'s first field sets `vA` covariant, and the recursive `List[A]` beside it
+reads that same `+` a moment later and merges `+` into `+`. Round 2 finds
+nothing new. Two rounds, `n = 1`, bound 3.
 
-**A rotation.**
+**A rotation**, with the recursive constructor written first, which is what
+makes it take more than one pass.
 
     datatype Foo[A, B, C] where
+      | Shift(Foo[B, C, A])
       | Arrow(A -> B)
       | Data(C)
-      | Shift(Foo[B, C, A])
 
-Non-recursive fields give `A <- -`, `B <- +`, `C <- +`. The recursive field
-gives `B <- read(vA)`, `C <- read(vB)`, `A <- read(vC)`.
+The non-recursive fields give `A <- -`, `B <- +`, `C <- +`. The recursive field
+gives `B <- read(vA)`, `C <- read(vB)`, `A <- read(vC)`, and being written first
+it reads the seed.
 
 | round | vA    | vB    | vC               |
 | ----- | ----- | ----- | ---------------- |
 | 0     | T     | T     | T                |
 | 1     | -     | +     | +                |
-| 2     | **X** | **X** | +                |
-| 3     | X     | X     | **X**            |
-| 4     | X     | X     | X -- fixed point |
+| 2     | **X** | **X** | **X**            |
+| 3     | X     | X     | X -- fixed point |
+
+Round 1: `Shift` prunes every slot, all three still being bivariant, and the two
+plain fields then settle `-, +, +`. Round 2 is where reading in place tells:
+slot 0 sends `B` contravariant, slot 1 reads the `vB` that just became invariant
+and sends `C` there too, and slot 2 reads that `vC` and takes `vA` with it --
+all three in the one pass. Round 3 notices nothing moved.
 
 All three invariant. Confirmable by hand: `Shift` is a permutation, three shifts
 return to the start, slot 0 is contravariant and slot 1 covariant, so every
@@ -200,9 +218,9 @@ parameter visits both.
 **A rotation that grows.**
 
     datatype Foo[A, B, C] where
+      | Shift(Foo[B, C, A -> B])
       | Arrow(A -> B)
       | Data(C)
-      | Shift(Foo[B, C, A -> B])
 
 Slot 2 now holds a compound, so the walk descends an arrow while inside a
 datatype argument. The recursive field gives `B <- read(vA)`, `C <- read(vB)`,
@@ -212,17 +230,19 @@ datatype argument. The recursive field gives `B <- read(vA)`, `C <- read(vB)`,
 | ----- | ----- | ----- | ---------------- |
 | 0     | T     | T     | T                |
 | 1     | -     | +     | +                |
-| 2     | -     | **X** | +                |
-| 3     | -     | X     | **X**            |
-| 4     | **X** | X     | X                |
-| 5     | X     | X     | X -- fixed point |
+| 2     | **X** | **X** | **X**            |
+| 3     | X     | X     | X -- fixed point |
 
-Same answer, reached as a staircase -- one parameter per round, `vB` then `vC`
-then `vA` -- against a bound of `2n + 1 = 7`. This is the example to keep: the
-rotation above can be checked by a human argument about permutations that does
-not generalize, whereas here the unfolding never returns to its start
-(`Foo[A,B,C] ⊃ Foo[B,C,A→B] ⊃ Foo[C, A→B, B→C]`) and the fixed point is the only
-way to the answer.
+The same three rounds, and the same cascade within round 2, the arrow in slot 2
+being walked at `0` and so reaching `A` invariantly however it is spelled. This
+is still the example to keep: the rotation above can be checked by a human
+argument about permutations that does not generalize, whereas here the unfolding
+never returns to its start (`Foo[A,B,C] ⊃ Foo[B,C,A→B] ⊃ Foo[C, A→B, B→C]`) and
+the fixed point is the only way to the answer.
+
+Under Jacobi these took four rounds and five, the second climbing one parameter
+per round. Reading in place is what collapses both to three; the answer is the
+same, which is the point.
 
 **The one-pass trap.** Round 1 of either rotation is a complete, plausible,
 _unsound_ answer: `Foo[-A, +B, +C]`. Taking `+B` on faith licenses
@@ -230,6 +250,13 @@ _unsound_ answer: `Foo[-A, +B, +C]`. Taking `+B` on faith licenses
 supertype then demands `Foo[B,C,A] <: Foo[B',C,A]`, which puts `B` in the
 contravariant slot and needs `B' <: B`. Any implementation that walks the fields
 once and stops produces exactly this.
+
+**Which is why `Shift` is written first**, here and in the tests that mirror
+these. Reading in place, a recursive occurrence written _last_ is read after
+everything that decides it, so a single pass answers correctly -- by luck, and
+only for this shape. Move `Shift` down and the trap stops springing: the tests
+still pass, and they pass for an implementation that never loops. Keeping the
+order is the whole of what keeps them honest, so it is worth a line in both.
 
 ## 7. What gets reported
 
@@ -250,14 +277,23 @@ alone never looks unused, and only the closure shows that nothing observes it.
 parameter is deliberately unobserved, which is what the message asks for; saying
 it again would be noise.
 
-**Not reported when a field is bad.** An unresolved field type elaborates to
-`<bad>` with a report already standing, and a parameter that occurred only there
-then looks unused -- blaming the author twice for one mistake. A datatype with a
-bad field is excluded from this warning, not from the inference.
+**Not reported where a report already stands.** An unresolved field type
+elaborates to `<bad>` with a report already made, and a parameter that occurred
+only there then looks unused -- blaming the author twice for one mistake. So
+`initCtors` records whether elaborating a datatype's constructors reported
+anything, and that datatype is excluded from this warning, not from the
+inference.
 
-`DatatypeInfo.params` grew from `readonly string[]` to a `ParamInfo` record for
-this: the variance has to live somewhere, and a parameter's own position is what
-this message points at.
+Recorded where it is known rather than read back out of the field types
+afterwards. A search of what survived has to enumerate the kinds a bad type can
+hide under and goes wrong when one is added -- it did, missing `TRef` -- and it
+cannot see a _dropped duplicate constructor_ at all, whose fields never reach
+the table and whose parameters look just as unused.
+
+`DatatypeInfo.params` grew from `readonly string[]` to a `DataParamInfo` record
+for this: the variance has to live somewhere, and a parameter's own position is
+what this message points at -- the only thing that reads `at`, which is why it
+is not among the two fields a `DatatypeParam` carries into every type.
 
 ## 8. What reads it
 
@@ -270,17 +306,25 @@ Six places, and each of them had a hard-coded invariance before:
 | `#liftExtreme`         | an extreme per position, and the warning         |
 | `#avoidPart`'s `TData` | a directed argument widens; invariant collapses  |
 | `#latticeData`         | join and meet go argumentwise                    |
-| `openAt`'s `TData`     | where an EVar occurs, so `solveEVar` can choose  |
+| `openWith`'s `TData`   | where an EVar occurs, so `solveEVar` can choose  |
 
-The last is the one that is easy to miss. `types.ts` is the representation and
-must not know about declarations, so `openWith` takes an `ArgVariance` callback
-and defaults it to `invariantArgs`; only `#applyCall`, which is recording where
-each EVar stands in the result type, passes the real one.
+The last is the one that is easy to miss, and it decided where the answer is
+kept. Recording where an EVar stands is a walk in `types.ts`, which had no table
+to read; threading a lookup in for it made every other caller pass one it did
+not want. So a `TData` carries its declaration's parameters instead -- a
+`DataHead`, held by reference and never copied, since the variance is inferred a
+pass after the fields that mention it are built.
 
-`Subtyper` reads the table through `Context`, which now holds a `Declarations`.
-Declarations sit _beneath_ the typing context -- unscoped, fixed before the
-first binder is pushed -- so that is where a thing holding a context can find
-them.
+The parameters and not the whole `DatatypeInfo`, which reaches its constructors'
+field types and would make `Type` a cyclic value. And of a parameter only the
+two things a type reads, `hint` and `variance`: where it was written and whether
+it was a wildcard belong to the declaration, are read once each by the phantom
+warning, and would otherwise put a source position inside every type.
+`DataParamInfo` is a `DatatypeParam` plus those two, so one record serves both
+and the variance a node reads is the variance this pass wrote.
+
+What still needs the table is what a `DataHead` leaves out: `#checkMatch` asks
+it for the scrutinee's constructors. Nothing in `subtype.ts` asks it anything.
 
 ## 9. Deliberately not here
 

@@ -28,7 +28,7 @@ import {
   type TermNode,
 } from "../syntax/ast.ts";
 import { Context } from "./context.ts";
-import { type CtorInfo, Declarations } from "./context.ts";
+import { type DataCtorInfo, Declarations } from "./context.ts";
 import { ctorFieldsAt, Elaborator } from "./elaborate.ts";
 import { Subtyper, type Verdict } from "./subtype.ts";
 import {
@@ -436,24 +436,18 @@ export class Checker {
         // Opened before anything is related, so every entry is fully
         // described from the start: opening the result is what records where
         // each EVar occurs.
-        const result = openWith(
-          callee.result,
-          (j, variance) => {
-            const evar = evars[j] ??
-              impossible("the result binds only this binder");
-            // Once per occurrence, so two placements accumulate -- which is
-            // how a variable comes to occur both ways with neither occurrence
-            // invariant. Reached from a type and not from the batch, so the
-            // entry is looked up here.
-            const entry = this.context.evarAt(evar) ??
-              impossible("the batch's variables name EVar entries");
-            entry.noteOccurrence(variance);
-            return evar;
-          },
-          // A `List[?A]` says where `?A` stands only once the declaration is
-          // consulted, and where it stands is what decides between its bounds.
-          (name, i) => this.declarations.argVariance(name, i),
-        );
+        const result = openWith(callee.result, (j, variance) => {
+          const evar = evars[j] ??
+            impossible("the result binds only this binder");
+          // Once per occurrence, so two placements accumulate -- which is how
+          // a variable comes to occur both ways with neither occurrence
+          // invariant. Reached from a type and not from the batch, so the
+          // entry is looked up here.
+          const entry = this.context.evarAt(evar) ??
+            impossible("the batch's variables name EVar entries");
+          entry.noteOccurrence(variance);
+          return evar;
+        });
 
         // Nothing is decided until the whole list is in, so the solution is a
         // join and not a race, and the order here cannot matter.
@@ -667,7 +661,7 @@ export class Checker {
    */
   #armBinderTypes(
     pattern: Extract<MatchArm["pattern"], { kind: "PCtor" }>,
-    ctor: CtorInfo | undefined,
+    ctor: DataCtorInfo | undefined,
     matched: Extract<Type, { kind: "TData" }>,
   ): readonly Type[] {
     if (ctor === undefined) {

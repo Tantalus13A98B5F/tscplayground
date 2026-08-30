@@ -3,9 +3,9 @@ import {
   alphaEq,
   BVar,
   closeFrom,
+  type DataHead,
   FVar,
   isClosed,
-  mkDataName,
   mkLevel,
   mkTypeParamInfo,
   open,
@@ -17,6 +17,7 @@ import {
   TUnknown,
   type Type,
   typeToString,
+  type Variance,
 } from "./types.ts";
 
 // Levels 0 and 1 stand for the two outermost context entries.
@@ -24,8 +25,20 @@ const X = mkLevel(0);
 const Y = mkLevel(1);
 /** Close the scope starting at X, taking both levels with it. */
 const closeXY = (type: typeof TUnknown) => closeFrom(type, X);
-const Pair = mkDataName("Pair");
-const Bool = mkDataName("Bool");
+/**
+ * A `TData` carries its declaration's parameters, so a test that builds one
+ * states the variances it means to be read back.
+ */
+const head = (name: string, ...variances: readonly Variance[]): DataHead => ({
+  name: name,
+  params: variances.map((variance, j) => ({
+    hint: String.fromCharCode(65 + j),
+    variance,
+  })),
+});
+const Pair = head("Pair", 0, 0);
+const Bool = head("Bool");
+const List = head("List", 1);
 
 Deno.test("open replaces the nearest bound variable", () => {
   const opened = open(TFun([], [BVar(0)], BVar(0)), TNever);
@@ -119,29 +132,29 @@ Deno.test("close shifts by the arity of each enclosing quantifier", () => {
 Deno.test("isClosed bounds free levels and bound indices at once", () => {
   const type = TFun([], [FVar(Y, "Y")], BVar(0));
   // `Y` is level 1, so it needs two levels in scope; `BVar 0` needs one binder.
-  expect(isClosed(type, 2, 1)).toBe(true);
-  expect(isClosed(type, 1, 1)).toBe(false);
-  expect(isClosed(type, 2, 0)).toBe(false);
+  expect(isClosed(type, mkLevel(2), 1)).toBe(true);
+  expect(isClosed(type, mkLevel(1), 1)).toBe(false);
+  expect(isClosed(type, mkLevel(2), 0)).toBe(false);
 });
 
 Deno.test("isClosed counts a quantifier's own group as binders", () => {
   // What a stored constructor field looks like: no free levels, `BVar j` for
   // each of the datatype's parameters. A depth-zero check could not say this.
   const field = TData(Pair, [BVar(0), BVar(1)]);
-  expect(isClosed(field, 0, 2)).toBe(true);
-  expect(isClosed(field, 0, 1)).toBe(false);
+  expect(isClosed(field, mkLevel(0), 2)).toBe(true);
+  expect(isClosed(field, mkLevel(0), 1)).toBe(false);
 
   const inside = TFun([mkTypeParamInfo("A", TUnknown)], [BVar(0)], BVar(1));
-  expect(isClosed(inside, 0, 1)).toBe(true);
-  expect(isClosed(inside, 0, 0)).toBe(false);
+  expect(isClosed(inside, mkLevel(0), 1)).toBe(true);
+  expect(isClosed(inside, mkLevel(0), 0)).toBe(false);
 });
 
 Deno.test("isClosed reads a bound in the enclosing scope, being parallel", () => {
   // The bound sits outside its own binder, so `BVar 0` there is the *enclosing*
   // group -- it needs a depth the parameters do not.
   const type = TFun([mkTypeParamInfo("A", BVar(0))], [BVar(0)], TUnknown);
-  expect(isClosed(type, 0, 1)).toBe(true);
-  expect(isClosed(type, 0, 0)).toBe(false);
+  expect(isClosed(type, mkLevel(0), 1)).toBe(true);
+  expect(isClosed(type, mkLevel(0), 0)).toBe(false);
 });
 
 Deno.test("alphaEq ignores printing hints but not arity", () => {
@@ -224,12 +237,21 @@ Deno.test("a binder's bound is contravariant, like a parameter", () => {
     .toEqual([false, true]);
 });
 
-Deno.test("an occurrence inside a datatype argument is invariant however deep", () => {
-  // Arguments have no declared variance, so nothing under one may be widened.
+Deno.test("an argument stands where the node says its parameter does", () => {
+  // Read off the node and not a table: `Pair` is invariant in both, `List`
+  // covariant, and the opening asks neither anything.
   expect(occurrencesIn(TData(Pair, [BVar(0), TUnknown]))).toEqual([true, true]);
-  // Even at a position that would otherwise be contravariant twice over.
+  expect(occurrencesIn(TData(List, [BVar(0)]))).toEqual([true, false]);
+});
+
+Deno.test("an occurrence inside an invariant argument is invariant however deep", () => {
+  // Nothing under one may be widened, even at a position that would otherwise
+  // be contravariant twice over.
   const nested = TData(Pair, [TFun([], [BVar(0)], TUnknown), TUnknown]);
   expect(occurrencesIn(nested)).toEqual([true, true]);
+  // Where the argument does have a direction, what is under it composes.
+  expect(occurrencesIn(TData(List, [TFun([], [BVar(0)], TUnknown)])))
+    .toEqual([false, true]);
 });
 
 Deno.test("a rule is offered every occurrence, and may answer each differently", () => {
