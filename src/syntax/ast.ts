@@ -121,6 +121,23 @@ export type TermNode =
     readonly body: TermNode;
     readonly at: Position;
   }
+  /**
+   * A run of adjacent `def`s and what follows them, the run being the scope
+   * over which they see each other.
+   *
+   * The members are `LetItem`s because by here they are nothing else: the
+   * parser has already folded each one's parameter lists into its `Abs` and,
+   * where a result type was written, into the `FunType` that becomes its
+   * annotation. What is left is a name, maybe a type, and a term. What `def`
+   * adds is not a shape but a *scope* -- which is why this node holds a list
+   * where `Let` holds one binding.
+   */
+  | {
+    readonly kind: "DefGroup";
+    readonly defs: readonly LetItem[];
+    readonly body: TermNode;
+    readonly at: Position;
+  }
   /** `match e` followed by `| pat -> body` arms, at least one. */
   | {
     readonly kind: "Match";
@@ -210,6 +227,7 @@ export type AliasDecl = {
 export type TypeDecl = DatatypeDecl | AliasDecl;
 
 /** One top-level `let`, before `parseProgram` folds the chain into `term`. */
+/** A `Let` short of its body, and equally a member of a `DefGroup`. */
 export type LetItem = {
   readonly name: BindingIdent;
   readonly annotation?: TypeNode;

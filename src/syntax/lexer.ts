@@ -20,6 +20,7 @@ import {
 export type TokenKind =
   | "identifier" // includes `_`, which is a name like any other
   | "let"
+  | "def" // a `let` whose group is mutually visible
   | "datatype"
   | "typedef"
   | "match"
@@ -30,7 +31,7 @@ export type TokenKind =
   | "never"
   | "arrow" // `->`, in a function type, after a pattern, and before a body
   | "subtype" // `<:`
-  | "equals" // binds: `let` and `typedef`, nothing else
+  | "equals" // binds: `let`, `def` and `typedef`, nothing else
   | "colon"
   | "semi"
   | "comma"
@@ -96,6 +97,7 @@ export function stripComment(line: string): string {
 
 const KEYWORDS = new Map<string, TokenKind>([
   ["let", "let"],
+  ["def", "def"],
   ["datatype", "datatype"],
   ["typedef", "typedef"],
   ["match", "match"],

@@ -2,14 +2,14 @@
 
 GaML runs end to end today -- lex, lay out, parse, elaborate, check, print a
 type. What follows is the work between here and a version anyone else should
-use. Three items, in a rough order, each with the reason it is on the list
-rather than merely desirable -- then what has landed, and then the things
-deliberately left off, which are limitations the design chose rather than
-corners left unfinished.
+use. Two items, in a rough order, each with the reason it is on the list rather
+than merely desirable -- then what has landed, and then the things deliberately
+left off, which are limitations the design chose rather than corners left
+unfinished.
 
 The order is not a dependency chain, and necessity is not the same axis as cost.
-(1) is the one the language is _for_, so it outranks the two below it even
-though neither needs it.
+(1) is the one the language is _for_, so it outranks the one below it even
+though that does not need it.
 
 ## 1. Dependent arrows
 
@@ -28,6 +28,46 @@ The phantom warning is the other thing to revisit here. A type parameter no
 constructor observes is warned about today as almost certainly a mistake, there
 being no way to use one; dependent arrows are the feature that would give
 phantoms a use.
+
+### What a self-referential signature costs
+
+The wanted case is a `def` whose result type mentions the `def` -- a measure, or
+a specification that reads its own argument. Three things follow, and the last
+is a boundary rather than a task.
+
+**The self-reference must be a level, never an embedded node.** A `Type` that
+reached back into itself would not be a finite value, which is the same reason a
+`TData` carries its declaration's parameters by reference and never its
+constructors. So `def`'s push has to be two steps rather than one -- allocate
+the binder, _then_ elaborate the signature in a scope that already holds it --
+and it is worth building that way before this lands, since retrofitting it means
+touching every `def` path. `typeToString` stops at the name for the same reason
+a `TData` prints its name.
+
+**Nothing may be reordered afterwards.** `Level` is an index into the context
+and `lookup` reads `#entries[level]` directly, so popping a group and pushing it
+back in a different order silently _mispoints_ every `FVar` already elaborated:
+the size is unchanged, so `assertClosed` sees nothing wrong. This is what makes
+the existing order load-bearing rather than incidental. Signatures are pushed in
+source order and an unannotated `def` replaces its own entry at its own level,
+so nothing ever moves.
+
+**Two rules fall out of that order, and both are the standard ones.** A
+signature may mention only an annotated `def` written earlier in the run --
+Agda's forward-declaration rule, signatures being a sequence where bodies are a
+group. And an unannotated `def` can appear in no signature at all, which is not
+a restriction to lift: its type is inferred from a body that may mention the
+very `def` whose signature is asking, so the dependency is circular at the level
+of type _formation_.
+
+Genuinely mutual signatures -- each mentioning the other -- are **induction-
+recursion**, and out of scope. A first phase that pushes all the _names_ before
+any signature (what `Declarations` already does for datatypes, which is why
+`List` and `Tree` may name each other) does not reach it: elaborating
+`Vec(foo(n))` needs `foo`'s result type to type the application, and a name is
+not one. That phase is still worth having on its own -- it turns a forward
+reference into "`foo` is declared below; its signature is not available here"
+rather than `unknown name foo` -- and it is additive, so it can land whenever.
 
 ## 2. Evaluation
 
@@ -52,57 +92,48 @@ knot -- and it needs no recursive datatype at all. Independently, a _negative_
 recursive datatype gives the same thing: `| MkBad((Bad) -> Bad)` is a legal
 field, so self-application types through it and `Ω` is writable. Both check
 today. So the interpreter is an interpreter plus a fuel counter plus a story
-about what a diverging playground tab does, whenever it is written, and (3) does
-not change that.
+about what a diverging playground tab does, whenever it is written, and `def`
+does not change that.
 
 Independent of (1), so it could come earlier still. The bundle targets a browser
 playground, and a playground that prints a type and runs nothing is half a demo.
 
-## 3. Recursive functions, and how far to infer them
-
-Two halves, and they are not equally hard.
-
-**Self-recursion with an annotation is small and locatable.** `#checkLet`'s
-annotated branch already elaborates the annotation _before_ checking the bound
-term, which is exactly the shape recursion needs -- so the change is pushing the
-binder above that check rather than below it. It wants a `rec` marker to go with
-it (there is no such keyword today), since making every annotated `let`
-recursive would let `let f : T = ... f ...` silently capture its own name where
-an author meant an outer one.
-
-**Mutual recursion needs a group.** `LetItem`s fold right into nested `Let`s in
-`parser.ts`, so each binding sees only the ones before it. A mutually recursive
-group needs all of them in scope for all of the bodies, which is a different
-node rather than a different fold.
-
-**There is no open half, which an earlier draft got wrong.** It argued that a
-recursive binding wants an EVar created at the binding, constrained by the whole
-body and solved at the end -- a lifecycle `withEVars` does not have, and one
-that would break the invariant the relation leans on when it records a bound
-without asking whether it is allowed to. That would be true of `rec` as a
-_binder_. It is not a fact about recursion, because recursion needs no binder:
-
-    fix : [A, B](((A) -> B) -> (A) -> B) -> (A) -> B
-
-`stdlib/rec/fix.ga` defines it -- the Z combinator over a negative recursive
-datatype, which is legal here for the reasons under §2 -- and the whole datatype
-half of the stdlib is written through it. `fix` is an ordinary polymorphic
-callee at an ordinary application, so its type arguments are found by the
-`withEVars` that already exists: `fix(fn (self: (Nat) -> (Nat) -> Nat) -> ...)`
-infers `A` and `B` with neither written. Polymorphic recursion still needs an
-annotation, being undecidable anywhere, and that annotation is the one on
-`self`, which is the same one a `rec` binding would have wanted.
-
-So `rec` is **sugar, not expressiveness**, and the case for it is ergonomics
-alone: `self` is a worse name than the function's own, and spelling the whole
-type in its annotation is a tax on the commonest thing anyone writes. Two things
-follow. Its cost is the roadmap's original estimate -- move the `pushTermVar`
-above the `check`, add a keyword -- and not a desugaring, which would need `Rec`
-and `fix` seeded as builtins. And leaving it out makes (2) _simpler_: recursion
-through `fix` is ordinary closures and ordinary tagged applications, where a
-`rec` binding needs a closure whose environment contains itself.
-
 ## Landed
+
+**Recursive and mutually recursive functions, as `def`.** A run of adjacent
+`def`s is one scope: every member may name every other, so `even` and `odd` are
+written the way anyone would write them and nothing is encoded. What `def` adds
+to `let` is that scope and nothing else -- the parser folds its parameter lists
+into the `Abs` and its result type into the `FunType` that becomes its
+annotation, so a member reaching the checker is a `LetItem`.
+
+Annotations are what buy the visibility, and the reason is the constraint solver
+rather than taste. A signature the author wrote can be pushed before any body is
+checked; a result type to be _inferred_ would need an EVar created at the
+binding, constrained by the whole body and solved at the end, which is a
+lifecycle `withEVars` does not have. So an annotated `def` is visible to its
+whole group and an unannotated one falls back to being a `let`, visible once it
+is checked and `unknown` inside its own body -- which is the honest statement
+that nothing is known of it yet, so it may be passed on, may not be called, and
+a recursive use is refused at the call. `unknown` and not `<bad>`: `badUnder`
+takes the diagnostic that licenses it, and the report belongs at each use.
+
+An earlier draft of this entry wanted a `rec` marker and a dependency graph.
+Neither is here. `def` needs no marker, being a keyword already; and the graph
+would only additionally order a non-recursive unannotated `def` ahead of a
+sibling that calls it, which is a change that accepts strictly more and so can
+land later without rewriting any of this.
+
+`fix` is untouched and stays a library. `stdlib/rec/` now holds the same pair of
+mutually recursive functions seven times: once as a `def` run, and six times
+encoded -- Bekic's decomposition, a fixed point at a product, a tag,
+continuation passing, and backpatched cells.
+
+**Several parameter lists on one binder.** `fn [A](xs: List[A])[B](z: B)(op) ->`
+is surface sugar the parser folds into nested `fn`s, so staging -- one batch of
+type arguments per list, which is what lets `foldr(xs)(z)(op)` take a bare
+lambda -- is sayable in one binder. There is still no multi-list function type,
+and the type it gives is the curried one.
 
 **Proper variance for datatypes.** Arguments are no longer invariant by fiat:
 each datatype's parameters are inferred from its constructor fields, by a fixed

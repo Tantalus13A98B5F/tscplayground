@@ -199,14 +199,16 @@ Deno.test("stdlib: fusing a Church nil's two binders does not work", () => {
   ]);
 });
 
-Deno.test("stdlib: one `fix` gives mutual recursion five ways", () => {
+Deno.test("stdlib: mutual recursion, once as a feature and five times encoded", () => {
   // The same pair of functions -- `(Nat) -> List[Nat]` beside `(Nat) -> Nat`,
-  // so no encoding can lean on a shared result type -- reached by Bekic's
-  // decomposition, a fixed point at a product, a tag, continuations, and
-  // backpatched cells. Same answer from all five is the point: `fix` is the
-  // only recursion in the language and none of these adds any.
+  // so nothing here can lean on a shared result type -- written once as a `def`
+  // run and five times as an encoding: Bekic's decomposition, a fixed point at
+  // a product, a tag, continuations, and backpatched cells. One answer from all
+  // six is the point, `def` being a scoping rule rather than a new way to
+  // recurse and `fix` staying a library under it.
   for (
     const entry of [
+      "rec/mutual-def.ga",
       "rec/mutual-bekic.ga",
       "rec/mutual-pair.ga",
       "rec/mutual-tag.ga",

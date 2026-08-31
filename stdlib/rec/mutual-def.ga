@@ -1,0 +1,32 @@
+// Mutual recursion as a language feature, which is what the other five files
+// here encode by hand. Same pair, same answer:
+//
+//   alt : (Nat) -> List[Nat]
+//   tag : (Nat) -> Nat
+//
+// A run of adjacent `def`s is one scope, so each body may name any member --
+// no product to project from, no tag to dispatch on, no continuation to carry,
+// no cell to backpatch. `fix` is untouched by this and stays a library.
+//
+// The result types are what buy it. A signature is pushed before any body is
+// checked, so an annotated `def` is visible to the whole run; drop the `: T`
+// and the binding becomes a `let`, visible only after it is checked. That is
+// not a house rule -- an EVar constrained by a whole body and solved at the end
+// is a lifecycle the constraint solver does not have.
+//
+// Requires resolve against the search path, and `data/` sits above this
+// directory rather than below it, so the entry needs one:
+//     deno task run stdlib/rec/mutual-def.ga -I stdlib
+#require "data/nat.ga"
+#require "data/pair.ga"
+#require "data/list.ga"
+
+def alt(n: Nat): List[Nat] = match n with
+| Z -> Nil()
+| S(k) -> Cons(tag(k), alt(k))
+
+def tag(n: Nat): Nat = match n with
+| Z -> Z
+| S(k) -> length(alt(k))
+
+MkPair(alt(S(S(Z))), tag(S(S(S(Z)))))

@@ -968,3 +968,98 @@ Deno.test("an annotation is what the body is typed against, not the pattern", ()
   );
   expect(narrower).toEqual(["expected List[Bool], found Bool"]);
 });
+
+const NAT = ["datatype Nat where", "  | Z", "  | S(Nat)"];
+
+Deno.test("an annotated def is visible to its whole group", () => {
+  // What `let` cannot do: `even` names a binding written below it. Signatures
+  // are pushed before any body is checked, so the reference resolves to a level
+  // that is already there rather than to a forward pointer.
+  expect(typeOf(
+    ...BOOL,
+    ...NAT,
+    "def even(n: Nat): Bool = match n with",
+    "  | Z -> True",
+    "  | S(k) -> odd(k)",
+    "def odd(n: Nat): Bool = match n with",
+    "  | Z -> False",
+    "  | S(k) -> even(k)",
+    "even(S(Z))",
+  )).toBe("Bool");
+});
+
+Deno.test("an unannotated def is a let, and unknown inside its own body", () => {
+  // No signature to push, so it is checked where it stands and its siblings see
+  // the type it turned out to have. This is the case an SCC pass would have
+  // ordered; here it works because `foo` needs no annotation to be inferred and
+  // the annotated two need no inference to be visible.
+  expect(typeOf(
+    ...NAT,
+    "def rec1(n: Nat): Nat = rec2(foo(n))",
+    "def foo(n: Nat) = S(n)",
+    "def rec2(n: Nat): Nat = rec1(n)",
+    "rec1(Z)",
+  )).toBe("Nat");
+
+  // Recursion without a signature is refused at the call, where the recursion
+  // is. `unknown` and not `<bad>`: nothing is known of the binding yet, which
+  // is a fact and not a failure, so no report is filed until one is used.
+  expect(run(...NAT, "def loop(n: Nat) = loop(n)", "loop(Z)")[1])
+    .toBe("unknown is not a function");
+
+  // And it really is only the *call* that is refused -- passing it on is fine,
+  // which is what `unknown` says and what a bad type could not.
+  expect(typeOf(
+    ...NAT,
+    ...LIST,
+    "def opaque(n: Nat) = Cons(opaque, Nil())",
+    "opaque(Z)",
+  )).toBe("List[unknown]");
+});
+
+Deno.test("a def group is the run of adjacent defs, nothing wider", () => {
+  // A `let` between them is sequential, so `a` would have to see a binding that
+  // is not yet bound. The run is the largest scope where that cannot happen.
+  expect(
+    run(
+      ...NAT,
+      "def a(n: Nat): Nat = b(n)",
+      "let sep = Z",
+      "def b(n: Nat): Nat = a(n)",
+      "b(Z)",
+    )[1],
+  ).toBe("unknown name b");
+});
+
+Deno.test("several parameter lists stage a def's type arguments", () => {
+  // The same rule `foldr(xs)(z)(op)` is written for, now sayable in one binder:
+  // `A` is settled by the first list, so the second reaches a bare lambda that
+  // already knows its parameter.
+  expect(typeOf(
+    ...NAT,
+    ...LIST,
+    "def foldr[A](xs: List[A])[B](z: B)(op: (A, B) -> B): B =",
+    "  match xs with",
+    "  | Nil -> z",
+    "  | Cons(h, t) -> op(h, z)",
+    "foldr(Cons(Z, Nil()))(Z)(fn (h, acc) -> h)",
+  )).toBe("Nat");
+
+  // Fused into one list, `B` is solved before `op` is looked at -- the same
+  // failure the `fn` form has, since the sugar is only the `fn` form.
+  expect(
+    run(
+      ...NAT,
+      ...LIST,
+      "def foldr[A, B](xs: List[A])(z: B)(op: (A, B) -> B): B = z",
+      "foldr(Cons(Z, Nil()))(Z)(fn (h, acc) -> h)",
+    )[1],
+  ).toBe("expected never, found Nat");
+});
+
+Deno.test("a def bound twice in one group is reported once", () => {
+  expect(
+    run(...NAT, "def f(n: Nat): Nat = n", "def f(n: Nat): Nat = n", "Z")[1],
+  )
+    .toBe("f is bound twice in one def group");
+});

@@ -161,6 +161,31 @@ binds to the callee's EVar directly, so a bare lambda works there as long as its
 body does not need the parameter's _structure_; `match` on it does, and that is
 where a _later_ parameter list is required, the way Scala's `foldLeft(z)(op)`
 stages it. Currying gives this for free; there is no multi-list function type.
+`fn [A](xs)[B](z)(op) -> e` writes the lists on one binder, and that is surface
+sugar the parser folds into nested `fn`s -- so several lists cost the checker
+nothing, and the type they give is the curried one.
+
+Recursion is `def`, and what it adds to `let` is a scope rather than a shape: a
+run of _adjacent_ `def`s is one group whose members may name each other, and
+anything between two of them closes the run. The parser has folded a `def`'s
+parameter lists into its `Abs` and its result type into a `FunType` by the time
+the checker sees it, so a member is a `LetItem` and the only question left is
+whether it has an annotation. That question is the rule. A signature is
+something the author supplied, so it can be pushed before any body is checked
+and its `def` is visible to the whole group; without one there is nothing to
+push, and the binding falls back to being a `let` -- visible once checked, and
+`unknown` inside its own body. Not a placeholder for the type it will turn out
+to have: nothing is known of it yet, so it may be passed on and may not be
+called, and a recursive use is refused at the call where the recursion is.
+`unknown` rather than `bad` because `badUnder` takes the diagnostic that
+licenses it, and the report belongs at each use rather than once at the push.
+
+The order follows: signatures, then the unannotated bodies -- each replacing its
+own entry at its own level, so no `FVar` already elaborated goes stale -- then
+the annotated bodies. What is _not_ there is a dependency graph. An SCC pass
+would additionally order a non-recursive unannotated `def` before a sibling that
+calls it, and adding one later only accepts more, so nothing here would be
+rewritten for it.
 
 Inferring a `match` joins its arms with LUB, so no arm is privileged by position
 -- but only the arms a value can reach. One-level patterns keep the whole

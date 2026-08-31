@@ -162,6 +162,8 @@ export class Checker {
       // answer again would only ask a settled question twice.
       case "Let":
         return this.#checkLet(term, expected);
+      case "DefGroup":
+        return this.#checkDefGroup(term, expected);
     }
   }
 
@@ -290,7 +292,7 @@ export class Checker {
     return type;
   }
 
-  /** Report a name bound twice in one group: a parameter list, a pattern. */
+  /** Report a name bound twice in one group: a parameter list, a pattern, a `def` run. */
   #reportDuplicateBinders(
     binders: readonly BindingIdent[],
     what: string,
@@ -333,6 +335,63 @@ export class Checker {
     // With no dependent types a `let` body's type cannot mention the binding,
     // but say so out loud.
     this.context.assertClosed("let", [result]);
+    return result;
+  }
+
+  /**
+   * A run of `def`s, all of them in scope for all of the bodies -- or as much
+   * of that as can be had without inventing a type nobody wrote.
+   *
+   * An annotated `def` is visible to the whole group, its signature being a
+   * thing the author supplied rather than a thing the checker must find. An
+   * unannotated one behaves like a `let`: visible once it is checked, and
+   * `unknown` inside its own body. That is not a stand-in for the type it will
+   * turn out to have -- it is the honest statement that nothing is known of
+   * this binding yet, so it may be handed on as a value and may not be called.
+   * A recursive use is refused at the call, where the recursion is.
+   *
+   * `unknown` and not `<bad>` for a reason the types enforce: `badUnder` takes
+   * the diagnostic that licenses it, so a bad entry would mean reporting once
+   * at the push, for a binding nothing may go on to mention. The report belongs
+   * at each use, and `unknown` is what puts it there.
+   *
+   * Order follows from that. Signatures first, so an annotated body may name
+   * any member; then the unannotated ones, each replacing its own entry in
+   * place once its type is known; then the annotated bodies. Nothing is ever
+   * repushed at a different level, so no `FVar` already elaborated goes stale.
+   */
+  #checkDefGroup(
+    term: Extract<TermNode, { kind: "DefGroup" }>,
+    expected: TypePattern,
+  ): Type {
+    this.#reportDuplicateBinders(term.defs.map((def) => def.name), "def group");
+
+    const result = this.context.inScope(() => {
+      const signatures = new Map<number, Type>();
+      for (const [index, def] of term.defs.entries()) {
+        if (def.annotation === undefined) continue;
+        const signature = this.elaborator.elaborateType(def.annotation);
+        signatures.set(index, signature);
+        this.context.pushTermVar(signature, def.name.text);
+      }
+
+      for (const [index, def] of term.defs.entries()) {
+        if (signatures.has(index)) continue;
+        const level = this.context.pushTermVar(TUnknown, def.name.text);
+        const bound = this.infer(def.bound);
+        // The same level, so anything that already points here still does.
+        this.context.truncate(level);
+        this.context.pushTermVar(bound, def.name.text);
+      }
+
+      for (const [index, def] of term.defs.entries()) {
+        const signature = signatures.get(index);
+        if (signature !== undefined) this.check(def.bound, signature);
+      }
+
+      return this.check(term.body, expected);
+    });
+    this.context.assertClosed("def group", [result]);
     return result;
   }
 

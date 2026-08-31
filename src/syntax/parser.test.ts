@@ -562,3 +562,72 @@ Deno.test("nothing comes out of a parse that reported an error", () => {
   const laid = scan("let x = a b\ny\n");
   expect(parseProgram(laid.value ?? []).value).toBeUndefined();
 });
+
+Deno.test("several parameter lists are nested lambdas and nothing else", () => {
+  // Sugar, resolved here: currying already stages a type argument batch per
+  // list, so nothing downstream needs a term form or a type of its own.
+  const program = clean("fn [A](x: A)[B](y: B) -> x");
+  const outer = program.term;
+  expect(outer.kind).toBe("Abs");
+  if (outer.kind !== "Abs") return;
+  expect(outer.typeParams.map((p) => bindingHint(p.name))).toEqual(["A"]);
+  expect(outer.params.map((p) => bindingHint(p.name))).toEqual(["x"]);
+
+  const inner = outer.body;
+  expect(inner.kind).toBe("Abs");
+  if (inner.kind !== "Abs") return;
+  expect(inner.typeParams.map((p) => bindingHint(p.name))).toEqual(["B"]);
+  expect(inner.params.map((p) => bindingHint(p.name))).toEqual(["y"]);
+
+  // A list may still be value-only, which is what makes `(xs)(z)(op)` writable.
+  expect(parse("fn (x: A)(y: B) -> x")).toEqual([]);
+});
+
+Deno.test("a def folds its lists into an Abs and its result into an arrow", () => {
+  const program = clean("def f[A](x: A)(y: A): A = x\nf");
+  const group = program.term;
+  expect(group.kind).toBe("DefGroup");
+  if (group.kind !== "DefGroup") return;
+
+  const def = group.defs[0];
+  expect(def?.bound.kind).toBe("Abs");
+  // The signature is built from the lists, so it curries the same way.
+  expect(def?.annotation?.kind).toBe("FunType");
+  const outer = def?.annotation;
+  if (outer?.kind !== "FunType") return;
+  expect(outer.typeParams.map((p) => bindingHint(p.name))).toEqual(["A"]);
+  expect(outer.params.length).toBe(1);
+  expect(outer.result.kind).toBe("FunType");
+});
+
+Deno.test("adjacent defs are one group and anything between them closes it", () => {
+  const runs = (text: string) => {
+    const program = clean(text);
+    const sizes: number[] = [];
+    for (let node = program.term;;) {
+      if (node.kind === "DefGroup") {
+        sizes.push(node.defs.length);
+        node = node.body;
+      } else if (node.kind === "Let") node = node.body;
+      else break;
+    }
+    return sizes;
+  };
+
+  expect(runs("def a(): A = a()\ndef b(): A = b()\na")).toEqual([2]);
+  expect(runs("def a(): A = a()\nlet s = a\ndef b(): A = b()\na")).toEqual([
+    1,
+    1,
+  ]);
+  // A bare expression binds `_`, so it closes a run the same way a `let` does.
+  expect(runs("def a(): A = a()\na()\ndef b(): A = b()\na")).toEqual([1, 1]);
+});
+
+Deno.test("a def with no parameter list is told to be a let", () => {
+  expect(parse("def x: Nat = Z\nx")).toEqual([
+    "expected a parameter list -- `let` is what binds a value, found `:`",
+  ]);
+  expect(parse("def x = Z\nx")).toEqual([
+    "expected a parameter list -- `let` is what binds a value, found `=`",
+  ]);
+});
