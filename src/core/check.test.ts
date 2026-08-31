@@ -1057,6 +1057,46 @@ Deno.test("several parameter lists stage a def's type arguments", () => {
   ).toBe("expected never, found Nat");
 });
 
+Deno.test("a def's parameters must be annotated, and stand bad if not", () => {
+  // Nothing can supply them: a `def`'s body is inferred, or checked against its
+  // own signature, and never sits where a context would know them. So the
+  // report is due at the binder, not deferred to a use the way `unknown` is.
+  const [, first] = run(...NAT, "def f(n) = n", "Z");
+  expect(first).toBe(
+    "cannot infer a type for n: a def's parameters must be annotated, " +
+      "nothing else can supply them",
+  );
+
+  // The def keeps the signature it wrote, so the group still sees it and the
+  // omission is not reported again as an unknown name at every call.
+  const [, ...both] = run(
+    ...NAT,
+    "def even(n): Nat = odd(n)",
+    "def odd(m): Nat = even(m)",
+    "Z",
+  );
+  expect(both.length).toBe(2);
+  expect(both.every((message) => message.startsWith("cannot infer a type")))
+    .toBe(true);
+
+  // And the body is still checked, the parameter standing `bad` rather than
+  // hiding what else is written there.
+  expect(run(...NAT, "def f(n): Nat = nope(n)", "Z").slice(1))
+    .toEqual([
+      "cannot infer a type for n: a def's parameters must be annotated, " +
+      "nothing else can supply them",
+      "unknown name nope",
+    ]);
+});
+
+Deno.test("a def's parameter types are elaborated once, not twice", () => {
+  // The signature is the one place they are written: left on the `Abs` as well
+  // they would be read again for the body, doubling every diagnostic they
+  // raise. Two occurrences in the source, two reports.
+  const [, ...messages] = run(...NAT, "def f(x: Nope): Nope = x", "Z");
+  expect(messages).toEqual(["unknown type Nope", "unknown type Nope"]);
+});
+
 Deno.test("a def bound twice in one group is reported once", () => {
   expect(
     run(...NAT, "def f(n: Nat): Nat = n", "def f(n: Nat): Nat = n", "Z")[1],

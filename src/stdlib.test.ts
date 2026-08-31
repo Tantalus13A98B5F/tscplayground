@@ -200,12 +200,11 @@ Deno.test("stdlib: fusing a Church nil's two binders does not work", () => {
 });
 
 Deno.test("stdlib: mutual recursion, once as a feature and five times encoded", () => {
-  // The same pair of functions -- `(Nat) -> List[Nat]` beside `(Nat) -> Nat`,
-  // so nothing here can lean on a shared result type -- written once as a `def`
-  // run and five times as an encoding: Bekic's decomposition, a fixed point at
-  // a product, a tag, continuations, and backpatched cells. One answer from all
-  // six is the point, `def` being a scoping rule rather than a new way to
-  // recurse and `fix` staying a library under it.
+  // The same pair -- `(Nat) -> List[Nat]` beside `(Nat) -> Nat`, so nothing
+  // here can lean on a shared result type -- written once as a `def` run and
+  // five times as an encoding: Bekic's decomposition, a fixed point at a
+  // product, a tag, continuations, and backpatched cells. One answer from all
+  // six is the point: `def` is a scoping rule and not a new way to recurse.
   for (
     const entry of [
       "rec/mutual-def.ga",

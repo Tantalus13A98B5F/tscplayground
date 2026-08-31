@@ -169,16 +169,33 @@ Recursion is `def`, and what it adds to `let` is a scope rather than a shape: a
 run of _adjacent_ `def`s is one group whose members may name each other, and
 anything between two of them closes the run. The parser has folded a `def`'s
 parameter lists into its `Abs` and its result type into a `FunType` by the time
-the checker sees it, so a member is a `LetItem` and the only question left is
-whether it has an annotation. That question is the rule. A signature is
-something the author supplied, so it can be pushed before any body is checked
-and its `def` is visible to the whole group; without one there is nothing to
-push, and the binding falls back to being a `let` -- visible once checked, and
-`unknown` inside its own body. Not a placeholder for the type it will turn out
-to have: nothing is known of it yet, so it may be passed on and may not be
-called, and a recursive use is refused at the call where the recursion is.
-`unknown` rather than `bad` because `badUnder` takes the diagnostic that
-licenses it, and the report belongs at each use rather than once at the push.
+the checker sees it, so a member is a `DefItem` -- a `LetItem` whose bound is an
+`Abs` by construction -- and the only question left is whether it has an
+annotation. That question is the rule. A signature is something the author
+supplied, so it can be pushed before any body is checked and its `def` is
+visible to the whole group; without one there is nothing to push, and the
+binding falls back to being a `let` -- visible once checked, and `unknown`
+inside its own body. Not a placeholder for the type it will turn out to have:
+nothing is known of it yet, so it may be passed on and may not be called, and a
+recursive use is refused at the call where the recursion is. `unknown` rather
+than `bad` because `badUnder` takes the diagnostic that licenses it, and the
+report belongs at each use rather than once at the push.
+
+A `def`'s _parameters_, though, must always be annotated. Nothing else can
+supply them: the body is inferred or checked against the def's own signature,
+and never sits where a context would know them, so the advice a lambda gets --
+use it where its parameter types are known -- names nothing an author could do.
+An omission is therefore settled in the tree rather than asked about by every
+reader of it: the parser stands a `MissingParamType` where the annotation would
+be, and elaboration reports it, once, at the binder, and answers `bad`. That is
+the only node standing for something unwritten, and it is what keeps the rest
+ordinary -- a `def` missing a parameter type still has whatever signature it
+wrote, so the group still sees it, and its body is still checked, against a
+parameter that absorbs what is done with it. `unknown` would not do here the way
+it does for a missing signature: nothing is merely unknown, a report stands, and
+`bad` is what says so. A signature is also the one place the parameter types are
+_written_ -- the parser strips them from the `Abs` it folds, since elaborating
+them there as well would read every one twice and double whatever it reports.
 
 The order follows: signatures, then the unannotated bodies -- each replacing its
 own entry at its own level, so no `FVar` already elaborated goes stale -- then

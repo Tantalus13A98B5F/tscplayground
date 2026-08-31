@@ -586,8 +586,8 @@ Deno.test("several parameter lists are nested lambdas and nothing else", () => {
 Deno.test("a def folds its lists into an Abs and its result into an arrow", () => {
   const program = clean("def f[A](x: A)(y: A): A = x\nf");
   const group = program.term;
-  expect(group.kind).toBe("DefGroup");
-  if (group.kind !== "DefGroup") return;
+  expect(group.kind).toBe("LetRec");
+  if (group.kind !== "LetRec") return;
 
   const def = group.defs[0];
   expect(def?.bound.kind).toBe("Abs");
@@ -605,7 +605,7 @@ Deno.test("adjacent defs are one group and anything between them closes it", () 
     const program = clean(text);
     const sizes: number[] = [];
     for (let node = program.term;;) {
-      if (node.kind === "DefGroup") {
+      if (node.kind === "LetRec") {
         sizes.push(node.defs.length);
         node = node.body;
       } else if (node.kind === "Let") node = node.body;

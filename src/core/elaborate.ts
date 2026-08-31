@@ -81,6 +81,18 @@ export class Elaborator {
         return TUnknown;
       case "NeverType":
         return TNever;
+      // The one node standing for something unwritten. A `def` parameter has no
+      // other source, so the omission is an error wherever the parameter is
+      // read, and `bad` is what a reader gets once it is reported.
+      case "MissingParamType": {
+        const hint = bindingHint(node.name);
+        return badUnder(this.#report(
+          `cannot infer a type for ${hint}: a def's parameters must be ` +
+            `annotated, nothing else can supply them`,
+          node.at,
+          hint.length,
+        ));
+      }
       case "NameType":
         return this.#elaborateName(node);
       case "FunType":

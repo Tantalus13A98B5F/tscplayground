@@ -62,6 +62,22 @@ export type TypeNode =
   /** `never` -- bottom. */
   | { readonly kind: "NeverType"; readonly at: Position }
   /**
+   * The type a `def` parameter was not given. Nothing an author writes; the
+   * parser puts one wherever a `def` omitted an annotation, and elaboration
+   * reports it and answers `bad`.
+   *
+   * A node rather than an absence because a `def`'s parameter has no other
+   * source -- its body is inferred, or checked against its own signature, and
+   * never sits where a context would know the type. Standing the omission in
+   * the tree settles it once, at the binder, and lets the signature and the
+   * body both be built the ordinary way.
+   */
+  | {
+    readonly kind: "MissingParamType";
+    readonly name: BindingIdent;
+    readonly at: Position;
+  }
+  /**
    * `A`, or `Pair[A, B]`. Variables and datatype applications share a node,
    * being indistinguishable without the declaration table; elaboration resolves
    * it to `FVar`, to `TData` after an arity check, or to `TBad`.
@@ -123,18 +139,15 @@ export type TermNode =
   }
   /**
    * A run of adjacent `def`s and what follows them, the run being the scope
-   * over which they see each other.
+   * over which they see each other. What `def` adds is a scope and not a shape,
+   * which is why this holds a list where `Let` holds one binding.
    *
-   * The members are `LetItem`s because by here they are nothing else: the
-   * parser has already folded each one's parameter lists into its `Abs` and,
-   * where a result type was written, into the `FunType` that becomes its
-   * annotation. What is left is a name, maybe a type, and a term. What `def`
-   * adds is not a shape but a *scope* -- which is why this node holds a list
-   * where `Let` holds one binding.
+   * Named for what it is, not how it is written: the surface spells it `def`
+   * and there is no `let rec` to grep for.
    */
   | {
-    readonly kind: "DefGroup";
-    readonly defs: readonly LetItem[];
+    readonly kind: "LetRec";
+    readonly defs: readonly DefItem[];
     readonly body: TermNode;
     readonly at: Position;
   }
@@ -227,7 +240,23 @@ export type AliasDecl = {
 export type TypeDecl = DatatypeDecl | AliasDecl;
 
 /** One top-level `let`, before `parseProgram` folds the chain into `term`. */
-/** A `Let` short of its body, and equally a member of a `DefGroup`. */
+/** A `Let` short of its body, and equally a member of a `LetRec`. */
+/**
+ * A `def`: what a `let` binds, plus the two things only a `def` has.
+ *
+ * `bound` is an `Abs` by construction -- a `def` always writes at least one
+ * parameter list, and the parser has folded them into nested `Abs`s by here.
+ * `annotation` is the signature those lists and the result type fold into, and
+ * is there only when the author wrote enough for one, which is what decides
+ * whether the group sees this member before its body is checked. A parameter
+ * left bare carries a `MissingParamType` by here, so even that is enough.
+ */
+export type DefItem = {
+  readonly name: BindingIdent;
+  readonly annotation?: TypeNode;
+  readonly bound: Extract<TermNode, { kind: "Abs" }>;
+  readonly at: Position;
+};
 export type LetItem = {
   readonly name: BindingIdent;
   readonly annotation?: TypeNode;
