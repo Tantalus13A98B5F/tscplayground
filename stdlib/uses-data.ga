@@ -1,7 +1,7 @@
 // The datatype library, used where the inference has to find the type
 // arguments rather than being told them. Nothing in this file writes a type
-// application, and exactly one place under `stdlib/` does -- `toList` in
-// `uses-both.ga`, which says why it has to.
+// application; the few places under `stdlib/` that do each say why, and
+// `src/stdlib.test.ts` collects the three reasons.
 #require "data/bool.ga"
 #require "data/nat.ga"
 #require "data/pair.ga"

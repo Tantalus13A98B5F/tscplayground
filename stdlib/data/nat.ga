@@ -1,5 +1,5 @@
 #require "data/bool.ga"
-#require "fix.ga"
+#require "rec/fix.ga"
 
 datatype Nat where
 | Z

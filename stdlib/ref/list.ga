@@ -2,7 +2,7 @@
 #require "data/nat.ga"
 #require "data/list.ga"
 #require "ref/cell.ga"
-#require "fix.ga"
+#require "rec/fix.ga"
 
 // A linked list whose tails are cells, so a node can be relinked in place.
 //

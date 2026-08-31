@@ -1,0 +1,47 @@
+// Mutual recursion in continuation-passing style, which is `mutual-tag.ga` with
+// the sum of results taken out.
+//
+// Passing continuations makes every member's result the one answer type `R`, so
+// there is nothing left to sum -- but on its own it only moves the problem,
+// since the continuations then have the differing types. What settles it is
+// that the *tag carries its own continuation*: a constructor pairs a domain
+// with the consumer of that member's result, so `List[Nat]` and `Nat` never
+// have to meet, and every arm still lands in `R`.
+//
+// Read `Req[R]` as a defunctionalised existential -- some result type, plus
+// something that eats it. One fixed point for the group, no partial projection,
+// and the `Z` that `mutual-tag.ga` has to invent is here a well typed `k`.
+//
+// Requires resolve against the search path, and `data/` sits above this
+// directory rather than below it, so the entry needs one:
+//     deno task run stdlib/rec/mutual-cps.ga -I stdlib
+#require "rec/fix.ga"
+#require "data/nat.ga"
+#require "data/pair.ga"
+#require "data/list.ga"
+
+// `R` occurs only in a result position and constructor fields are entered at
+// `+1`, so the variance walk makes `Req` covariant and none of this pushes back
+// on the inference.
+datatype Req[R] where
+| ReqAlt(Nat, (List[Nat]) -> R)
+| ReqTag(Nat, (Nat) -> R)
+
+// `R` is bound outside the `fix`, which is what keeps this ordinary: every
+// recursive call is at the same `R`, so `self` is monomorphic and needs no
+// polymorphic recursion.
+let go = fn [R](r0: Req[R]) ->
+  fix(fn (self: (Req[R]) -> R) -> fn (r: Req[R]) -> match r with
+    | ReqAlt(n, k) -> match n with
+      | Z -> k(Nil())
+      | S(m) -> self(ReqTag(m, fn (t: Nat) ->
+          self(ReqAlt(m, fn (xs: List[Nat]) -> k(Cons(t, xs))))))
+    | ReqTag(n, k) -> match n with
+      | Z -> k(Z)
+      | S(m) -> self(ReqAlt(m, fn (xs: List[Nat]) -> k(length(xs)))))(r0)
+
+// Each member is the request with the identity as its continuation.
+let alt = fn (n: Nat) -> go(ReqAlt(n, fn (xs: List[Nat]) -> xs))
+let tag = fn (n: Nat) -> go(ReqTag(n, fn (m: Nat) -> m))
+
+MkPair(alt(S(S(Z))), tag(S(S(S(Z)))))

@@ -1,0 +1,42 @@
+// Mutual recursion by taking the fixed point at a *product* of the group. The
+// practical encoding: linear in the size of the group where `mutual-bekic.ga`
+// is exponential, and it asks nothing of the members' types, the two results
+// being separate components rather than one.
+//
+// Requires resolve against the search path, and `data/` sits above this
+// directory rather than below it, so the entry needs one:
+//     deno task run stdlib/rec/mutual-pair.ga -I stdlib
+#require "rec/fix.ga"
+#require "data/nat.ga"
+#require "data/pair.ga"
+#require "data/list.ga"
+
+datatype Unit where
+| U
+
+// The `Unit` is not decoration. `fix` is a fixed point at *arrow* types --
+//
+//   fix : [A, B](((A) -> B) -> (A) -> B) -> (A) -> B
+//
+// -- because the Z combinator hides the recursive call behind `fn (v: A) -> ..`
+// and needs a lambda to hide it in. A pair is no arrow, so the product has to
+// be thunked, and the arrow takes one argument, so the thunk takes a token.
+//
+// `| U` is a bare name and so declares a *value*, which only a monomorphic
+// datatype may do -- `Unit` is exactly the datatype that can.
+let both =
+  fix(fn (self: (Unit) -> Pair[(Nat) -> List[Nat], (Nat) -> Nat]) -> fn (u: Unit) ->
+    MkPair(
+      fn (n: Nat) -> match n with
+        | Z -> Nil()
+        | S(k) -> Cons(snd(self(U))(k), fst(self(U))(k)),
+      fn (n: Nat) -> match n with
+        | Z -> Z
+        | S(k) -> length(fst(self(U))(k))))
+
+// One projection per member, and one pair rebuilt per recursive call -- the
+// price of the thunk, and the only price.
+let alt = fst(both(U))
+let tag = snd(both(U))
+
+MkPair(alt(S(S(Z))), tag(S(S(S(Z)))))

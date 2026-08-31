@@ -1,6 +1,6 @@
 #require "data/bool.ga"
 #require "data/nat.ga"
-#require "fix.ga"
+#require "rec/fix.ga"
 
 datatype List[A] where
 | Nil()

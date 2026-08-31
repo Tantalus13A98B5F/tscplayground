@@ -84,7 +84,7 @@ _binder_. It is not a fact about recursion, because recursion needs no binder:
 
     fix : [A, B](((A) -> B) -> (A) -> B) -> (A) -> B
 
-`stdlib/fix.ga` defines it -- the Z combinator over a negative recursive
+`stdlib/rec/fix.ga` defines it -- the Z combinator over a negative recursive
 datatype, which is legal here for the reasons under §2 -- and the whole datatype
 half of the stdlib is written through it. `fix` is an ordinary polymorphic
 callee at an ordinary application, so its type arguments are found by the

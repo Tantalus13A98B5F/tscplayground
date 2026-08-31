@@ -1,0 +1,44 @@
+// Mutual recursion by backpatching: one cell per member, each at its own type,
+// each written once. The only encoding here that is O(1) in the size of the
+// group and asks for no `Rec`, no product and no tag -- and the one to reach
+// for last.
+//
+// It needs a seed before it has an answer, which is a synthesis problem the
+// types do not solve. `diverge` is what makes the seeds writable at all: bottom
+// at an arrow type, and a *value* rather than a running loop, so `ref!` may
+// hold one. `ref/cell.ga` has the general form as `fixKnot`, and says what the
+// bottom seed does and does not buy.
+//
+// Requires resolve against the search path, and `data/` sits above this
+// directory rather than below it, so the entry needs one:
+//     deno task run stdlib/rec/mutual-ref.ga -I stdlib
+#require "rec/fix.ga"
+#require "data/nat.ga"
+#require "data/pair.ga"
+#require "data/list.ga"
+#require "ref/cell.ga"
+
+// The instantiations are forced. Nothing in `ref!`'s argument list constrains
+// the seed, so left alone its variables solve at `unknown -> never` and the
+// backpatch below is refused -- the cell would learn what it holds one line too
+// late. Same shape as `toList` in `uses-both.ga`.
+let ralt = ref!(diverge[Nat, List[Nat]]())
+let rtag = ref!(diverge[Nat, Nat]())
+
+// Reading through the cell is what defers the recursive call, so these two are
+// what the bodies below refer to each other by.
+let alt = fn (n: Nat) -> get!(ralt)(n)
+let tag = fn (n: Nat) -> get!(rtag)(n)
+
+let _ = set!(ralt, fn (n: Nat) -> match n with
+  | Z -> Nil()
+  | S(k) -> Cons(tag(k), alt(k)))
+
+let _ = set!(rtag, fn (n: Nat) -> match n with
+  | Z -> Z
+  | S(k) -> length(alt(k)))
+
+// Nothing in the types says the two writes above happened. Call `alt` between
+// the allocation and its `set!` and it diverges rather than answering, which is
+// the whole of what the bottom seed guarantees.
+MkPair(alt(S(S(Z))), tag(S(S(S(Z)))))
