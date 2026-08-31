@@ -7,12 +7,14 @@
 
 import { parseArgs } from "@std/cli/parse-args";
 import {
-  type Checked,
-  checkFiles,
   type FileSystem,
+  hasErrors,
   isPlainPath,
+  type Ran,
+  runFiles,
   showDiagnosticWithLine,
   typeToString,
+  valueToString,
 } from "./mod.ts";
 
 /** Join a search directory to a spec, `.` contributing no prefix. */
@@ -153,16 +155,16 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  let result: Checked;
+  let result: Ran;
   try {
     if (path === undefined) {
       // Stdin is an entry like any other now that `-I` can say where its
       // requires live; with no `-I` the search path is empty and a require in
       // piped text resolves to nothing, which is what it always did.
-      result = checkFiles(stdinFileSystem(await readStdin(), dirs), STDIN);
+      result = runFiles(stdinFileSystem(await readStdin(), dirs), STDIN);
     } else {
       const { root, entry } = splitEntry(path);
-      result = checkFiles(includePathFileSystem([root, ...dirs]), entry);
+      result = runFiles(includePathFileSystem([root, ...dirs]), entry);
     }
   } catch (thrown) {
     // A program error is a diagnostic, never an exception, so anything thrown
@@ -175,10 +177,19 @@ async function main(): Promise<number> {
   for (const diagnostic of result.diagnostics) {
     console.error(showDiagnosticWithLine(diagnostic, result.sources));
   }
-  if (result.value === undefined) return 1;
 
-  console.log(typeToString(result.value));
-  return 0;
+  // Whatever the phases managed, which is not always both: a program that got
+  // stuck still has the type its check inferred, and saying so is more use than
+  // printing nothing because the run after it failed.
+  if (result.type !== undefined) {
+    const type = typeToString(result.type);
+    console.log(
+      result.value === undefined
+        ? `: ${type}`
+        : `${valueToString(result.value)} : ${type}`,
+    );
+  }
+  return hasErrors(result.diagnostics) ? 1 : 0;
 }
 
 if (import.meta.main) {
