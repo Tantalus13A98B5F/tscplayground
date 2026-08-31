@@ -13,8 +13,8 @@ let toNat = fn (n: CNat) -> n(fn (x: Nat) -> S(x), Z)
 // asymmetry is the whole comparison in one pair of bindings.
 let toCNat = fix(fn (self: (Nat) -> CNat) -> fn (n: Nat) ->
   match n with
-    | Z -> czero
-    | S(k) -> csucc(self(k)))
+  | Z -> czero
+  | S(k) -> csucc(self(k)))
 
 // The one type argument written under `stdlib/`, and the one place staging
 // *costs* something. Staging makes `z` the argument that fixes `B`, so `z` has

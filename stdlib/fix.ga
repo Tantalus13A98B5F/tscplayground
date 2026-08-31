@@ -10,11 +10,11 @@
 // types identically here and would loop under a strict evaluator.
 
 datatype Rec[A, B] where
-  | Fold((Rec[A, B]) -> (A) -> B)
+| Fold((Rec[A, B]) -> (A) -> B)
 
 let unfold = fn [A, B](r: Rec[A, B]) -> match r with
-  | Fold(f) -> f
+| Fold(f) -> f
 
 let fix = fn [A, B](f: ((A) -> B) -> (A) -> B) ->
-  let g = fn (x: Rec[A, B]) -> f(fn (v: A) -> unfold(x)(x)(v));
+  let g = fn (x: Rec[A, B]) -> f(fn (v: A) -> unfold(x)(x)(v))
   g(Fold(g))

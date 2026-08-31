@@ -3,7 +3,9 @@
  *
  * `stdlib/` is written twice over -- once as datatypes and once as Church
  * encodings -- so that the same library exercises the inference from two
- * directions. What it is for is the *usages*: a type asserted here is a type
+ * directions, and once more over `Ref`, which is the control: `MList[A]` and
+ * `List[A]` differ by one `Ref` and come out invariant and covariant, so every
+ * type argument `uses-ref.ga` has to write is one the covariant list does not. What it is for is the *usages*: a type asserted here is a type
  * nothing in the source wrote, so a regression in local type inference shows up
  * as a changed answer rather than as an error nobody sees.
  *
@@ -104,8 +106,8 @@ function restagedFold(signature: string, call: string) {
       `let f = ${signature} ->\n` +
       "  fix(fn (self: (List[A]) -> B) -> fn (ys: List[A]) ->\n" +
       "    match ys with\n" +
-      "      | Nil -> z\n" +
-      "      | Cons(h, t) -> op(h, self(t)))(xs);\n" +
+      "    | Nil -> z\n" +
+      "    | Cons(h, t) -> op(h, self(t)))(xs)\n" +
       `${call}\n`,
   });
 }
@@ -142,6 +144,35 @@ Deno.test("stdlib: a bare lambda needs its type argument fixed by an earlier lis
     "fold.ga:7:29: error: cannot infer a type for acc: annotate it, or use " +
       "this function where its parameter types are known",
   );
+});
+
+Deno.test("stdlib: a Ref makes its datatype invariant, and that costs", () => {
+  expect(check("uses-ref.ga")).toEqual(["Pair[Nat, List[Nat]]"]);
+
+  // The two refusals `uses-ref.ga` documents, which are the same fact twice.
+  // A `never` tail cannot widen, so the argument list has no solution --
+  const inMList = '#require "ref/list.ga"\n';
+  expect(check("m.ga", { "m.ga": inMList + "MCons(Z, ref!(MNil()))\n" })[1])
+    .toBe(
+      "m.ga:2:6: error: cannot infer the type argument A: it is bounded " +
+        "below by Nat and above by never, and no type is both",
+    );
+
+  // -- and an expected type does not rescue it, because joining two `MList`s
+  // that disagree gives `unknown`: invariance leaves nothing between them.
+  expect(
+    check("m.ga", {
+      "m.ga": inMList + "let r : Ref[MList[Nat]] = ref!(MNil())\nr\n",
+    })[1],
+  ).toBe(
+    "m.ga:2:31: error: cannot infer the type argument T: it is bounded " +
+      "below by unknown and above by MList[Nat], and no type is both",
+  );
+
+  // The covariant list, written the same way, needs neither.
+  expect(check("l.ga", {
+    "l.ga": '#require "data/list.ga"\n' + "Cons(Z, Nil())\n",
+  })).toEqual(["List[Nat]"]);
 });
 
 Deno.test("stdlib: fusing a Church nil's two binders does not work", () => {

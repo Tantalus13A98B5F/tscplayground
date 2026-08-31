@@ -1,15 +1,15 @@
 datatype Bool where
-  | True
-  | False
+| True
+| False
 
 let not = fn (b: Bool) -> match b with
-  | True -> False
-  | False -> True
+| True -> False
+| False -> True
 
 let and = fn (p: Bool, q: Bool) -> match p with
-  | True -> q
-  | False -> False
+| True -> q
+| False -> False
 
 let or = fn (p: Bool, q: Bool) -> match p with
-  | True -> True
-  | False -> q
+| True -> True
+| False -> q
