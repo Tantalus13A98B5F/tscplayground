@@ -1,0 +1,9 @@
+// A boolean is its own eliminator: whatever it does with two branches.
+typedef CBool = [A](A, A) -> A
+
+let ctrue = fn [A](t: A, f: A) -> t
+let cfalse = fn [A](t: A, f: A) -> f
+
+let cnot = fn (b: CBool) -> fn [A](t: A, f: A) -> b(f, t)
+let cand = fn (p: CBool, q: CBool) -> fn [A](t: A, f: A) -> p(q(t, f), f)
+let cor = fn (p: CBool, q: CBool) -> fn [A](t: A, f: A) -> p(t, q(t, f))

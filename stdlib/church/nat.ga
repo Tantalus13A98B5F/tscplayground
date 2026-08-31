@@ -1,0 +1,17 @@
+#require "church/bool.ga"
+
+// A number is what it does: apply `s` to `z` that many times. The recursion
+// lives in the encoding, so nothing here needs `fix`.
+typedef CNat = [A]((A) -> A, A) -> A
+
+let czero = fn [A](s: (A) -> A, z: A) -> z
+let csucc = fn (n: CNat) -> fn [A](s: (A) -> A, z: A) -> s(n(s, z))
+
+let cadd = fn (m: CNat, n: CNat) ->
+  fn [A](s: (A) -> A, z: A) -> m(s, n(s, z))
+
+let cmul = fn (m: CNat, n: CNat) ->
+  fn [A](s: (A) -> A, z: A) -> m(fn (x: A) -> n(s, x), z)
+
+let cisZero = fn (n: CNat) ->
+  fn [A](t: A, f: A) -> n(fn (x: A) -> f, t)

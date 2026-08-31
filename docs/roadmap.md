@@ -75,20 +75,32 @@ an author meant an outer one.
 group needs all of them in scope for all of the bodies, which is a different
 node rather than a different fold.
 
-**Inferring the type is the open half**, and the fuzziness has a location worth
-naming: this checker has no global unification, on purpose. EVars arise from one
-place only -- instantiating a polymorphic callee at an application -- and are
-created, constrained and solved inside a single `withEVars`, with nothing
-outside ever holding a type that names one. A recursive binding wants an EVar
-created at the binding, constrained by the whole body, and solved at the end: a
-different lifecycle, and one that breaks the invariant the relation leans on
-when it records a bound without asking whether it is allowed to. Polymorphic
-recursion is undecidable even in Hindley-Milner, so some annotation is required
-regardless.
+**There is no open half, which an earlier draft got wrong.** It argued that a
+recursive binding wants an EVar created at the binding, constrained by the whole
+body and solved at the end -- a lifecycle `withEVars` does not have, and one
+that would break the invariant the relation leans on when it records a bound
+without asking whether it is allowed to. That would be true of `rec` as a
+_binder_. It is not a fact about recursion, because recursion needs no binder:
 
-So the scoping is: annotation-required recursion is a real feature and can land
-on its own. Inferring it is a separate question, and "not in the first release"
-is an acceptable answer to it.
+    fix : [A, B](((A) -> B) -> (A) -> B) -> (A) -> B
+
+`stdlib/fix.ga` defines it -- the Z combinator over a negative recursive
+datatype, which is legal here for the reasons under §2 -- and the whole datatype
+half of the stdlib is written through it. `fix` is an ordinary polymorphic
+callee at an ordinary application, so its type arguments are found by the
+`withEVars` that already exists: `fix(fn (self: (Nat) -> (Nat) -> Nat) -> ...)`
+infers `A` and `B` with neither written. Polymorphic recursion still needs an
+annotation, being undecidable anywhere, and that annotation is the one on
+`self`, which is the same one a `rec` binding would have wanted.
+
+So `rec` is **sugar, not expressiveness**, and the case for it is ergonomics
+alone: `self` is a worse name than the function's own, and spelling the whole
+type in its annotation is a tax on the commonest thing anyone writes. Two things
+follow. Its cost is the roadmap's original estimate -- move the `pushTermVar`
+above the `check`, add a keyword -- and not a desugaring, which would need `Rec`
+and `fix` seeded as builtins. And leaving it out makes (2) _simpler_: recursion
+through `fix` is ordinary closures and ordinary tagged applications, where a
+`rec` binding needs a closure whose environment contains itself.
 
 ## Landed
 

@@ -1,0 +1,20 @@
+// The call-by-value fixed point, as a library rather than a language feature.
+//
+// `Rec` is the negative recursive datatype that makes self-application
+// typeable: its field takes a `Rec[A, B]` and answers an `(A) -> B`, so
+// `unfold(x)(x)` is well typed and is where the knot is tied. Nothing else in
+// the stdlib needs `Rec` -- it exists only to give `fix` a type.
+//
+// The Z form, not Y: `fn (v: A) -> unfold(x)(x)(v)` is an eta-expansion that
+// keeps the recursive call from being taken before it is asked for. Plain Y
+// types identically here and would loop under a strict evaluator.
+
+datatype Rec[A, B] where
+  | Fold((Rec[A, B]) -> (A) -> B)
+
+let unfold = fn [A, B](r: Rec[A, B]) -> match r with
+  | Fold(f) -> f
+
+let fix = fn [A, B](f: ((A) -> B) -> (A) -> B) ->
+  let g = fn (x: Rec[A, B]) -> f(fn (v: A) -> unfold(x)(x)(v));
+  g(Fold(g))
