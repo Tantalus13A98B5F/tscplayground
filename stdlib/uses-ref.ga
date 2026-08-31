@@ -1,0 +1,37 @@
+// The `Ref` library, and what invariance costs.
+//
+// `MList[A]` is invariant and `List[A]` is covariant, and the only difference
+// between the two declarations is one `Ref`. So this file is the control for
+// `uses-data.ga`: every place below that has to write a type argument is a
+// place the covariant list needs nothing.
+#require "data/bool.ga"
+#require "data/nat.ga"
+#require "data/pair.ga"
+#require "data/list.ga"
+#require "ref/cell.ga"
+#require "ref/list.ga"
+
+// An empty tail has to say what it is empty of. Written `ref!(MNil())` the
+// argument settles at `MList[never]` before anything demands otherwise, and
+// then there is no `A` left to have:
+//
+//     error: cannot infer the type argument A: it is bounded below by Nat
+//            and above by never, and no type is both
+//
+// The covariant `Cons(Z, Nil())` two lines down needs none of this. This is
+// exactly how `List` behaved before its variance was inferred.
+let ms = MCons(Z, ref!(MNil[Nat]()))
+let plain = Cons(Z, Nil())
+
+// The join of two `MList`s at different arguments is `unknown`, invariance
+// leaving nothing between them -- which is why an expected type does not
+// rescue it either. `let r : Ref[MList[Nat]] = ref!(MNil())` is refused as
+// bounded below by `unknown` and above by `MList[Nat]`.
+let cell = ref!(ms)
+let _ = modify(cell)(fn (xs) -> setTail(xs, MNil[Nat]()))
+
+let counted = mlength(mfromList(plain))
+let counter = ref!(Z)
+let _ = modify(counter)(fn (m) -> add(m)(counted))
+
+MkPair(get!(counter), mtoList(get!(cell)))

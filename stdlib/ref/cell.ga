@@ -1,0 +1,37 @@
+// Operations over `Ref`, and a note about their names.
+//
+// A bang name can only ever be *used*: the parser refuses one at every position
+// where a name is bound, so nothing below can be called `modify!` however much
+// it would like to be. `ref!`, `get!` and `set!` are seeded term bindings, not
+// keywords, and that rule is what reserves the spelling rather than a list of
+// builtins anywhere.
+//
+// `replace` rather than `swap` for a duller reason: requiring is textual and
+// flat, so every module shares one namespace and a later binding shadows an
+// earlier one *silently*. `data/pair.ga` already has a `swap`.
+#require "data/bool.ga"
+
+// Staged, so the cell settles `A` before the function is looked at and a bare
+// lambda reaches it knowing its own parameter. No second binder is needed
+// here, unlike `foldr` -- there is only one type argument, and the cell has it.
+let modify = fn [A](r: Ref[A]) -> fn (f: (A) -> A) -> set!(r, f(get!(r)))
+
+let replace = fn [A](r: Ref[A], v: A) ->
+  let old = get!(r)
+  let _ = set!(r, v)
+  old
+
+// Landin's knot: a cell holding a function that reads the cell is general
+// recursion, with no `Rec` datatype anywhere. `fix.ga` gets there through a
+// negative recursive datatype instead; this is the other way in, and between
+// them they are why `docs/roadmap.md` says the evaluator needs a fuel counter
+// whatever else it does.
+//
+// The seed is a parameter because there is no way to make one: `(A) -> B` for
+// arbitrary `A` and `B` has no closed inhabitant, and `never` has no term to
+// stand in with.
+let fixFrom = fn [A, B](seed: (A) -> B) -> fn (f: ((A) -> B) -> (A) -> B) ->
+  let r = ref!(seed)
+  let g = fn (v: A) -> get!(r)(v)
+  let _ = set!(r, f(g))
+  g

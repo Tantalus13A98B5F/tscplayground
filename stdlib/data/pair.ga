@@ -1,11 +1,11 @@
 datatype Pair[A, B] where
-  | MkPair(A, B)
+| MkPair(A, B)
 
 let fst = fn [A, B](p: Pair[A, B]) -> match p with
-  | MkPair(a, b) -> a
+| MkPair(a, b) -> a
 
 let snd = fn [A, B](p: Pair[A, B]) -> match p with
-  | MkPair(a, b) -> b
+| MkPair(a, b) -> b
 
 let swap = fn [A, B](p: Pair[A, B]) -> match p with
-  | MkPair(a, b) -> MkPair(b, a)
+| MkPair(a, b) -> MkPair(b, a)

@@ -1,0 +1,41 @@
+#require "data/bool.ga"
+#require "data/nat.ga"
+#require "data/list.ga"
+#require "ref/cell.ga"
+#require "fix.ga"
+
+// A linked list whose tails are cells, so a node can be relinked in place.
+//
+// `A` comes out **invariant**, and reading why is most of what this module is
+// for. `Ref`'s argument is invariant because `get!` reads a `T` out where
+// `set!` puts one in, so the walk enters `Ref[MList[A]]` at `0`; `0` absorbs,
+// so `MList`'s own `A` is reached at `0` as well and takes both flags. Nothing
+// in the declaration says any of that -- it is read off the field, by the same
+// pass that reads `List[+A]` off `Cons`.
+datatype MList[A] where
+| MNil()
+| MCons(A, Ref[MList[A]])
+
+let mlength = fn [A](xs: MList[A]) ->
+  fix(fn (self: (MList[A]) -> Nat) -> fn (ys: MList[A]) ->
+    match ys with
+    | MNil -> Z
+    | MCons(h, t) -> S(self(get!(t))))(xs)
+
+// Out of the invariant world and into the covariant one.
+let mtoList = fn [A](xs: MList[A]) ->
+  fix(fn (self: (MList[A]) -> List[A]) -> fn (ys: MList[A]) ->
+    match ys with
+    | MNil -> Nil()
+    | MCons(h, t) -> Cons(h, self(get!(t))))(xs)
+
+let mfromList = fn [A](xs: List[A]) ->
+  foldr(xs)(MNil[A]())(fn (h, acc) -> MCons(h, ref!(acc)))
+
+// Relink a node's tail in place, answering the tail that was there. The one
+// operation here that could not be written over `List`, and the reason the
+// tails are cells at all. An empty list has no tail to set and answers itself,
+// which is also how it avoids writing `MNil[A]()`.
+let setTail = fn [A](xs: MList[A], t: MList[A]) -> match xs with
+| MNil -> xs
+| MCons(h, r) -> replace(r, t)

@@ -3,12 +3,12 @@
 #require "fix.ga"
 
 datatype List[A] where
-  | Nil()
-  | Cons(A, List[A])
+| Nil()
+| Cons(A, List[A])
 
 let isEmpty = fn [A](xs: List[A]) -> match xs with
-  | Nil -> True
-  | Cons(h, t) -> False
+| Nil -> True
+| Cons(h, t) -> False
 
 // Each of these takes `fix` *inside* the polymorphic lambda, where `A` is a
 // rigid variable rather than something still being inferred: the fixed point
@@ -34,14 +34,14 @@ let isEmpty = fn [A](xs: List[A]) -> match xs with
 let foldr = fn [A](xs: List[A]) -> fn [B](z: B) -> fn (op: (A, B) -> B) ->
   fix(fn (self: (List[A]) -> B) -> fn (ys: List[A]) ->
     match ys with
-      | Nil -> z
-      | Cons(h, t) -> op(h, self(t)))(xs)
+    | Nil -> z
+    | Cons(h, t) -> op(h, self(t)))(xs)
 
 let map = fn [A](xs: List[A]) -> fn [B](f: (A) -> B) ->
   fix(fn (self: (List[A]) -> List[B]) -> fn (ys: List[A]) ->
     match ys with
-      | Nil -> Nil()
-      | Cons(h, t) -> Cons(f(h), self(t)))(xs)
+    | Nil -> Nil()
+    | Cons(h, t) -> Cons(f(h), self(t)))(xs)
 
 // Through `foldr`, and with a bare lambda, which is the whole point of it.
 let length = fn [A](xs: List[A]) -> foldr(xs)(Z)(fn (h, acc) -> S(acc))
