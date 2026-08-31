@@ -1,23 +1,18 @@
 # Before the first release
 
-GaML runs end to end today -- lex, lay out, parse, elaborate, check, print a
-type. What follows is the work between here and a version anyone else should
-use. Two items, in a rough order, each with the reason it is on the list rather
+GaML runs end to end today -- lex, lay out, parse, elaborate, check, evaluate,
+print a value and its type. What follows is the work between here and a version
+anyone else should use. One item left, with the reason it is on the list rather
 than merely desirable -- then what has landed, and then the things deliberately
 left off, which are limitations the design chose rather than corners left
 unfinished.
 
-The order is not a dependency chain, and necessity is not the same axis as cost.
-(1) is the one the language is _for_, so it outranks the one below it even
-though that does not need it.
-
 ## 1. Dependent arrows
 
 The largest item, and the one that changes the calculus rather than extending
-it. It sits above evaluation and recursion because it is what the rest is
-scaffolding for: nothing above depends on it, and that is what makes it the
-point rather than what makes it optional. An earlier draft of this list read
-that backwards and put it last.
+it. It is what the rest is scaffolding for: nothing else depends on it, and that
+is what makes it the point rather than what makes it optional. An earlier draft
+of this list read that backwards and put it last.
 
 It reopens part of the variance work rather than building on it. Variance is a
 property of arrow positions, and every walk over an arrow -- `#castFun`,
@@ -69,36 +64,55 @@ not one. That phase is still worth having on its own -- it turns a forward
 reference into "`foo` is declared below; its signature is not available here"
 rather than `unknown name foo` -- and it is additive, so it can land whenever.
 
-## 2. Evaluation
-
-Six term forms -- `Var`, `Abs`, `App`, `TypeApp`, `Let`, `Match` -- over values
-that are closures and tagged constructor applications. Type application erases:
-nothing about a type reaches runtime. `mod.ts` already hands back a `Result`, so
-a value joins the type it currently returns alone.
-
-**It needs a fuel counter from the start.** An earlier draft of this entry
-argued the opposite -- `#checkLet` pushes the binder after checking the bound
-term, so nothing is in its own scope, so no program can diverge and the
-evaluator is total. The premise holds and the conclusion does not. Divergence is
-reachable today, twice over:
-
-    let r = ref!(fn (x: Bool) -> x)
-    let f = fn (x: Bool) -> get!(r)(x)
-    let tie = set!(r, f)
-    f(True)
-
-A cell holding a function that reads the cell is general recursion -- Landin's
-knot -- and it needs no recursive datatype at all. Independently, a _negative_
-recursive datatype gives the same thing: `| MkBad((Bad) -> Bad)` is a legal
-field, so self-application types through it and `Ω` is writable. Both check
-today. So the interpreter is an interpreter plus a fuel counter plus a story
-about what a diverging playground tab does, whenever it is written, and `def`
-does not change that.
-
-Independent of (1), so it could come earlier still. The bundle targets a browser
-playground, and a playground that prints a type and runs nothing is half a demo.
-
 ## Landed
+
+**An evaluator, and a CLI that is the whole pipeline.** Closures, constructed
+values and cells, over six term forms. Type application erases. `runFiles`
+parses, checks and runs, each phase contributing what it reported, and the CLI
+prints `value : type`.
+
+Untyped, and told nothing about whether the program checked -- so it runs on
+anything that _parsed_, and an ill-typed program is one the tests run on
+purpose. That is where the interesting decision was. With no guarantee from the
+checker, every shape it would have supplied is tested here instead, and all of
+them are one rule: a value arrived where a different shape was needed. The
+alternative design was a bad _value_ mirroring `TBad`, absorbing a failure so
+the run could go on and collect more; it is wrong, and the reason is what the
+two walks are. Checking is structural recursion over the tree, so every subterm
+is visited whatever its siblings did and absorbing genuinely buys the rest of
+the reports. Evaluation walks a trace. Past the first stuck term there is no
+rest that was going to be visited anyway -- only sibling arguments, and
+everything downstream, which is either a consequence of the first failure or an
+artifact of the order arguments happen to evaluate in. A test pinning that would
+be pinning an implementation detail. So the diagnostics are zero or one, and
+terminal.
+
+Scope is the one thing that is _not_ a type question, and the one thing the two
+must agree on: where a name resolves decides what a program means. So `#tie`
+follows `#checkLetRec` phase for phase -- annotated members bound before any
+body runs, unannotated ones as they are reached -- and a later unannotated
+sibling is a name outside the run there and here. Binding the whole run at once
+is the obvious thing and is wrong: it resolves that name to the group, and the
+run quietly means something the check never agreed to.
+
+Cells live in a `Heap` the evaluator owns, a value carrying an address rather
+than the cell. Shallow-embedding them in the host heap would work and would put
+allocation somewhere nothing here can see it; a budget on cells, a count of
+them, or anything that walks them needs somewhere to be, and there is nowhere if
+the host heap is the heap.
+
+`LetRec` needs no black hole, and for a parser reason rather than a checker one:
+a `DefItem`'s bound is an `Abs` by construction, so the frames can be allocated
+before any body is evaluated and no member is ever read while it is still a
+hole. Haskell's `<<loop>>` has no analogue here.
+
+The fuel counts applications, every loop passing through one, and is set _below_
+what the host stack takes. That ordering is the point: an application recurses,
+so a runaway program would otherwise always exhaust the stack first and be told
+something about the interpreter rather than about itself. The stack is still a
+backstop, with its own message, since a shape whose frames are deeper than
+assumed can reach it -- and an explicit-stack machine is the way out from under
+the ceiling, when one is wanted.
 
 **Recursive and mutually recursive functions, as `def`.** A run of adjacent
 `def`s is one scope: every member may name every other, so `even` and `odd` are

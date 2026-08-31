@@ -34,7 +34,9 @@ import {
   checkFiles,
   type FileSystem,
   isPlainPath,
+  runFiles,
   showDiagnostic,
+  valueToString,
 } from "./mod.ts";
 import { typeToString } from "./core/types.ts";
 
@@ -71,6 +73,18 @@ function check(
   const result = checkFiles(stdlibFiles(extra), entry);
   return [
     result.value === undefined ? "<none>" : typeToString(result.value),
+    ...result.diagnostics.map((d) => showDiagnostic(d, result.sources)),
+  ];
+}
+
+/** A `[value, ...located messages]` tuple, `check`'s counterpart one phase on. */
+function evaluated(
+  entry: string,
+  extra: Record<string, string> = {},
+): [string, ...string[]] {
+  const result = runFiles(stdlibFiles(extra), entry);
+  return [
+    result.value === undefined ? "<stuck>" : valueToString(result.value),
     ...result.diagnostics.map((d) => showDiagnostic(d, result.sources)),
   ];
 }
@@ -245,4 +259,33 @@ Deno.test("stdlib: bottom is a value at an arrow and nowhere else", () => {
     "k.ga:5:15: error: cannot infer the type argument T: it is bounded below " +
       "by A -> B and above by unknown -> never, and no type is both",
   );
+});
+
+/**
+ * The same corpus, run.
+ *
+ * The types above say what the checker made of these programs; this says what
+ * they compute, which is the other half of a claim that they mean anything. It
+ * is also the widest evaluation test there is -- the entries reach every term
+ * form, both encodings, staged folds, and cells -- and nothing else exercises
+ * the evaluator against programs a reader can run.
+ *
+ * The six under `rec/` are the sharpest of them. They are the same pair of
+ * mutually recursive functions six ways over -- Bekic's decomposition, a fixed
+ * point at a product, a tag, continuation passing, backpatched cells, and a
+ * `def` run -- so they must agree on a value, and an encoding that has drifted
+ * from what it encodes shows up here and nowhere in the types.
+ */
+Deno.test("stdlib: the corpus runs, and the encodings agree on a value", () => {
+  expect(evaluated("uses-data.ga")).toEqual(["MkPair(S(S(Z)), True)"]);
+  expect(evaluated("uses-both.ga")).toEqual(["MkPair(S(S(S(Z))), Z)"]);
+  expect(evaluated("uses-ref.ga")).toEqual(["MkPair(S(Z), Nil())"]);
+  // A Church value is a function, so running one says only that it did not get
+  // stuck. What it computes is read by converting it, which `uses-both.ga` is.
+  expect(evaluated("uses-church.ga")).toEqual(["<function>"]);
+
+  const mutual = "MkPair(Cons(Z, Cons(Z, Nil())), S(S(Z)))";
+  for (const encoding of ["bekic", "pair", "tag", "cps", "ref", "def"]) {
+    expect(evaluated(`rec/mutual-${encoding}.ga`)).toEqual([mutual]);
+  }
 });

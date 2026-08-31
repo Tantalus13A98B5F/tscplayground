@@ -35,6 +35,7 @@ export { Context } from "./core/context.ts";
 import {
   type Diagnostic,
   failed,
+  hasErrors,
   type Result,
   type Source,
   type Sources,
@@ -43,9 +44,11 @@ import { type Token, tokenize } from "./syntax/lexer.ts";
 import { layout } from "./syntax/layout.ts";
 import { loadSources } from "./syntax/require.ts";
 import type { FileSystem } from "./io/files.ts";
+import type { Program } from "./syntax/ast.ts";
 import { parseProgram } from "./syntax/parser.ts";
 import { checkProgram } from "./core/check.ts";
 import { type Type, typeToString } from "./core/types.ts";
+import { evaluate, type Value, valueToString } from "./core/evaluate.ts";
 
 /**
  * A filesystem holding exactly `source`, under the path it already carries.
@@ -86,6 +89,11 @@ export function checkSource(source: Source): Checked {
   return checkFiles(oneFileSystem(source), source.path);
 }
 
+/** `runFiles` over a lone source, as `checkSource` is `checkFiles` over one. */
+export function runSource(source: Source): Ran {
+  return runFiles(oneFileSystem(source), source.path);
+}
+
 /**
  * What a multi-file run hands back. `sources` comes along because diagnostics
  * carry a `FileId` rather than a path, and only the walk knows what was read.
@@ -118,16 +126,81 @@ function appendPart(into: Token[], part: readonly Token[]): void {
   into.push(...body);
 }
 
+/** Everything up to a type: the tree, and what checking it came to. */
+export function checkFiles(fileSystem: FileSystem, entry: string): Checked {
+  const loaded = loadProgram(fileSystem, entry);
+  if (loaded.value === undefined) {
+    return { ...failed<Type>(loaded.diagnostics), sources: loaded.sources };
+  }
+  const checked = checkProgram(loaded.value);
+  return {
+    value: checked.type,
+    diagnostics: [...loaded.diagnostics, ...checked.diagnostics],
+    sources: loaded.sources,
+  };
+}
+
 /**
- * Check a whole program: walk `#require` from `entry`, then lex, lay out, and
- * splice every file into one token stream before parsing it once.
+ * What a run hands back: a type and a value, each absent where its phase had
+ * nothing to give. Not a `Result` of a pair -- the phases are sequential and
+ * fail separately, so a type that was inferred is worth having even where the
+ * run it describes got stuck.
+ */
+export type Ran = {
+  readonly type: Type | undefined;
+  readonly value: Value | undefined;
+  readonly diagnostics: readonly Diagnostic[];
+  readonly sources: Sources;
+};
+
+/**
+ * The whole pipeline: parse, check, evaluate, each contributing what it
+ * reported.
+ *
+ * Evaluation is not gated on the check. It reads no types and is told nothing
+ * about them, so a program that failed to check is one it can run and get stuck
+ * in -- which is the only way to see what checking was buying, and is a thing
+ * the tests do deliberately. What it is gated on is a tree, parsing being the
+ * one phase that withholds its result.
+ */
+export function runFiles(fileSystem: FileSystem, entry: string): Ran {
+  const loaded = loadProgram(fileSystem, entry);
+  const { sources } = loaded;
+  if (loaded.value === undefined) {
+    return {
+      type: undefined,
+      value: undefined,
+      diagnostics: loaded.diagnostics,
+      sources,
+    };
+  }
+  const checked = checkProgram(loaded.value);
+  const ran = evaluate(loaded.value);
+  return {
+    type: checked.type,
+    value: ran.value,
+    diagnostics: [
+      ...loaded.diagnostics,
+      ...checked.diagnostics,
+      ...ran.diagnostics,
+    ],
+    sources,
+  };
+}
+
+/**
+ * The tree every later phase reads: walk `#require` from `entry`, then lex, lay
+ * out, and splice every file into one token stream before parsing it once.
  *
  * Requiring is textual and flat, so a required file contributes its bindings
  * ahead of the requiring file's own and the result is a single program -- which
  * is why this cannot parse each file separately: a module of bare `let`s is not
  * a program on its own, having no final expression.
  */
-export function checkFiles(fileSystem: FileSystem, entry: string): Checked {
+function loadProgram(
+  fileSystem: FileSystem,
+  entry: string,
+): Result<Program> & { readonly sources: Sources } {
   // Asserted: the walk always hands back what it read, even for an entry it
   // could not resolve, because its diagnostics name files the caller can only
   // render through `sources`. An empty `order` is how it says it read nothing.
@@ -156,22 +229,14 @@ export function checkFiles(fileSystem: FileSystem, entry: string): Checked {
 
   // Nothing was read -- an unresolvable entry, already reported. Parsing an
   // empty stream would only add a confusing second error.
-  if (end === undefined) return { ...failed<Type>(diagnostics), sources };
+  if (end === undefined) return { ...failed<Program>(diagnostics), sources };
   // The entry file is last in post-order, so its `eof` ends the stream.
   tokens.push(end);
 
   const program = parseProgram(tokens);
   diagnostics.push(...program.diagnostics);
-  if (program.value === undefined) {
-    return { ...failed<Type>(diagnostics), sources };
-  }
-
-  const checked = checkProgram(program.value);
-  return {
-    value: checked.type,
-    diagnostics: [...diagnostics, ...checked.diagnostics],
-    sources,
-  };
+  return { ...program, diagnostics, sources };
 }
 
-export { typeToString };
+export { evaluate, hasErrors, typeToString, valueToString };
+export type { Value };

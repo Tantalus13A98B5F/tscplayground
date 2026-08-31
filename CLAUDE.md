@@ -5,7 +5,31 @@ been through. Be care of naming: avoid generic names; "operation + target" is
 often better.
 
 Pipeline: require walk (`#require "path"`, textual and flat) -> lexer -> layout
-(insert scope markers, semicolons) -> parser -> elaborate -> check.
+(insert scope markers, semicolons) -> parser -> elaborate -> check -> evaluate.
+
+Evaluation is untyped and is not gated on the check. It reads no types at all,
+so it runs on anything that _parsed_ -- which is what lets an ill-typed program
+be run on purpose, the only way to see what checking was buying. Every shape the
+checker would have guaranteed is therefore tested there instead, and the whole
+error vocabulary is one rule seen from several sides: a value arrived where a
+different shape was needed. Scope is the exception, and is not a type question:
+where a name resolves must be one question, so `#tie` follows `#checkLetRec`
+phase for phase -- an annotated `def` is bound before any body runs, an
+unannotated one as it is reached, so a later unannotated sibling is a name
+outside the run there and here. Reading an annotation's _presence_ is reading
+the tree, not the type. One diagnostic, at the first stuck term, and then
+nothing. Checking recovers because it is structural recursion, so absorbing a
+failure buys the reports from the rest of the tree; evaluation walks a _trace_,
+where past the first stuck term there is no rest that was going to be visited
+anyway and what could still be said is either a consequence of that failure or
+an artifact of the order arguments happen to evaluate in. So there is no bad
+_value_, for the same reason `TBad` is a good type: it exists so checking can go
+on, and nothing goes on from here. Applications carry a fuel counter -- every
+loop passes through one -- set below what the host stack takes, so a runaway
+program is told something about itself rather than about the interpreter. Cells
+live in a `Heap` the evaluator owns and a value carries an address, so
+allocation is a step this checker takes rather than one the host takes behind
+it: a budget on cells, or anything that walks them, has somewhere to be.
 
 Elaboration is not a pass of its own. Declarations are elaborated once up front;
 a type written inside a term is elaborated when checking reaches it, because
