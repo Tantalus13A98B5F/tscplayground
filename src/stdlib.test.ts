@@ -5,20 +5,28 @@
  * encodings -- so that the same library exercises the inference from two
  * directions, and once more over `Ref`, which is the control: `MList[A]` and
  * `List[A]` differ by one `Ref` and come out invariant and covariant, so every
- * type argument `uses-ref.ga` has to write is one the covariant list does not. What it is for is the *usages*: a type asserted here is a type
- * nothing in the source wrote, so a regression in local type inference shows up
- * as a changed answer rather than as an error nobody sees.
+ * type argument `uses-ref.ga` has to write is one the covariant list does not.
+ * What it is for is the *usages*: a type asserted here is a type nothing in the
+ * source wrote, so a regression in local type inference shows up as a changed
+ * answer rather than as an error nobody sees.
  *
- * Exactly one type argument is written under `stdlib/`: `toList` in
- * `uses-both.ga`, where staging makes the fold's initial value the argument
- * that fixes `B`, and an empty list has nothing to fix it with. Every other one
- * in both encodings is found -- from a sibling argument, from an annotation on
- * a lambda, or from the expected type -- so any of these answers changing is
- * the inference having got weaker.
+ * A written type argument under `stdlib/` is therefore a claim that inference
+ * could not have found it, and there are three reasons any of them are there.
+ * `Nil[A]()` in `uses-both.ga` is a fold's initial value, which staging makes
+ * the argument that fixes `B` -- and an empty list has nothing to fix it with.
+ * `MNil[Nat]()` in the `Ref` library is invariance: `MList[never]` widens to
+ * nothing. `diverge[A, B]()` is a cell's seed, unconstrained in the argument
+ * list it is solved in, the cell learning what it holds one line later. Every
+ * other one is found -- from a sibling argument, from an annotation on a
+ * lambda, or from the expected type -- so any of these answers changing is the
+ * inference having got weaker.
  *
  * Read off the disk rather than embedded, so these are programs a reader can
- * run (`deno task run stdlib/uses-data.ga`) and so the require walk is
- * exercised on a real tree.
+ * run and so the require walk is exercised on a real tree. The entries at the
+ * root run bare -- `deno task run stdlib/uses-data.ga` -- and the ones under
+ * `rec/` need `-I stdlib`, requires resolving against the search path rather
+ * than against the requiring file. This filesystem is rooted at `stdlib/`, so
+ * it *is* that configuration and no entry here has to say which it needs.
  */
 
 import { expect } from "@std/expect";
@@ -189,4 +197,51 @@ Deno.test("stdlib: fusing a Church nil's two binders does not work", () => {
     "fused.ga:3:27: error: expected [B](([A](A -> A, A) -> A, B) -> B, B) -> B, " +
     "found [A, B]((A, B) -> B, B) -> B",
   ]);
+});
+
+Deno.test("stdlib: one `fix` gives mutual recursion five ways", () => {
+  // The same pair of functions -- `(Nat) -> List[Nat]` beside `(Nat) -> Nat`,
+  // so no encoding can lean on a shared result type -- reached by Bekic's
+  // decomposition, a fixed point at a product, a tag, continuations, and
+  // backpatched cells. Same answer from all five is the point: `fix` is the
+  // only recursion in the language and none of these adds any.
+  for (
+    const entry of [
+      "rec/mutual-bekic.ga",
+      "rec/mutual-pair.ga",
+      "rec/mutual-tag.ga",
+      "rec/mutual-cps.ga",
+      "rec/mutual-ref.ga",
+    ]
+  ) {
+    expect([entry, ...check(entry)]).toEqual([entry, "Pair[List[Nat], Nat]"]);
+  }
+});
+
+Deno.test("stdlib: bottom is a value at an arrow and nowhere else", () => {
+  // What makes a backpatched knot a closed term at all. `fix` over a body that
+  // only calls itself inhabits every arrow type, and it is a *lambda*, so a
+  // cell can hold one -- which is the synthesis problem `fixFrom` ducks by
+  // taking its seed as a parameter.
+  expect(check("d.ga", {
+    "d.ga": '#require "rec/fix.ga"\n' + "diverge\n",
+  })).toEqual(["[A, B]() -> A -> B"]);
+
+  // And why `rec/mutual-ref.ga` writes the seed's type arguments. Nothing in
+  // `ref!`'s list constrains them, so they solve at the extremes and the
+  // backpatch is what finds out.
+  expect(
+    check("k.ga", {
+      "k.ga": '#require "ref/cell.ga"\n' +
+        "let f = fn [A, B](f: ((A) -> B) -> (A) -> B) ->\n" +
+        "  let r = ref!(diverge())\n" +
+        "  let g = fn (v: A) -> get!(r)(v)\n" +
+        "  let _ = set!(r, f(g))\n" +
+        "  g\n" +
+        "f\n",
+    })[1],
+  ).toBe(
+    "k.ga:5:15: error: cannot infer the type argument T: it is bounded below " +
+      "by A -> B and above by unknown -> never, and no type is both",
+  );
 });

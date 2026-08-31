@@ -1,0 +1,55 @@
+// Mutual recursion by dispatching on a tag: one function over a tagged
+// argument, so one fixed point serves the group. Cheap and obvious, and this
+// file is here for where it stops.
+//
+// Two costs, and the second is the real one. The *domains* have to be summed as
+// well -- mutually recursive functions usually differ there too, `Tree` and
+// `Forest` being the stock example -- and where the results differ they have to
+// be summed on the way out, which makes projecting back partial.
+//
+// `mutual-cps.ga` is this encoding with the second cost removed.
+//
+// Requires resolve against the search path, and `data/` sits above this
+// directory rather than below it, so the entry needs one:
+//     deno task run stdlib/rec/mutual-tag.ga -I stdlib
+#require "rec/fix.ga"
+#require "data/nat.ga"
+#require "data/pair.ga"
+#require "data/list.ga"
+
+datatype Which where
+| WAlt
+| WTag
+
+datatype Out where
+| OList(List[Nat])
+| ONat(Nat)
+
+// The arm that cannot happen still has to answer something, and `Z` is a lie
+// the checker has no way to catch: `go(WTag)(n)` is an `Out` and nothing in the
+// type relates it to the tag it was asked with. Correctness now rests on a
+// convention held at every call site.
+//
+// The feature that fixes this is a result type that reads its argument --
+// `go : (w: Which) -> (Nat) -> Result(w)` -- which is `docs/roadmap.md` §1.
+let outList = fn (o: Out) -> match o with
+| OList(xs) -> xs
+| ONat(n) -> Nil()
+
+let outNat = fn (o: Out) -> match o with
+| OList(xs) -> Z
+| ONat(n) -> n
+
+let go = fix(fn (self: (Which) -> (Nat) -> Out) -> fn (w: Which) -> fn (n: Nat) ->
+  match w with
+  | WAlt -> match n with
+    | Z -> OList(Nil())
+    | S(k) -> OList(Cons(outNat(self(WTag)(k)), outList(self(WAlt)(k))))
+  | WTag -> match n with
+    | Z -> ONat(Z)
+    | S(k) -> ONat(length(outList(self(WAlt)(k)))))
+
+let alt = fn (n: Nat) -> outList(go(WAlt)(n))
+let tag = fn (n: Nat) -> outNat(go(WTag)(n))
+
+MkPair(alt(S(S(Z))), tag(S(S(S(Z)))))

@@ -10,6 +10,7 @@
 // flat, so every module shares one namespace and a later binding shadows an
 // earlier one *silently*. `data/pair.ga` already has a `swap`.
 #require "data/bool.ga"
+#require "rec/fix.ga"
 
 // Staged, so the cell settles `A` before the function is looked at and a bare
 // lambda reaches it knowing its own parameter. No second binder is needed
@@ -22,16 +23,42 @@ let replace = fn [A](r: Ref[A], v: A) ->
   old
 
 // Landin's knot: a cell holding a function that reads the cell is general
-// recursion, with no `Rec` datatype anywhere. `fix.ga` gets there through a
+// recursion, with no `Rec` datatype anywhere. `rec/fix.ga` gets there through a
 // negative recursive datatype instead; this is the other way in, and between
 // them they are why `docs/roadmap.md` says the evaluator needs a fuel counter
 // whatever else it does.
 //
-// The seed is a parameter because there is no way to make one: `(A) -> B` for
-// arbitrary `A` and `B` has no closed inhabitant, and `never` has no term to
-// stand in with.
+// The seed is the whole difficulty. A cell has to hold something before it
+// holds the answer, so tying a knot this way is a *synthesis* problem the type
+// system hands to the author: produce an `(A) -> B` when the only `(A) -> B` in
+// the program is the one being defined. `fixFrom` ducks it by taking the seed
+// as a parameter, which is honest where the seed is meant -- iterating from an
+// approximation -- and evasive where it is not.
 let fixFrom = fn [A, B](seed: (A) -> B) -> fn (f: ((A) -> B) -> (A) -> B) ->
   let r = ref!(seed)
+  let g = fn (v: A) -> get!(r)(v)
+  let _ = set!(r, f(g))
+  g
+
+// Seeded with bottom instead, which is what makes the knot a closed term. This
+// is `fix` again, to the letter -- `[A, B](((A) -> B) -> (A) -> B) -> (A) -> B`
+// -- reached through mutation rather than through `Rec`.
+//
+// The seed has to say its type. Nothing in the argument list constrains it, so
+// its two variables solve at `unknown -> never` and `set!` then refuses the
+// real function; the cell learns what it holds one line too late. Same shape as
+// `toList` in `uses-both.ga`, and the same fix.
+//
+// What the bottom seed buys is small and worth naming. A read before the
+// backpatch used to answer the seed, and no type said it was a placeholder;
+// now it diverges. That trades a wrong answer for no answer, which is better,
+// but it is still not a type error -- the obligation only moved, from the
+// author to whatever later proves the seed is dead. Under a store effect that
+// proof is an aliasing question, where a `rec` binder would have made it a
+// scoping one. It is the argument for the group node in `docs/roadmap.md` §3,
+// and the argument against desugaring one to this.
+let fixKnot = fn [A, B](f: ((A) -> B) -> (A) -> B) ->
+  let r = ref!(diverge[A, B]())
   let g = fn (v: A) -> get!(r)(v)
   let _ = set!(r, f(g))
   g

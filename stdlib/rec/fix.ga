@@ -18,3 +18,14 @@ let unfold = fn [A, B](r: Rec[A, B]) -> match r with
 let fix = fn [A, B](f: ((A) -> B) -> (A) -> B) ->
   let g = fn (x: Rec[A, B]) -> f(fn (v: A) -> unfold(x)(x)(v))
   g(Fold(g))
+
+// The bottom of an arrow type, and there is one only because `fix` is here:
+// the fixed point of a body that does nothing but call itself. What makes it
+// usable is that it is a *value* -- a lambda, not a running loop -- so `ref!`
+// can hold it, which is what a backpatched knot wants for a seed.
+//
+// Only at an arrow, and that is the eta-expansion again. A term of an arbitrary
+// type exists too, self-application through `Rec` typing at `never`, but it is
+// not a value: under call by value `ref!` of it would diverge at the allocation
+// rather than at the first read, so it seeds nothing.
+let diverge = fn [A, B]() -> fix(fn (self: (A) -> B) -> fn (x: A) -> self(x))

@@ -1,0 +1,43 @@
+// Mutual recursion, five ways, over one `fix`. This file is the first: Bekic's
+// decomposition, which is the reason the other four are choices rather than
+// necessities -- a fixed point in two variables always reduces to two nested
+// fixed points in one.
+//
+// The pair is deliberately awkward. `alt` answers a list and `tag` a number, so
+// nothing here can lean on the two sharing a result type, which is the case
+// `mutual-tag.ga` cannot do without a sum.
+//
+//   alt : (Nat) -> List[Nat]
+//   tag : (Nat) -> Nat
+//
+// Requires resolve against the search path, and `data/` sits above this
+// directory rather than below it, so the entry needs one:
+//     deno task run stdlib/rec/mutual-bekic.ga -I stdlib
+#require "rec/fix.ga"
+#require "data/nat.ga"
+#require "data/pair.ga"
+#require "data/list.ga"
+
+// `tag` is taken *inside* the outer body, over an `alt` already in scope. No
+// product and no constraint relating the two types -- which is what makes this
+// the general answer.
+//
+// It is also the expensive one: the inner `fix` is rebuilt at every unfolding
+// of the outer, and a group of n functions nests n deep with each body
+// duplicated along the way. Fine as a semantics, which is all it is here.
+let alt =
+  fix(fn (alt: (Nat) -> List[Nat]) ->
+    let tag = fix(fn (tag: (Nat) -> Nat) -> fn (n: Nat) -> match n with
+      | Z -> Z
+      | S(k) -> length(alt(k)))
+    fn (n: Nat) -> match n with
+    | Z -> Nil()
+    | S(k) -> Cons(tag(k), alt(k)))
+
+// Re-taken outside, over the finished `alt`. The duplication is the encoding,
+// not an oversight: there is no one term both names can be projected from.
+let tag = fix(fn (tag: (Nat) -> Nat) -> fn (n: Nat) -> match n with
+  | Z -> Z
+  | S(k) -> length(alt(k)))
+
+MkPair(alt(S(S(Z))), tag(S(S(S(Z)))))
