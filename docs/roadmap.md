@@ -2,30 +2,16 @@
 
 GaML runs end to end today -- lex, lay out, parse, elaborate, check, print a
 type. What follows is the work between here and a version anyone else should
-use. Four items, in a rough order, each with the reason it is on the list rather
-than merely desirable -- then what has landed, and then the things deliberately
-left off, which are limitations the design chose rather than corners left
-unfinished.
+use. Three items, in a rough order, each with the reason it is on the list
+rather than merely desirable -- then what has landed, and then the things
+deliberately left off, which are limitations the design chose rather than
+corners left unfinished.
 
 The order is not a dependency chain, and necessity is not the same axis as cost.
-(2) is the one the language is _for_, so it outranks the two below it even
-though neither needs it. (3) sits above (4) only because it gets measurably
-harder once (4) lands.
+(1) is the one the language is _for_, so it outranks the two below it even
+though neither needs it.
 
-## 1. Nullary constructors in the surface syntax
-
-The checker already draws the line -- a nullary constructor of a _monomorphic_
-datatype is a value, so `True` is a `Bool` and `True()` is applying a
-non-function, while `Nil` still has a type argument to fix and is written
-`Nil[Bool]()`. What is missing is that a _declaration_ does not show which one
-it is producing. The proposal is to make the declaration syntax say so: a
-monomorphic paramless constructor declared as a name, a polymorphic one as a
-method.
-
-Presentational rather than semantic, which is why it is third. It is on the list
-because the current rule is discoverable only by trying both.
-
-## 2. Dependent arrows
+## 1. Dependent arrows
 
 The largest item, and the one that changes the calculus rather than extending
 it. It sits above evaluation and recursion because it is what the rest is
@@ -43,26 +29,36 @@ constructor observes is warned about today as almost certainly a mistake, there
 being no way to use one; dependent arrows are the feature that would give
 phantoms a use.
 
-## 3. Evaluation
+## 2. Evaluation
 
 Six term forms -- `Var`, `Abs`, `App`, `TypeApp`, `Let`, `Match` -- over values
 that are closures and tagged constructor applications. Type application erases:
 nothing about a type reaches runtime. `mod.ts` already hands back a `Result`, so
 a value joins the type it currently returns alone.
 
-It is small _because_ of what is not here yet. `#checkLet` pushes the binder
-after checking the bound term, so nothing is in its own scope and no program can
-diverge -- the evaluator is total, needs no step limit, and cannot be wrong
-about a case that never arises. That stops being true the moment (4) lands,
-which is the argument for doing this one first: written now it is an
-interpreter, written later it is an interpreter plus a fuel counter plus a story
-about what a diverging playground tab does.
+**It needs a fuel counter from the start.** An earlier draft of this entry
+argued the opposite -- `#checkLet` pushes the binder after checking the bound
+term, so nothing is in its own scope, so no program can diverge and the
+evaluator is total. The premise holds and the conclusion does not. Divergence is
+reachable today, twice over:
 
-Independent of (1) and (2), so it could come earlier still. The bundle targets a
-browser playground, and a playground that prints a type and runs nothing is half
-a demo.
+    let r = ref!(fn (x: Bool) -> x)
+    let f = fn (x: Bool) -> get!(r)(x)
+    let tie = set!(r, f)
+    f(True)
 
-## 4. Recursive functions, and how far to infer them
+A cell holding a function that reads the cell is general recursion -- Landin's
+knot -- and it needs no recursive datatype at all. Independently, a _negative_
+recursive datatype gives the same thing: `| MkBad((Bad) -> Bad)` is a legal
+field, so self-application types through it and `Ω` is writable. Both check
+today. So the interpreter is an interpreter plus a fuel counter plus a story
+about what a diverging playground tab does, whenever it is written, and (3) does
+not change that.
+
+Independent of (1), so it could come earlier still. The bundle targets a browser
+playground, and a playground that prints a type and runs nothing is half a demo.
+
+## 3. Recursive functions, and how far to infer them
 
 Two halves, and they are not equally hard.
 

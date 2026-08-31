@@ -133,7 +133,7 @@ Deno.test("a constructor's function type quantifies over the datatype", () => {
 
 Deno.test("a datatype may name itself, being nominal", () => {
   const fixture = elaborated(
-    "datatype List[A] where\n  | Nil\n  | Cons(A, List[A])" + END,
+    "datatype List[A] where\n  | Nil()\n  | Cons(A, List[A])" + END,
   );
   expect(fixture.messages()).toEqual([]);
   const list = fixture.declarations.datatypeOf("List");
@@ -155,25 +155,54 @@ Deno.test("a constructor field may name a datatype declared later", () => {
   expect(fixture.messages()).toEqual([]);
 });
 
-Deno.test("a nullary constructor of a monomorphic datatype is a value", () => {
-  const fixture = elaborated("datatype Flag where\n  | On\n  | Off" + END);
-  const flag = fixture.declarations.datatypeOf("Flag");
-  const on = fixture.declarations.ctorOf("Flag", "On");
-  if (flag === undefined || on === undefined) throw new Error("no Flag");
-  // Nothing to apply and nothing to instantiate, so `On` rather than `On()`.
-  expect(typeToString(constructorType(flag, on))).toBe("Flag");
+/** The type a datatype's constructor is bound at, by name. */
+function ctorTypeOf(
+  fixture: ReturnType<typeof elaborated>,
+  data: string,
+  ctor: string,
+): string {
+  const datatype = fixture.declarations.datatypeOf(data);
+  const found = fixture.declarations.ctorOf(data, ctor);
+  if (datatype === undefined || found === undefined) {
+    throw new Error(`no ${data}.${ctor}`);
+  }
+  return typeToString(constructorType(datatype, found));
+}
+
+Deno.test("a bare constructor is a value, and a written `()` a function", () => {
+  // The whole of the distinction, and both legal on a monomorphic datatype:
+  // the arity is the same either way, so only the declaration can say which
+  // was meant.
+  const fixture = elaborated("datatype Flag where\n  | On\n  | Off()" + END);
+  expect(fixture.messages()).toEqual([]);
+  expect(ctorTypeOf(fixture, "Flag", "On")).toBe("Flag");
+  expect(ctorTypeOf(fixture, "Flag", "Off")).toBe("() -> Flag");
 });
 
 Deno.test("a nullary constructor of a polymorphic datatype stays a function", () => {
   // `[A]List[A]` would be a quantifier over a non-function, which the value
   // restriction rules out -- so the argument list survives to carry it.
   const fixture = elaborated(
+    "datatype List[A] where\n  | Nil()\n  | Cons(A, List[A])" + END,
+  );
+  expect(fixture.messages()).toEqual([]);
+  expect(ctorTypeOf(fixture, "List", "Nil")).toBe("[A]() -> List[A]");
+});
+
+Deno.test("a value constructor of a polymorphic datatype is refused", () => {
+  // There is no type to give it: `[A]List[A]` is the quantifier over a
+  // non-function the value restriction rules out, so the form has no reading
+  // rather than an inconvenient one.
+  const fixture = elaborated(
     "datatype List[A] where\n  | Nil\n  | Cons(A, List[A])" + END,
   );
-  const list = fixture.declarations.datatypeOf("List");
-  const nil = fixture.declarations.ctorOf("List", "Nil");
-  if (list === undefined || nil === undefined) throw new Error("no List");
-  expect(typeToString(constructorType(list, nil))).toBe("[A]() -> List[A]");
+  expect(fixture.messages()).toEqual([
+    "Nil is declared as a value, but List takes type parameters, so it has " +
+    "no one type -- write Nil() instead",
+  ]);
+  // Recovered as the function it would have been, so the report is the whole
+  // of what goes wrong: nothing downstream sees a second thing about `Nil`.
+  expect(ctorTypeOf(fixture, "List", "Nil")).toBe("[A]() -> List[A]");
 });
 
 Deno.test("seedConstructors binds every constructor as a term", () => {
@@ -451,7 +480,7 @@ Deno.test("the recursive occurrence is read from the table, not unfolded", () =>
   expect(variancesOf(
     ...BOOL,
     "datatype List[A] where",
-    "  | Nil",
+    "  | Nil()",
     "  | Cons(A, List[A])",
   )).toEqual(["List[+A]"]);
 });

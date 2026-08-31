@@ -111,7 +111,7 @@ Deno.test("declarations are collected, never nested in the chain", () => {
   ]);
   // Fields are types alone, positional as the patterns that take them apart.
   expect(
-    datatypes(program)[0]?.ctors[0]?.params.map((f) =>
+    datatypes(program)[0]?.ctors[0]?.params?.map((f) =>
       f.kind === "NameType" ? f.name.text : f.kind
     ),
   ).toEqual(["A", "B"]);
@@ -141,10 +141,14 @@ Deno.test("a named constructor field is reported, a domain holding types alone",
 });
 
 Deno.test("a constructor's fields are the same domain a function type has", () => {
-  const program = clean("datatype Box[A] where\n  | MkBox(A)\n  | Empty\nx\n");
+  const program = clean(
+    "datatype Box[A] where\n  | MkBox(A)\n  | Empty()\n  | Solo\nx\n",
+  );
   const ctors = datatypes(program)[0]?.ctors;
-  expect(ctors?.map((c) => c.name.text)).toEqual(["MkBox", "Empty"]);
-  expect(ctors?.map((c) => c.params.length)).toEqual([1, 0]);
+  expect(ctors?.map((c) => c.name.text)).toEqual(["MkBox", "Empty", "Solo"]);
+  // Absent, and not empty, for a bare name: `Empty()` writes a domain of no
+  // types where `Solo` writes no domain, and the two declare different things.
+  expect(ctors?.map((c) => c.params?.length)).toEqual([1, 0, undefined]);
 });
 
 Deno.test("typedef declares a transparent alias, with parameters", () => {

@@ -43,6 +43,19 @@ dry does: the answer is sound and only arbitrary, blaming the program for what
 the checker could not name principally would be wrong, and there is no `TBad` to
 hand back anyway, `badUnder` taking errors alone.
 
+A constructor is a function of its fields, so there is no constructor term form
+and saturation follows from arity. The exception is a _value_ constructor, and
+which one a declaration produces is something the declaration says rather than
+something the arity implies: `| True` declares a value of type `Bool`, `| Off()`
+a function `() -> Flag`, and both are legal on a monomorphic datatype. Only
+there, though -- a value of `List[A]` would need `[A]List[A]`, a quantifier over
+a non-function, so `| Nil` is refused and told to write `Nil()`. So `CtorDecl`
+carries the domain as _absent_ rather than empty for a bare name, which is what
+keeps the two forms distinguishable at all, and `DataCtorInfo.isValue` is what
+every later reading asks. Patterns are untouched by the distinction: they take
+apart fields, a nullary constructor has none either way, and `| Nil ->` is the
+spelling whichever form declared it.
+
 A datatype's variance is inferred, not declared -- read off its constructor
 fields by a fixed point over the whole declaration table, since two datatypes
 may name each other. `Variance` and _position_ stay the two things they were:

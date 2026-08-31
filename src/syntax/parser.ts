@@ -237,10 +237,11 @@ class Parser {
 
   private ctorDecl(at: Position): CtorDecl {
     const name = this.declName("a constructor name");
-    // A constructor is an ordinary function, so its fields are a domain -- and
-    // absent entirely for a nullary one, which takes no `()` at all.
-    const params = this.cursor.at("lparen") ? this.domainTypes() : [];
-    return { name, params, at };
+    // A constructor is an ordinary function, so its fields are a domain --
+    // absent, and not empty, where none is written: `C()` is the nullary
+    // function and `C` the value, which is a different declaration.
+    if (!this.cursor.at("lparen")) return { name, at };
+    return { name, params: this.domainTypes(), at };
   }
 
   /**
