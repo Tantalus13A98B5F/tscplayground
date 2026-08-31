@@ -20,7 +20,7 @@ function typeOf(...lines: readonly string[]): string {
 }
 
 const BOOL = ["datatype Bool where", "  | True", "  | False"];
-const LIST = ["datatype List[A] where", "  | Nil", "  | Cons(A, List[A])"];
+const LIST = ["datatype List[A] where", "  | Nil()", "  | Cons(A, List[A])"];
 /** Invariant, `A` standing both ways in the one field. */
 const CELL = ["datatype Cell[A] where", "  | MkCell((A) -> A)"];
 /** Contravariant, and the only shape that gets there. */
@@ -30,6 +30,29 @@ Deno.test("a constructor is a function of its fields", () => {
   expect(typeOf(...BOOL, "True")).toBe("Bool");
   expect(typeOf(...LIST, ...BOOL, "Cons(True, Nil[Bool]())"))
     .toBe("List[Bool]");
+});
+
+Deno.test("the term form follows the declaration form", () => {
+  // A bare declaration is a value, so applying it applies a non-function.
+  expect(run(...BOOL, "True()")[1]).toBe("Bool is not a function");
+  // And a declared `()` is a function, so the bare name is one -- which is a
+  // type error only where something wanted the datatype.
+  const WITH = ["datatype Flag where", "  | Off()"];
+  expect(typeOf(...WITH, "Off")).toBe("() -> Flag");
+  expect(typeOf(...WITH, "Off()")).toBe("Flag");
+});
+
+Deno.test("a pattern is spelled the same whichever form declared it", () => {
+  // Patterns take apart *fields*, and a nullary constructor has none either
+  // way, so the distinction is invisible here -- which is what makes it
+  // presentational.
+  expect(typeOf(
+    ...LIST,
+    ...BOOL,
+    "fn (xs: List[Bool]) -> match xs with",
+    "  | Nil -> True",
+    "  | Cons(h, t) -> h",
+  )).toBe("List[Bool] -> Bool");
 });
 
 Deno.test("an annotated lambda infers its own type", () => {

@@ -173,10 +173,18 @@ export type DatatypeDecl = {
  * Fields are types alone, positional as the patterns that take them apart are.
  * Names would be dropped on the way to `TFun`, which has none -- when a domain
  * carries names, a constructor's may come back with them.
+ *
+ * `| C` and `| C()` are *different declarations*, which is why the domain is
+ * absent rather than empty for the first: a bare name declares a value of the
+ * datatype, a parameter list a function of no arguments. Only a monomorphic
+ * datatype may have the first, a value of a parameterised one having no single
+ * type to be. Carrying the distinction here is what lets the declaration say
+ * which it produces, where the field count alone cannot.
  */
 export type CtorDecl = {
   readonly name: Ident;
-  readonly params: readonly TypeNode[];
+  /** The domain, or absent for a bare name -- empty is `C()`, never `C`. */
+  readonly params?: readonly TypeNode[];
   readonly at: Position;
 };
 

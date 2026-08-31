@@ -28,6 +28,7 @@ import {
   type AliasDecl,
   bindingHint,
   type BindingIdent,
+  type CtorDecl,
   type DatatypeDecl,
   type Ident,
   type TypeDecl,
@@ -332,9 +333,10 @@ export class Elaborator {
         return [{
           name: ctor.name.text,
           // Closed over the datatype's parameters, so a use opens them.
-          fields: ctor.params.map((field) =>
+          fields: (ctor.params ?? []).map((field) =>
             closeFrom(this.elaborateType(field), mark)
           ),
+          isValue: this.#reportValueCtor(ctor, decl),
           at: ctor.at,
         }];
       });
@@ -348,6 +350,29 @@ export class Elaborator {
       decl.typeParams.length,
     );
     return ctors;
+  }
+
+  /**
+   * Whether a constructor written as a bare name may be the value it asks to
+   * be, reporting it where it may not.
+   *
+   * A value has one type, and `Nil` of `List[A]` would need `[A]List[A]` -- a
+   * quantifier over a non-function, which is the value restriction. So the form
+   * is refused on a parameterised datatype and the constructor stands as the
+   * function it would have been anyway, which is what `Nil[Bool]()` already
+   * expects to find.
+   */
+  #reportValueCtor(ctor: CtorDecl, decl: DatatypeDecl): boolean {
+    if (ctor.params !== undefined) return false;
+    if (decl.typeParams.length === 0) return true;
+    const name = ctor.name.text;
+    this.#report(
+      `${name} is declared as a value, but ${decl.name.text} takes type ` +
+        `parameters, so it has no one type -- write ${name}() instead`,
+      ctor.name.at,
+      name.length,
+    );
+    return false;
   }
 
   /** An alias whole -- there is no second pass for it to be finished in. */
@@ -448,18 +473,19 @@ export class Elaborator {
  * types its patterns take apart cannot drift. `fields` are already closed
  * over the datatype's parameters and sit directly under this binder.
  *
- * A constructor with no fields of a datatype with no parameters is a *value*:
- * nothing to apply and nothing to instantiate, so `True` rather than
- * `True()`. Both conditions are needed -- `Nil` of `List[A]` still has a type
- * argument to fix, and the value restriction rules out `[A]List[A]`, so it
- * stays `[A]() -> List[A]` and is written `Nil[Bool]()`.
+ * Which of the two it is comes from the *declaration*: `| True` is a value and
+ * `| True()` a function of no arguments, both legal on a monomorphic datatype.
+ * Read off `isValue` rather than from the arity, which cannot tell them apart
+ * -- and cannot be asked to, `Nil` of `List[A]` being nullary and still a
+ * function, since the value restriction rules out the `[A]List[A]` it would
+ * otherwise have. So it stays `[A]() -> List[A]` and is written `Nil[Bool]()`.
  */
 export function constructorType(
   datatype: DatatypeInfo,
   ctor: DataCtorInfo,
 ): Type {
   const result = TData(datatype, datatype.params.map((_, j) => BVar(j)));
-  if (datatype.params.length === 0 && ctor.fields.length === 0) return result;
+  if (ctor.isValue) return result;
   return TFun(
     datatype.params.map((param) => mkTypeParamInfo(param.hint, TUnknown)),
     ctor.fields,

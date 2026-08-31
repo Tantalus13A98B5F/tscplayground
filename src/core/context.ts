@@ -85,6 +85,16 @@ export type DataCtorInfo = {
   readonly name: string;
   /** Field types, closed over the owning datatype's parameters. */
   readonly fields: readonly Type[];
+  /**
+   * Declared as a bare name, so this constructor *is* a value of its datatype
+   * rather than a function of its fields. Implies no fields and a monomorphic
+   * datatype, both being conditions on writing it that way.
+   *
+   * What the constructor is, not what was written: a declaration that asked for
+   * this and was refused stands as the function it would otherwise have been,
+   * so every use of it reads the same as if the author had written `C()`.
+   */
+  readonly isValue: boolean;
   readonly at: Position;
 };
 
