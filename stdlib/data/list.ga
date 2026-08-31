@@ -31,13 +31,17 @@ let isEmpty = fn [A](xs: List[A]) -> match xs with
 // the next argument is refused against it. And putting `op` and `z` in one
 // list is no better: one list is one batch, `op` is checked before `z` has
 // contributed anything, and `acc` is left with no type to have.
-let foldr = fn [A](xs: List[A]) -> fn [B](z: B) -> fn (op: (A, B) -> B) ->
+//
+// The lists are written on one `fn`, which is sugar for the nested ones and
+// resolved in the parser: currying already gives a batch per list, so there is
+// no multi-list function type behind this and the type is the curried one.
+let foldr = fn [A](xs: List[A])[B](z: B)(op: (A, B) -> B) ->
   fix(fn (self: (List[A]) -> B) -> fn (ys: List[A]) ->
     match ys with
     | Nil -> z
     | Cons(h, t) -> op(h, self(t)))(xs)
 
-let map = fn [A](xs: List[A]) -> fn [B](f: (A) -> B) ->
+let map = fn [A](xs: List[A])[B](f: (A) -> B) ->
   fix(fn (self: (List[A]) -> List[B]) -> fn (ys: List[A]) ->
     match ys with
     | Nil -> Nil()

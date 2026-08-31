@@ -126,7 +126,7 @@ class Parser {
   private blockBody(decls?: TypeDecl[]): TermNode {
     const top = decls !== undefined;
     const what = top ? "program" : "block";
-    const binds: LetItem[] = [];
+    const items: BlockItem[] = [];
     /**
      * The last expression read, held back rather than bound: the block's result
      * if nothing follows it, a `_` binding as soon as something does. Buffering
@@ -138,7 +138,9 @@ class Parser {
 
     while (!this.atBlockEnd()) {
       if (last !== undefined) {
-        binds.push({ name: wildcard(last.at), bound: last, at: last.at });
+        items.push({
+          bind: { name: wildcard(last.at), bound: last, at: last.at },
+        });
         last = undefined;
       }
 
@@ -149,7 +151,17 @@ class Parser {
         } else if (top && this.cursor.at("typedef")) {
           decls.push(this.aliasDecl());
         } else if (this.cursor.at("let")) {
-          binds.push(this.letBinding());
+          items.push({ bind: this.letBinding() });
+        } else if (this.cursor.at("def")) {
+          // Adjacent, so anything between two `def`s closes the group: a `let`
+          // is sequential and a bare expression binds `_`, and either would
+          // have to be in scope for a member above it to be recursive with one
+          // below. The run is the largest scope where that question does not
+          // arise.
+          const def = this.defBinding();
+          const open = items.at(-1);
+          if (open !== undefined && "defs" in open) open.defs.push(def);
+          else items.push({ defs: [def], at: def.at });
         } else {
           last = this.exp(EXPR);
         }
@@ -174,9 +186,13 @@ class Parser {
         ? this.cursor.abandon()
         : this.cursor.fail(`an expression to be the ${what}'s result`));
 
-    // A `LetItem` is a `Let` short of its body, so each fold supplies one.
-    return binds.reduceRight<TermNode>(
-      (body, bind) => ({ kind: "Let", ...bind, body }),
+    // A `LetItem` is a `Let` short of its body, so each fold supplies one --
+    // and a run of `def`s is one `DefGroup` short of the same thing.
+    return items.reduceRight<TermNode>(
+      (body, item) =>
+        "defs" in item
+          ? { kind: "DefGroup", defs: item.defs, body, at: item.at }
+          : { kind: "Let", ...item.bind, body },
       result,
     );
   }
@@ -311,6 +327,39 @@ class Parser {
   }
 
   /**
+   * `def f(x: A)(y: B) : R = e`, without the separator or what follows it.
+   *
+   * Parameter lists and a result type are all a `def` adds to a `let`, and both
+   * fold away here: the lists into the `Abs`, and the result type into the
+   * `FunType` that becomes the annotation. What the checker receives is a
+   * `LetItem`, and the only thing it must still know is whether an annotation
+   * is there -- which is what decides whether the group can see this one.
+   */
+  private defBinding(): LetItem {
+    const at = this.cursor.here; // the `def` the block loop saw
+    this.cursor.advance();
+    const name = this.binderName("a name to bind");
+    // Said here rather than left to `funBinders`, whose `(` is the right answer
+    // to a missing list and the wrong one to a binding that wanted no list.
+    if (this.cursor.at("equals") || this.cursor.at("colon")) {
+      this.cursor.fail("a parameter list -- `let` is what binds a value");
+    }
+    const groups = this.paramGroups();
+    const result = this.cursor.accept("colon") === undefined
+      ? undefined
+      : this.type();
+    this.cursor.expect("equals", "`=`");
+    const body = this.blockOrExp("the def's body, indented past the `def`");
+    const bound = foldAbs(groups, body, at);
+    const annotation = result === undefined
+      ? undefined
+      : defSignature(groups, result);
+    return annotation === undefined
+      ? { name, bound, at }
+      : { name, annotation, bound, at };
+  }
+
+  /**
    * A block here, or the expression continuing where it is -- the choice every
    * body makes, a line-ending opener being what turns one into the other.
    *
@@ -346,15 +395,38 @@ class Parser {
     return this.postfix();
   }
 
-  /** `fn (x: A) -> e`, or `fn [T <: A](x: T) -> e` -- one binder, both worlds. */
+  /**
+   * `fn (x: A) -> e`, or `fn [T <: A](x: T)(y: B) -> e` -- one binder, both
+   * worlds, and as many lists as are written.
+   */
   private abs(): TermNode {
     const at = this.cursor.here;
     this.cursor.advance();
-    const typeParams = this.cursor.at("lbracket") ? this.typeBinders() : [];
-    const params = this.funBinders("a parameter name");
+    const groups = this.paramGroups();
     this.cursor.expect("arrow", "`->`, then the body");
     const body = this.blockOrExp("the function's body, indented past the `fn`");
-    return { kind: "Abs", typeParams, params, body, at };
+    return foldAbs(groups, body, at);
+  }
+
+  /**
+   * One or more `[T](x: A)` groups, the optional type list belonging to the
+   * value list that follows it.
+   *
+   * A group is where a batch of type arguments is solved, so writing two is how
+   * an author says an argument must settle before a later one is looked at --
+   * `foldr(xs)(z)(op)`, and Scala's `foldLeft(z)(op)` for the same reason. The
+   * first is parsed unconditionally so a `fn` with no list fails where it
+   * always did.
+   */
+  private paramGroups(): ParamGroup[] {
+    const groups: ParamGroup[] = [];
+    do {
+      const at = this.cursor.here;
+      const typeParams = this.cursor.at("lbracket") ? this.typeBinders() : [];
+      const params = this.funBinders("a parameter name");
+      groups.push({ typeParams, params, at });
+    } while (this.cursor.at("lbracket") || this.cursor.at("lparen"));
+    return groups;
   }
 
   private match(): TermNode {
@@ -707,4 +779,83 @@ export const BANG = "!";
 
 function wildcard(at: Position): BindingIdent {
   return { text: undefined, at };
+}
+
+/**
+ * What a block collects: one sequential binding, or a run of `def`s that see
+ * each other. Told apart by `defs` being present, the two having no field in
+ * common that could read as the other.
+ */
+type BlockItem =
+  | { readonly bind: LetItem }
+  | { readonly defs: LetItem[]; readonly at: Position };
+
+/** One `[T](x: A)` list pair, before it is folded into an arrow. */
+type ParamGroup = {
+  readonly typeParams: readonly TypeParam[];
+  readonly params: readonly Param[];
+  readonly at: Position;
+};
+
+/**
+ * `[T](x: A)(y: B) e` as nested `Abs`, which is what it means. Currying gives
+ * staging for free, so several lists need no term form and no function type of
+ * their own -- the sugar is gone before anything downstream sees it.
+ *
+ * The outermost keeps the keyword's own position, every inner one its list's,
+ * so a diagnostic about the function lands on `fn` or `def` and one about a
+ * later list lands on the list.
+ */
+function foldAbs(
+  groups: readonly ParamGroup[],
+  body: TermNode,
+  at: Position,
+): TermNode {
+  let folded = body;
+  for (let i = groups.length - 1; i >= 0; i -= 1) {
+    const group = groups[i];
+    if (group === undefined) continue;
+    folded = {
+      kind: "Abs",
+      typeParams: group.typeParams,
+      params: group.params,
+      body: folded,
+      at: i === 0 ? at : group.at,
+    };
+  }
+  return folded;
+}
+
+/**
+ * The arrow a `def`'s lists and result type spell out, or nothing where a
+ * parameter went unannotated.
+ *
+ * Nothing supplies a `def`'s parameter types -- it is a declaration, and no
+ * expected type ever reaches it -- so an unannotated one is an error wherever
+ * it sits. Declining to build the signature leaves the `def` unannotated, and
+ * the missing parameter is reported once, by the rule for the lambda, naming
+ * the binder rather than the arrow it could not be part of.
+ */
+function defSignature(
+  groups: readonly ParamGroup[],
+  result: TypeNode,
+): TypeNode | undefined {
+  let type = result;
+  for (let i = groups.length - 1; i >= 0; i -= 1) {
+    const group = groups[i];
+    if (group === undefined) continue;
+    const params: TypeNode[] = [];
+    for (const param of group.params) {
+      if (param.annotation === undefined) return undefined;
+      params.push(param.annotation);
+    }
+    type = {
+      kind: "FunType",
+      typeParams: group.typeParams,
+      params,
+      result: type,
+      at: group.at,
+    };
+  }
+  return type;
 }
