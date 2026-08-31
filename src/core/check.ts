@@ -162,8 +162,8 @@ export class Checker {
       // answer again would only ask a settled question twice.
       case "Let":
         return this.#checkLet(term, expected);
-      case "DefGroup":
-        return this.#checkDefGroup(term, expected);
+      case "LetRec":
+        return this.#checkLetRec(term, expected);
     }
   }
 
@@ -355,13 +355,17 @@ export class Checker {
    * at the push, for a binding nothing may go on to mention. The report belongs
    * at each use, and `unknown` is what puts it there.
    *
+   * A parameter left bare is settled before any of this, the parser having
+   * stood a `MissingParamType` in its place, so nothing here has a case for it:
+   * the def keeps whatever signature it wrote and the parameter stands `bad`.
+   *
    * Order follows from that. Signatures first, so an annotated body may name
    * any member; then the unannotated ones, each replacing its own entry in
    * place once its type is known; then the annotated bodies. Nothing is ever
    * repushed at a different level, so no `FVar` already elaborated goes stale.
    */
-  #checkDefGroup(
-    term: Extract<TermNode, { kind: "DefGroup" }>,
+  #checkLetRec(
+    term: Extract<TermNode, { kind: "LetRec" }>,
     expected: TypePattern,
   ): Type {
     this.#reportDuplicateBinders(term.defs.map((def) => def.name), "def group");

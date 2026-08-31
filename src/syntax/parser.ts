@@ -31,6 +31,7 @@ import type {
   BindingIdent,
   CtorDecl,
   DatatypeDecl,
+  DefItem,
   Ident,
   LetItem,
   MatchArm,
@@ -138,9 +139,7 @@ class Parser {
 
     while (!this.atBlockEnd()) {
       if (last !== undefined) {
-        items.push({
-          bind: { name: wildcard(last.at), bound: last, at: last.at },
-        });
+        items.push({ name: wildcard(last.at), bound: last, at: last.at });
         last = undefined;
       }
 
@@ -151,17 +150,16 @@ class Parser {
         } else if (top && this.cursor.at("typedef")) {
           decls.push(this.aliasDecl());
         } else if (this.cursor.at("let")) {
-          items.push({ bind: this.letBinding() });
+          items.push(this.letBinding());
         } else if (this.cursor.at("def")) {
-          // Adjacent, so anything between two `def`s closes the group: a `let`
-          // is sequential and a bare expression binds `_`, and either would
-          // have to be in scope for a member above it to be recursive with one
-          // below. The run is the largest scope where that question does not
-          // arise.
+          // Adjacent, so anything between two `def`s closes the group: a
+          // `let` is sequential and a bare expression binds `_`, so either
+          // would have to be in scope for a member above to recur with one
+          // below. The run is the largest scope where that cannot be asked.
           const def = this.defBinding();
           const open = items.at(-1);
-          if (open !== undefined && "defs" in open) open.defs.push(def);
-          else items.push({ defs: [def], at: def.at });
+          if (open !== undefined && Array.isArray(open)) open.push(def);
+          else items.push([def]);
         } else {
           last = this.exp(EXPR);
         }
@@ -186,13 +184,12 @@ class Parser {
         ? this.cursor.abandon()
         : this.cursor.fail(`an expression to be the ${what}'s result`));
 
-    // A `LetItem` is a `Let` short of its body, so each fold supplies one --
-    // and a run of `def`s is one `DefGroup` short of the same thing.
+    // Each item is its node short of a body, which the fold supplies.
     return items.reduceRight<TermNode>(
       (body, item) =>
-        "defs" in item
-          ? { kind: "DefGroup", defs: item.defs, body, at: item.at }
-          : { kind: "Let", ...item.bind, body },
+        Array.isArray(item)
+          ? { kind: "LetRec", defs: item, body, at: item[0].at }
+          : { kind: "Let", ...item, body },
       result,
     );
   }
@@ -330,12 +327,12 @@ class Parser {
    * `def f(x: A)(y: B) : R = e`, without the separator or what follows it.
    *
    * Parameter lists and a result type are all a `def` adds to a `let`, and both
-   * fold away here: the lists into the `Abs`, and the result type into the
-   * `FunType` that becomes the annotation. What the checker receives is a
-   * `LetItem`, and the only thing it must still know is whether an annotation
-   * is there -- which is what decides whether the group can see this one.
+   * fold away here: the lists into the `Abs`, the result type into the
+   * `FunType` that becomes the annotation. Whether there is an annotation is
+   * then the only question left, and it decides whether the group sees this
+   * member before its body is checked.
    */
-  private defBinding(): LetItem {
+  private defBinding(): DefItem {
     const at = this.cursor.here; // the `def` the block loop saw
     this.cursor.advance();
     const name = this.binderName("a name to bind");
@@ -350,13 +347,20 @@ class Parser {
       : this.type();
     this.cursor.expect("equals", "`=`");
     const body = this.blockOrExp("the def's body, indented past the `def`");
-    const bound = foldAbs(groups, body, at);
-    const annotation = result === undefined
-      ? undefined
-      : defSignature(groups, result);
-    return annotation === undefined
-      ? { name, bound, at }
-      : { name, annotation, bound, at };
+
+    // A result type settles where the parameter types live, which settles the
+    // rest. With one they live in the signature and nowhere else -- on the
+    // `Abs` too they would be elaborated once for the entry the group reads and
+    // once for the body, doubling every diagnostic they raise. Without one the
+    // `Abs` is their only home, so an omitted type stands there.
+    return result === undefined
+      ? { name, bound: foldAbs(groups, body, at, ensureParamTypes), at }
+      : {
+        name,
+        annotation: foldFunType(groups, result),
+        bound: foldAbs(groups, body, at, dropWrittenTypes),
+        at,
+      };
   }
 
   /**
@@ -418,7 +422,7 @@ class Parser {
    * first is parsed unconditionally so a `fn` with no list fails where it
    * always did.
    */
-  private paramGroups(): ParamGroup[] {
+  private paramGroups(): [ParamGroup, ...ParamGroup[]] {
     const groups: ParamGroup[] = [];
     do {
       const at = this.cursor.here;
@@ -426,7 +430,8 @@ class Parser {
       const params = this.funBinders("a parameter name");
       groups.push({ typeParams, params, at });
     } while (this.cursor.at("lbracket") || this.cursor.at("lparen"));
-    return groups;
+    // At least one, which is the whole of why a `def`'s bound is an `Abs`.
+    return groups as [ParamGroup, ...ParamGroup[]];
   }
 
   private match(): TermNode {
@@ -783,12 +788,10 @@ function wildcard(at: Position): BindingIdent {
 
 /**
  * What a block collects: one sequential binding, or a run of `def`s that see
- * each other. Told apart by `defs` being present, the two having no field in
- * common that could read as the other.
+ * each other, told apart by being an array. Non-empty, so the run's position is
+ * its first member's and is recorded nowhere else.
  */
-type BlockItem =
-  | { readonly bind: LetItem }
-  | { readonly defs: LetItem[]; readonly at: Position };
+type BlockItem = LetItem | [DefItem, ...DefItem[]];
 
 /** One `[T](x: A)` list pair, before it is folded into an arrow. */
 type ParamGroup = {
@@ -804,55 +807,84 @@ type ParamGroup = {
  *
  * The outermost keeps the keyword's own position, every inner one its list's,
  * so a diagnostic about the function lands on `fn` or `def` and one about a
- * later list lands on the list.
+ * later list lands on the list. `rewrite` is where a `def` says which of the
+ * two places its types are written; a `fn` writes them here and leaves it.
  */
 function foldAbs(
-  groups: readonly ParamGroup[],
+  groups: readonly [ParamGroup, ...ParamGroup[]],
   body: TermNode,
   at: Position,
-): TermNode {
-  let folded = body;
-  for (let i = groups.length - 1; i >= 0; i -= 1) {
+  rewrite: (group: ParamGroup) => ParamGroup = (group) => group,
+): Extract<TermNode, { kind: "Abs" }> {
+  const layer = (group: ParamGroup, inner: TermNode, at: Position) => {
+    const { typeParams, params } = rewrite(group);
+    return { kind: "Abs", typeParams, params, body: inner, at } as const;
+  };
+
+  let folded: TermNode = body;
+  for (let i = groups.length - 1; i >= 1; i -= 1) {
     const group = groups[i];
     if (group === undefined) continue;
-    folded = {
-      kind: "Abs",
-      typeParams: group.typeParams,
-      params: group.params,
-      body: folded,
-      at: i === 0 ? at : group.at,
-    };
+    folded = layer(group, folded, group.at);
   }
-  return folded;
+  return layer(groups[0], folded, at);
+}
+
+/** The type a parameter was given, or the node standing for the one it wasn't. */
+function ensureParamType(param: Param): TypeNode {
+  return param.annotation ??
+    { kind: "MissingParamType", name: param.name, at: param.name.at };
 }
 
 /**
- * The arrow a `def`'s lists and result type spell out, or nothing where a
- * parameter went unannotated.
- *
- * Nothing supplies a `def`'s parameter types -- it is a declaration, and no
- * expected type ever reaches it -- so an unannotated one is an error wherever
- * it sits. Declining to build the signature leaves the `def` unannotated, and
- * the missing parameter is reported once, by the rule for the lambda, naming
- * the binder rather than the arrow it could not be part of.
+ * One type per parameter, so what reads the `Abs` has no case for the absence.
+ * The omission stands in the tree rather than being reported here, a parser
+ * error withholding the whole tree and so costing the file its type checking
+ * over one binder.
  */
-function defSignature(
+function ensureParamTypes(group: ParamGroup): ParamGroup {
+  return {
+    ...group,
+    params: group.params.map((param) => ({
+      ...param,
+      annotation: ensureParamType(param),
+    })),
+  };
+}
+
+/**
+ * Drop what the signature already carries -- bounds as well as parameter types,
+ * both read twice otherwise. Types alone, never a binder or a position, so what
+ * a diagnostic points at is unchanged and only where it was read from moves.
+ *
+ * Reaching further than `ensureParamTypes` on purpose: there is no missing
+ * bound to ensure, one left off meaning `unknown` rather than nothing at all.
+ */
+function dropWrittenTypes(group: ParamGroup): ParamGroup {
+  return {
+    ...group,
+    typeParams: group.typeParams.map(({ name, at }) => ({ name, at })),
+    params: group.params.map(({ name, at }) => ({ name, at })),
+  };
+}
+
+/**
+ * `foldAbs` against the other target: the lists go once into nested `Abs`s and
+ * once into the `FunType` that is the signature, agreeing because one list
+ * feeds both.
+ */
+function foldFunType(
   groups: readonly ParamGroup[],
   result: TypeNode,
-): TypeNode | undefined {
+): TypeNode {
   let type = result;
   for (let i = groups.length - 1; i >= 0; i -= 1) {
     const group = groups[i];
     if (group === undefined) continue;
-    const params: TypeNode[] = [];
-    for (const param of group.params) {
-      if (param.annotation === undefined) return undefined;
-      params.push(param.annotation);
-    }
     type = {
       kind: "FunType",
       typeParams: group.typeParams,
-      params,
+      params: group.params.map(ensureParamType),
       result: type,
       at: group.at,
     };
