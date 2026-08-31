@@ -1,0 +1,8 @@
+typedef CPair[A, B] = [C]((A, B) -> C) -> C
+
+let cpair = fn [A, B](a: A, b: B) -> fn [C](f: (A, B) -> C) -> f(a, b)
+let cfst = fn [A, B](p: CPair[A, B]) -> p(fn (a: A, b: B) -> a)
+let csnd = fn [A, B](p: CPair[A, B]) -> p(fn (a: A, b: B) -> b)
+
+let cswap = fn [A, B](p: CPair[A, B]) ->
+  p(fn (a: A, b: B) -> cpair(b, a))

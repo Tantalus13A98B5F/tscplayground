@@ -1,0 +1,28 @@
+// The datatype library, used where the inference has to find the type
+// arguments rather than being told them. Nothing in this file writes a type
+// application, and exactly one place under `stdlib/` does -- `toList` in
+// `uses-both.ga`, which says why it has to.
+#require "data/bool.ga"
+#require "data/nat.ga"
+#require "data/pair.ga"
+#require "data/list.ga"
+
+// `Nil()` is `List[never]`, and `List` is covariant, so it sits under the
+// `List[Nat]` its sibling demands. That is what the variance inference bought:
+// before it, this needed `Nil[Nat]()`.
+let ns = Cons(Z, Cons(S(Z), Nil()))
+
+// Staged, so `A` is settled by the list before the function is looked at and
+// `B` comes from the function: every lambda below is *bare*, and would need a
+// parameter annotation in the one-list form `map(f, xs)`.
+let flags = map(ns)(isZero)
+let doubled = map(ns)(fn (n) -> add(n)(n))
+
+// `foldr(xs)(z)(op)`, and `B` need have nothing to do with `A`: `z` fixes it,
+// so the operator's `acc` is known by the time the lambda is checked.
+let anyZero = foldr(ns)(False)(fn (h, acc) -> or(isZero(h), acc))
+
+// Nothing constrains this `Nil()` at all, so it is `List[never]` -- an answer
+// and not a gap, since `isEmpty` asks nothing of the element type.
+let sizes = MkPair(length(flags), length(doubled))
+MkPair(fst(sizes), and(anyZero, and(isEmpty(Nil()), not(False))))

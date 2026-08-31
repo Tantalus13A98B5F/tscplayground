@@ -13,11 +13,11 @@
   },
   "tasks": {
     "check": "deno check src/",
-    "test": "deno test",
-    "test:watch": "deno test --watch",
+    "test": "deno test --allow-read",
+    "test:watch": "deno test --watch --allow-read",
     "lint": "deno lint",
     "fmt": "deno fmt",
-    "ci": "deno fmt --check && deno lint && deno check src/ && deno test",
+    "ci": "deno fmt --check && deno lint && deno check src/ && deno test --allow-read",
     "bundle": "deno bundle --platform browser src/mod.ts -o dist/checker.js",
     "run": "deno run --allow-read src/cli.ts"
   },

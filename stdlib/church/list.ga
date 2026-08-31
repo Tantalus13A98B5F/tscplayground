@@ -1,0 +1,43 @@
+#require "church/nat.ga"
+
+// A list is its own right fold.
+typedef CList[A] = [B]((A, B) -> B, B) -> B
+
+let ccons = fn [A](h: A, t: CList[A]) ->
+  fn [B](c: (A, B) -> B, n: B) -> c(h, t[B](c, n))
+
+// The fold, which for this encoding is the list applied. Staged like the
+// datatype library's `foldr` -- not because the body needs it, `xs(op, z)`
+// being one application, but so that a caller writes the same thing on either
+// side of the comparison.
+let cfoldr = fn [A](xs: CList[A]) -> fn [B](z: B) -> fn (op: (A, B) -> B) ->
+  xs(op, z)
+
+// The one place an annotation survives, and it is the unstaged shape that
+// wants it: `xs(op, n)` puts both arguments in one list, so `op` is checked
+// before `n` has said what the fold answers with, and `acc` has to be told.
+let cmap = fn [A](xs: CList[A]) -> fn [B](f: (A) -> B) ->
+  fn [C](c: (B, C) -> C, n: C) -> xs(fn (h: A, acc: C) -> c(f(h), acc), n)
+
+// Through `cfoldr`, with bare lambdas, exactly as the datatype library does.
+let cappend = fn [A](xs: CList[A], ys: CList[A]) ->
+  cfoldr(xs)(ys)(fn (h, acc) -> ccons(h, acc))
+
+let clength = fn [A](xs: CList[A]) ->
+  cfoldr(xs)(czero)(fn (h, acc) -> csucc(acc))
+
+// The empty list is a *function*, for exactly the reason `Nil()` is one in
+// `data/list.ga`. A value usable at any element type would have to be
+//
+//     cnil : [A]CList[A]
+//
+// a quantifier over a non-function, which the value restriction rules out. So
+// an empty parameter list carries the quantifier instead and each use fixes `A`
+// at the call -- `cnil[CNat]()`, or `cnil()` where something else already says
+// what the list is empty of.
+//
+// Fusing the two binders is the other thing that does not work: `[A, B]((A, B)
+// -> B, B) -> B` quantifies both at once, where `CList[A]` quantifies `B`
+// alone, and quantifiers fuse into the arrow so there is no partial
+// instantiation from the one to the other.
+let cnil = fn [A]() -> fn [B](c: (A, B) -> B, n: B) -> n

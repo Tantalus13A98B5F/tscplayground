@@ -1,0 +1,16 @@
+// The same library again, encoded as folds. Every recursive operation here is
+// an application -- there is no `fix` in this file, or in anything it requires.
+#require "church/bool.ga"
+#require "church/nat.ga"
+#require "church/pair.ga"
+#require "church/list.ga"
+
+let three = csucc(csucc(csucc(czero)))
+let six = cadd(three, three)
+let nine = cmul(three, three)
+
+let ns = ccons(three, ccons(six, cnil()))
+let flags = cmap(ns)(cisZero)
+let total = cfoldr(ns)(czero)(fn (h, acc) -> cadd(h, acc))
+
+cpair(clength(flags), cfst(cpair(cadd(nine, total), ctrue)))

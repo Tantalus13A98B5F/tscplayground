@@ -1,0 +1,50 @@
+#require "data/bool.ga"
+#require "data/nat.ga"
+#require "fix.ga"
+
+datatype List[A] where
+  | Nil()
+  | Cons(A, List[A])
+
+let isEmpty = fn [A](xs: List[A]) -> match xs with
+  | Nil -> True
+  | Cons(h, t) -> False
+
+// Each of these takes `fix` *inside* the polymorphic lambda, where `A` is a
+// rigid variable rather than something still being inferred: the fixed point
+// is at a monomorphic arrow, which is all a `Rec[A, B]` can carry. The outer
+// `(xs)` is the fixed point applied, so the binding is a function and not the
+// combinator.
+//
+// `foldr` and `map` are *staged*, the way Scala 2 stages `foldLeft(z)(op)`,
+// and the staging is a typing decision rather than a stylistic one. Each
+// parameter list is one batch of type arguments, solved before the next list
+// is checked, so splitting the binders across the lists is what puts a type
+// argument in hand before the argument that needs it:
+//
+//     foldr(xs)   fixes A, from the list
+//          (z)    fixes B, from the initial value
+//          (op)   is checked with both known, so a bare lambda works
+//
+// Neither shortcut survives. One binder over both -- `fn [A, B](xs) -> ...` --
+// solves B at the first list with nothing constraining it, so B is `never` and
+// the next argument is refused against it. And putting `op` and `z` in one
+// list is no better: one list is one batch, `op` is checked before `z` has
+// contributed anything, and `acc` is left with no type to have.
+let foldr = fn [A](xs: List[A]) -> fn [B](z: B) -> fn (op: (A, B) -> B) ->
+  fix(fn (self: (List[A]) -> B) -> fn (ys: List[A]) ->
+    match ys with
+      | Nil -> z
+      | Cons(h, t) -> op(h, self(t)))(xs)
+
+let map = fn [A](xs: List[A]) -> fn [B](f: (A) -> B) ->
+  fix(fn (self: (List[A]) -> List[B]) -> fn (ys: List[A]) ->
+    match ys with
+      | Nil -> Nil()
+      | Cons(h, t) -> Cons(f(h), self(t)))(xs)
+
+// Through `foldr`, and with a bare lambda, which is the whole point of it.
+let length = fn [A](xs: List[A]) -> foldr(xs)(Z)(fn (h, acc) -> S(acc))
+
+let append = fn [A](xs: List[A], ys: List[A]) ->
+  foldr(xs)(ys)(fn (h, acc) -> Cons(h, acc))

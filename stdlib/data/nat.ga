@@ -1,0 +1,27 @@
+#require "data/bool.ga"
+#require "fix.ga"
+
+datatype Nat where
+  | Z
+  | S(Nat)
+
+let pred = fn (n: Nat) -> match n with
+  | Z -> Z
+  | S(m) -> m
+
+let isZero = fn (n: Nat) -> match n with
+  | Z -> True
+  | S(m) -> False
+
+// Recursion is `fix`, so `self` carries the annotation a `let rec` would have
+// wanted. Curried: the fixed point is at `(Nat) -> (Nat) -> Nat`, so `B` is
+// itself an arrow and one `Rec` serves every arity.
+let add = fix(fn (self: (Nat) -> (Nat) -> Nat) -> fn (m: Nat) -> fn (n: Nat) ->
+  match m with
+    | Z -> n
+    | S(k) -> S(self(k)(n)))
+
+let mul = fix(fn (self: (Nat) -> (Nat) -> Nat) -> fn (m: Nat) -> fn (n: Nat) ->
+  match m with
+    | Z -> Z
+    | S(k) -> add(n)(self(k)(n)))

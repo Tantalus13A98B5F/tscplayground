@@ -1,0 +1,34 @@
+// Converting between the two encodings, which is where each one's shape shows.
+#require "data/nat.ga"
+#require "data/list.ga"
+#require "church/nat.ga"
+#require "church/list.ga"
+#require "data/pair.ga"
+
+// Church to datatype needs no recursion at all: the numeral *is* the loop, so
+// this is one application and the arguments are the algebra.
+let toNat = fn (n: CNat) -> n(fn (x: Nat) -> S(x), Z)
+
+// Datatype to Church needs `fix`, a `Nat` carrying no fold of its own. The
+// asymmetry is the whole comparison in one pair of bindings.
+let toCNat = fix(fn (self: (Nat) -> CNat) -> fn (n: Nat) ->
+  match n with
+    | Z -> czero
+    | S(k) -> csucc(self(k)))
+
+// The one type argument written under `stdlib/`, and the one place staging
+// *costs* something. Staging makes `z` the argument that fixes `B`, so `z` has
+// to know its own type -- and `Nil()` does not: written bare it settles at
+// `List[never]` before `B` exists, and the operator's `Cons(h, t)` is then
+// refused against it. Saying what the empty list is empty *of* is the whole of
+// the fix. (`cfoldr(xs)[List[A]]` does the same job from the other end, naming
+// what the fold answers with; this one names the thing that was missing.)
+//
+// The unstaged `xs(fn (h: A, t: List[A]) -> Cons(h, t), Nil())` needs no type
+// argument at all, for the mirror-image reason: there the *operator* is
+// annotated, `B` comes from it, and `Nil()` is what benefits. One of the two
+// has to say what the fold answers with, and staging picks `z`.
+let toList = fn [A](xs: CList[A]) ->
+  cfoldr(xs)(Nil[A]())(fn (h, t) -> Cons(h, t))
+
+MkPair(toNat(cadd(toCNat(S(Z)), toCNat(S(S(Z))))), length(toList(cnil())))
