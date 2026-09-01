@@ -25,11 +25,23 @@ uncover them and ask whether any of them exists to apologize for the code under
 it. A comment that would be unnecessary after a rename is a finding about the
 name, not about the comment.
 
+Follow this one literally. Comments drift, and in a file that has been through
+many passes -- or through a model -- they are the least reliable thing present:
+they overclaim, they describe a version that no longer exists, and they are
+verbose in a way that reads as authority. So a comment is never *evidence* for a
+judgment about the code. If a note only holds because a docblock says so, it is
+a note about the docblock, and it belongs to `/trim-comments` rather than here.
+
 **Read names where they are used, not where they are defined.** Almost every
 name is defensible at its definition; a name earns its place by predicting what
 happens at the call. `paramType(param)` reads as parsing a type in a file whose
 every other verb parses. Ask of each call: if I did not know this function,
-would I guess wrong?
+would I guess wrong? A proposed replacement must describe the operation rather
+than restate a metaphor for it, and must never be harvested from the docblock's
+own figurative language -- a phrase that carries prose can be opaque as an
+identifier, and idiom travels worst across a reader's first language. Where the
+existing name and the type signature together predict the call, there is no
+finding.
 
 **Ask what each unit is for, in one sentence, before reading it.** If the
 sentence needs an "and", the unit does two things.

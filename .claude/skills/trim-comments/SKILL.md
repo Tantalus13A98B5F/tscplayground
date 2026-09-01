@@ -32,11 +32,39 @@ cannot drift from itself.
   case from last week". Distill what survived into the invariant it protects,
   then delete the story. One line stating the rule beats five reconstructing the
   path to it.
+- **The claim wider than the code.** A local choice defended with a statement
+  about the whole file -- "every rule that asks wants it", "the only thing it
+  does not already carry" -- where a counterexample sits a few dozen lines away.
+  The cure is not to repair the claim into a true one, which only trades a wrong
+  sentence for a longer sentence. Cut the clause; what is left says what the
+  code does and stops. Usually this is a third-kind sentence written in a
+  first-kind register; see below.
 - **Per-case error commentary.** A comment on every error branch explaining that
   particular failure. Say the rule once at the top of the function.
 - **Restated signatures.** Param and return lists that repeat the types.
 - **Dead scaffolding.** Commented-out code, TODOs already done, section banners
   that only announce the next declaration's name.
+
+## Which kind of claim
+
+Before keeping a sentence, ask which of three it is -- the split the JDK marks
+with `@apiNote`, `@implSpec` and `@implNote`:
+
+- **binding on callers**: what they must guarantee, what they may rely on
+- **binding on the implementation**: what this must keep true however it is
+  rewritten
+- **true today**: how it currently happens to work, which callers and rewrites
+  are both free to ignore
+
+The first two are the invariants, and they earn whatever length they need --
+stated against what a function takes and what it hands back, which is the only
+part of a comment anything mechanical can check against the signature, and so
+the part that survives. The third is what rots, and it rots invisibly, because
+nothing on it says it was only ever an observation. Keep one only where a reader
+would otherwise be misled, and write it so it reads as an observation rather
+than a rule -- "today every caller wants the bound" rather than "every rule that
+asks wants it". A third-kind sentence in the register of the first two is how a
+claim gets wider than its code.
 
 ## Keep
 

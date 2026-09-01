@@ -94,8 +94,7 @@ export type Verdict = boolean | undefined;
  *
  * An exception and not an answer: exhaustion is a property of the whole query,
  * not of the pair being compared, so there is nothing a caller could
- * *locally* do with it. Returned, it had to be threaded through every
- * combination, and `#join` and `#meet` both read it as "unrelated" and settled
+ * *locally* do with it, and an interior test that could read it would settle
  * for an extreme -- a definite answer manufactured from a limit.
  */
 class FuelExhausted extends Error {
@@ -166,13 +165,11 @@ export class Subtyper {
    * as one; it says nothing in reverse, so a checking rule's expected type is
    * taken as written.
    *
-   * The transitive closure of `#declaredBoundOf`, and nothing is asked of a
-   * type beyond whether it has a bound. An EVar has constraints instead, so it
-   * stops the walk like any other type with nothing to stand aside for, and
-   * the shape the caller wanted fails to appear -- a report rather than a
-   * crash. Asking is still a mistake: exposing is for when a rule needs a
-   * *shape*, an arrow to take apart or a datatype to match on, and an EVar is
-   * not one. The contexts that ask are EVar-free by construction.
+   * An EVar has constraints rather than a bound, so it stops the walk like any
+   * other type with nothing to stand aside for, and the shape the caller
+   * wanted fails to appear -- a report rather than a crash. Asking is still a
+   * mistake: exposing is for when a rule needs a *shape*, an arrow to take
+   * apart or a datatype to match on, and an EVar is not one.
    */
   expose(type: Type): Type {
     let current = type;
@@ -188,9 +185,9 @@ export class Subtyper {
    * no variable, or it names an EVar, which has constraints rather than a
    * bound and no shape yet to stand aside with.
    *
-   * The bound and not a yes-or-no, because every rule that asks wants it.
-   * Unbounded stores `TUnknown`, so a rigid variable always has one, and
-   * `undefined` says only that promotion does not apply.
+   * The bound and not a yes-or-no. Unbounded stores `TUnknown`, so a rigid
+   * variable always has one, and `undefined` says only that promotion does not
+   * apply.
    */
   #declaredBoundOf(type: Type): Type | undefined {
     if (type.kind !== "FVar") return undefined;
@@ -276,10 +273,6 @@ export class Subtyper {
   /**
    * The saying on its own, for the one loss with no part to stand in for it:
    * a parameter count, a fact about the list rather than about a position.
-   *
-   * Always said. A cast that declines writes `<bad>` into what it hands back,
-   * and `TBad` means a report already stands -- so a cast that could decline
-   * quietly would be putting that marker in on a promise nobody kept.
    */
   #sayCastFailed(
     type: Type,
@@ -934,6 +927,16 @@ export class Subtyper {
    * as an upper bound: each missing part becomes the extreme for its variance,
    * so only the written parts constrain. A complete pattern gives itself back.
    *
+   * The CLTI paper reads a result pattern by downcasting top to it. Invariance
+   * is why we do not: an invariant part has no extreme of its own, so a cast
+   * there is partial, and both ways out are bad for a bound. Planting `<bad>`
+   * -- an earlier version here -- blames the author for a mistake nobody made;
+   * picking a side, which `#liftExtreme` does today and warns about, keeps the
+   * shape and loses principality. So the two walks trade opposite things: a
+   * cast is faithful to the pattern and may not be principal, avoidance is
+   * principal up to its approximation and may give the shape up. A bound wants
+   * the second.
+   *
    * Avoidance with the bar above everything, so no variable is ever out of
    * scope and a missing part is the only thing left that cannot be kept. The
    * two really are one walk -- what a part may be is settled by `levels`, and
@@ -1030,9 +1033,8 @@ export class Subtyper {
         return this.#avoid(entry.bound, levels, dir);
       }
       case "TData": {
-        // An argument with a direction widens like anything else; an invariant
-        // one admits no wider guess, so one that cannot be named *exactly*
-        // takes the whole type with it.
+        // An argument with a direction widens like anything else; an
+        // invariant one has to be named exactly.
         const args = [];
         for (const [i, arg] of type.args.entries()) {
           const avoided = this.#avoid(
@@ -1046,8 +1048,6 @@ export class Subtyper {
         return TData(type, args);
       }
       case "TRef": {
-        // Invariant, so the argument has to be named exactly and one that
-        // cannot be takes the cell with it.
         const avoided = this.#avoid(type.arg, levels, 0);
         return avoided === undefined ? undefined : TRef(avoided);
       }
@@ -1079,12 +1079,9 @@ export class Subtyper {
    * Least upper bound. Falls back to `unknown` rather than inventing a union:
    * there is no union type, so an inexact answer has to be the sound one.
    *
-   * Exhaustion takes that same fallback and says nothing, which is this
-   * family's one limit -- top is above everything, so the answer stays sound,
-   * but a match whose arms ran too deep joins to `unknown` and the coercion
-   * after it blames the program. Saying so would mean giving the lattice a
-   * position to report under, which is the only thing it does not already
-   * carry.
+   * Exhaustion takes that same fallback and says nothing: top is above
+   * everything, so the answer stays sound, but a match whose arms ran too deep
+   * joins to `unknown` and the coercion after it blames the program.
    */
   join(left: Type, right: Type): Type {
     return this.#query(
