@@ -171,7 +171,8 @@ export class Elaborator {
   #elaborateFun(node: Extract<TypeNode, { kind: "FunType" }>): Type {
     const closed = this.context.inScope((mark) => {
       const typeParams = this.bindTypeParams(node.typeParams);
-      const params = node.params.map((param) => this.elaborateType(param));
+      // The name is dropped here and nowhere else -- see `DomainType`.
+      const params = node.params.map((param) => this.elaborateType(param.type));
       const result = this.elaborateType(node.result);
 
       // Closing the parts at depth 0 is what turns level `mark + j` into
@@ -346,7 +347,7 @@ export class Elaborator {
           name: ctor.name.text,
           // Closed over the datatype's parameters, so a use opens them.
           fields: (ctor.params ?? []).map((field) =>
-            closeFrom(this.elaborateType(field), mark)
+            closeFrom(this.elaborateType(field.type), mark)
           ),
           isValue: this.#reportValueCtor(ctor, decl),
           at: ctor.at,

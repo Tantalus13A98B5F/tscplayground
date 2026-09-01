@@ -32,6 +32,7 @@ import type {
   CtorDecl,
   DatatypeDecl,
   DefItem,
+  DomainType,
   Ident,
   LetItem,
   MatchArm,
@@ -546,10 +547,16 @@ class Parser {
           at,
         };
       }
-      // Not an arrow, so it was a parenthesised type -- and only one fits.
+      // Not an arrow, so it was a parenthesised type -- and only one fits,
+      // unnamed: a name belongs to a parameter, so what carried one was a
+      // parameter list whatever it holds.
       const only = params[0];
-      if (params.length === 1 && only !== undefined) return only;
-      this.cursor.fail("`->`, since a list of types is not a type");
+      if (
+        params.length === 1 && only?.name === undefined && only !== undefined
+      ) {
+        return only.type;
+      }
+      this.cursor.fail("`->`, since a parameter list is not a type");
     }
 
     const atom = this.atomType();
@@ -557,7 +564,7 @@ class Parser {
     return {
       kind: "FunType",
       typeParams: [],
-      params: [atom],
+      params: [{ type: atom, at: atom.at }],
       result: this.type(),
       at,
     };
@@ -585,7 +592,7 @@ class Parser {
    * can mention. This is the rule dependent arrows would grow names in, and
    * where a constructor's fields would get them back with it.
    */
-  private domainTypes(): TypeNode[] {
+  private domainTypes(): DomainType[] {
     this.cursor.expect("lparen", "`(`, a parameter list");
     return this.commaList("rparen", "`)`", true, () => this.domainType());
   }
@@ -595,12 +602,26 @@ class Parser {
    * here reads as the type `x` followed by wreckage, and `expected \`)\`` would
    * be a true thing to say about a line whose actual fault is elsewhere.
    */
-  private domainType(): TypeNode {
+  /**
+   * `A`, or `x: A`. The name is optional and means nothing yet -- see
+   * `DomainType`.
+   *
+   * Read as a type first and reinterpreted on the `:`, which is what saves a
+   * second token of lookahead: only a bare name can be one, and a bare name is
+   * a `NameType` with no arguments. So `Pair[A]: B` is refused here rather than
+   * parsed into something no rule would know what to do with.
+   */
+  private domainType(): DomainType {
+    const at = this.cursor.here;
     const type = this.type();
-    if (this.cursor.at("colon")) {
-      this.cursor.fail("`,` or `)`, since a parameter list holds types alone");
+    if (this.cursor.accept("colon") === undefined) return { type, at };
+    if (type.kind !== "NameType" || type.args.length > 0) {
+      this.cursor.failAt(
+        at,
+        "only a name may be given a type in a parameter list",
+      );
     }
-    return type;
+    return { name: this.toBinder(type.name), type: this.type(), at };
   }
 
   /**
@@ -741,11 +762,22 @@ class Parser {
 
   /** The name at a binding occurrence, `_` meaning it declines to have one. */
   private binderName(what: string): BindingIdent {
-    const token = this.cursor.expect("identifier", what);
-    const text = token.text === WILDCARD ? undefined : token.text;
-    const name = { text, at: token.at };
-    this.refuseBang(name);
-    return name;
+    return this.toBinder(this.ident(what));
+  }
+
+  /**
+   * An `Ident` at a position that binds, under the two rules every such
+   * position obeys: `_` names nothing, and a trailing `!` is refused. Split out
+   * because a domain's name is read as a type and only then found to be a
+   * binder -- the rules are the same wherever the name came from.
+   */
+  private toBinder(name: Ident): BindingIdent {
+    const bound = {
+      text: name.text === WILDCARD ? undefined : name.text,
+      at: name.at,
+    };
+    this.refuseBang(bound);
+    return bound;
   }
 
   /**
@@ -884,7 +916,11 @@ function foldFunType(
     type = {
       kind: "FunType",
       typeParams: group.typeParams,
-      params: group.params.map(ensureParamType),
+      params: group.params.map((param) => ({
+        name: param.name,
+        type: ensureParamType(param),
+        at: param.at,
+      })),
       result: type,
       at: group.at,
     };

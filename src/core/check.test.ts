@@ -407,6 +407,33 @@ Deno.test("arms join at the argument, not only at the datatype", () => {
   ).toBe("Bool -> List[unknown]");
 });
 
+Deno.test("a name in a domain is documentation and reaches no type", () => {
+  // Dropped at elaboration, so a named arrow and a bare one are one type --
+  // which is what keeps a name from ever deciding a cast, an equality, or what
+  // gets printed.
+  expect(typeOf(...BOOL, "fn (f: (x: Bool) -> Bool) -> f"))
+    .toBe("(Bool -> Bool) -> Bool -> Bool");
+  expect(typeOf(...BOOL, "let f : (x: Bool) -> Bool = fn (y: Bool) -> y;", "f"))
+    .toBe("Bool -> Bool");
+  expect(typeOf(...BOOL, "let f : (Bool) -> Bool = fn (y: Bool) -> y;", "f"))
+    .toBe("Bool -> Bool");
+
+  // A constructor's fields are the same domain, so they take names on the same
+  // terms and lose them on the same terms.
+  expect(
+    typeOf(
+      "datatype Box where",
+      "  | MkBox(flag: Bool, Bool)",
+      ...BOOL,
+      "MkBox",
+    ),
+  ).toBe("(Bool, Bool) -> Box");
+
+  // And it binds nothing: `x` scopes over nothing until a dependent arrow has
+  // something to bind it to.
+  expect(run(...BOOL, "fn (f: (x: Bool) -> x) -> f")[1]).toBe("unknown type x");
+});
+
 Deno.test("the reference builtins are seeded, and Ref is a type", () => {
   expect(typeOf(...BOOL, "let c = ref!(True);", "set!(c, False)")).toBe("Bool");
   expect(typeOf(...BOOL, "fn (c: Ref[Bool]) -> get!(c)"))

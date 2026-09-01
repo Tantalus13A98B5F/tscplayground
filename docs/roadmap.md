@@ -24,6 +24,12 @@ constructor observes is warned about today as almost certainly a mistake, there
 being no way to use one; dependent arrows are the feature that would give
 phantoms a use.
 
+The surface is not the cost. Domain names parse today and are dropped, so the
+binder has somewhere to be written; what is missing is anywhere for it to be
+_read_. A `Type` has no way to mention a term -- there is no kind for one, and
+`Context` keeps term and type variables apart -- so the wall is in the core and
+not in the parser.
+
 ### What a self-referential signature costs
 
 The wanted case is a `def` whose result type mentions the `def` -- a measure, or
@@ -65,6 +71,21 @@ reference into "`foo` is declared below; its signature is not available here"
 rather than `unknown name foo` -- and it is additive, so it can land whenever.
 
 ## Landed
+
+**Optional names in a domain.** `(x: A, B) -> C` and `| MkBox(flag: Bool, Bool)`
+parse, an arrow's parameters and a constructor's fields being one syntax and so
+one rule. The name is documentation: dropped at elaboration, so a named arrow
+and a bare one are the same type and a name can never decide an equality, a cast
+or a printed form. It reserves the spelling a dependent arrow's binder will
+want, and nothing more -- `(x: A) -> x` is still `unknown type x`, there being
+nothing yet that could bind it.
+
+Cheap because the slot was already marked: `domainType` read the `:` and refused
+it in so many words. It now reads the domain as a type and reinterprets it
+there, which needs no second token of lookahead -- only a bare name can be a
+binder -- and routes the name through the same `toBinder` every other binding
+position uses, so `_` and the refused trailing `!` reach it without being
+restated.
 
 **An evaluator, and a CLI that is the whole pipeline.** Closures, constructed
 values and cells, over six term forms. Type application erases. `runFiles`
