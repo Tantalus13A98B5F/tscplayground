@@ -385,6 +385,131 @@ in `#query`, which takes the caller's own way of saying it does not know -- a
 verdict, an extreme, the demanded shape. Interior relations return `boolean`;
 three-valued logic exists only at the boundary.
 
+## What the neighbours do
+
+Scala 3 is the same design under other names. `ProtoTypes` is our patterns --
+`WildcardType` is `TMissing`, `deepenProto` is pushing one inward -- and
+`Inferencing.interpolateTypeVars` is `solveEVar`: a variance map over the
+occurrences in the result type, minimising covariant ones, maximising
+contravariant ones, and taking the lower bound for a variable that does not
+occur. The one difference worth naming is that it picks silently where we warn.
+Unsurprising ancestry: colored local type inference is Odersky, Zenger and
+Zenger, and dotty is its descendant.
+
+What follows is the three places we refuse something they do. Each refusal is a
+property of the *type language*, not of the solver, and it is the same property
+every time -- recorded at the end.
+
+### A bound that names another variable
+
+    ?x <: ?y -> Int
+    ?x <: Bool -> ?z
+
+Three answers exist. Dotty **stores the meet**: bounds are arbitrary types, so
+the upper bound is literally `(?y -> Int) & (Bool -> ?z)`, inert until something
+is compared against it and the subtype checker's distribution laws take it
+apart. That needs intersections in the language.
+
+MLsub **decomposes** instead -- a variable under an arrow bound takes a function
+shape, splitting into `?x1 -> ?x2` with `?x1 :> ?y` and `?x2 <: Int` -- and gets
+principal solutions for it. That needs unions and intersections to state the
+results in.
+
+We have the decomposition already: `downcast(T, P)` is that walk, at the same
+variance flips. What we lack is anywhere to put its results, which is why `T` is
+ground. A pattern hides what is unknown behind a missing part rather than behind
+a variable, and a missing part is not something one can constrain and come back
+to.
+
+### The ordering graph, and the levels that come with it
+
+Dotty keeps ordering separate from bounds: `lowerMap`/`upperMap` hold, for each
+variable, the variables known to be below and above it, closed transitively on
+insert, while `boundsMap` holds the concrete part. Joins and meets are applied
+to concrete bounds and never to variables. An edge discharges when its source is
+instantiated -- substitute, and `?y <: ?x` becomes an ordinary join against a
+ground type. Equality is not primitive but a *cycle*: two variables ordered both
+ways are merged, keeping the outer one.
+
+Two reasons we do not.
+
+The join it defers to is ours, and ours is lossy -- `List[Bool] ⊔ List[Int]` is
+`List[unknown]` for want of a union (§5). So recording `?A <: ?B` would convert
+the refusal `#constrain` files today into a silent `unknown` one step later,
+which is the trade the exhaustion rule already declines: say so, rather than
+fall back to an extreme.
+
+And a graph needs levels. Dotty carries a nesting level on every variable, with
+level checks and a level-avoidance map, because an edge crossing scopes must
+discharge before its inner end dies -- the outer variable cannot be left naming
+one that is gone. Step 6 bought us out of all of it: batches never overlap, so
+there is no elimination order to get right, and the escape check's bar is simply
+the batch.
+
+### Context-sensitive arguments in rounds
+
+TypeScript skips context-sensitive arguments -- lambdas with unannotated
+parameters -- in a first pass, fixes what the other arguments determine, then
+contextually types the skipped ones. It skips them *wherever they sit*; the
+left-to-right restriction applies only between two context-sensitive arguments.
+So it recovers one of the two regressions step 0 measured and not the other:
+
+    f(fn (x) -> id(x), True)    -- `True` fixes ?A, and the lambda then checks
+                                   at Bool -> Bool
+    both(True, fn (y) -> y)     -- nothing determines ?B anywhere in the list;
+                                   TS "succeeds" only by giving `y` implicit any
+
+The price is not the ordering, which is cheap. It is that a deferred argument is
+checked while the call's batch is live, so batches overlap again and "a
+constraint mentioning an EVar can only mean a sibling" goes with them. The form
+that keeps the invariant is to solve the batch *before* any context-sensitive
+argument is checked, and check those against what came out -- best effort, no
+second solve, no live batch during an argument.
+
+### Recursion, and a rule that was rejected
+
+The split here is unification against subtyping, not local against global.
+Hindley-Milner infers a recursive function's result by unifying against a fresh
+monomorphic variable, and gets a principal answer free. With subtyping the same
+question is a least fixed point on a lattice, and each round widens -- so Scala
+refuses outright ("recursive method needs result type"), TypeScript reports a
+circularity and falls back to `any`, and Crystal does infer, by iterating over
+unions, at the cost of whole-program compilation. Ours is Scala's answer with
+better diagnostics: an unannotated `def` falls back to `let`, is `unknown` in
+its own body, and is reported at each use.
+
+The same split settles the other two. Inferring a fold's accumulator is not a
+recursion problem at all -- `foldr` is staged so `z` fixes `B`, and where `z`
+says nothing the answer everywhere is an annotation, `Nil[A]()` here exactly as
+`foldLeft(List.empty[Int])` there. And a dependency graph over a mutually
+recursive group buys nothing for a real cycle: SCC analysis is load-bearing in
+HM because it enables generalisation, which we do not do.
+
+**Rejected: inferring the result from the non-recursive arms.** Push the join of
+the arms that do not mention the def, then check the ones that do against it --
+one pass over each arm, no fixpoint, no speculation. It fails on `let`. A body
+is a nested chain whose result is the innermost expression, so the bindings are
+not branches at all -- they are on every path:
+
+    def len(xs: List[A]) ->
+      let n = match xs with | Nil -> Z | Cons(h, t) -> S(len(t));
+      match xs with | Nil -> Z | Cons(h, t) -> n
+
+Here no arm of the final match mentions `len`, and every one of them depends on
+it through `n`. So the check must be transitive over the binding structure, and
+for accumulator- and helper-shaped recursion -- the recursive call in a `let`,
+the final match assembling -- every arm is tainted and the rule yields nothing.
+What is left is a conjunctive syntactic trigger served by a taint pass, which is
+new machinery for a case the annotation already covers.
+
+### The common cause
+
+Every refusal above is the same one. There is no union, so there is no join to
+state a variable's bounds in, no lattice for a fixpoint to converge in, and no
+principal answer for two arms of different instantiations. Unions are therefore
+the single change that would move all of them at once, and the only one worth
+costing; anything narrower is approximating what the type language cannot say.
+
 ## Open
 
 - Does avoidance survive? Probably, but for a narrower reason than today: the
