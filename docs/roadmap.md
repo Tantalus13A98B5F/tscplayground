@@ -140,7 +140,7 @@ the ceiling, when one is wanted.
 written the way anyone would write them and nothing is encoded. What `def` adds
 to `let` is that scope and nothing else -- the parser folds its parameter lists
 into the `Abs` and its result type into the `FunType` that becomes its
-annotation, so a member reaching the checker is a `LetItem`.
+annotation, so a member reaching the checker is a `DefItem`.
 
 Annotations are what buy the visibility, and the reason is the constraint solver
 rather than taste. A signature the author wrote can be pushed before any body is

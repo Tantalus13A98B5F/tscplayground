@@ -5,11 +5,14 @@ System F-sub. Source files are `.ga`. Written in TypeScript so the same code can
 drive a browser-based playground later.
 
 Work in progress, but it runs end to end: `deno task run file.ga` will lex, lay
-out, parse, elaborate, and check a program, and print its type. Full Fsub
-subtyping with local type inference, datatypes with inferred variance and
-one-level pattern matching, transparent type aliases, mutable references, and
-multi-file `#require` are all in. There is no evaluator: the checker checks,
-nothing runs -- so `ref!` and `set!` typecheck, and nothing has an effect yet.
+out, parse, elaborate, check and evaluate a program, and print its value and its
+type. Full Fsub subtyping with local type inference, datatypes with inferred
+variance and one-level pattern matching, transparent type aliases, mutable
+references, recursion as `def`, and multi-file `#require` are all in.
+
+Evaluation is untyped and is not gated on the check, which is deliberate: an
+ill-typed program still runs, and gets stuck where the type it did not have
+would have saved it.
 
 [`docs/roadmap.md`](./docs/roadmap.md) is what stands between here and a first
 release.
@@ -56,6 +59,7 @@ src/
     elaborate.ts              surface types -> internal types, and variance
     subtype.ts                the subtyping relation
     check.ts                  bidirectional infer / check
+    evaluate.ts               untyped evaluation, over a heap of cells
   diagnostics/
     diagnostic.ts             positions, diagnostics, phase results
 ```
@@ -76,11 +80,11 @@ pending specs for behavior not yet implemented.
 
 ## Docs
 
-| Doc                                      | What it covers                                                                       |
-| ---------------------------------------- | ------------------------------------------------------------------------------------ |
-| [`docs/roadmap.md`](./docs/roadmap.md)   | The four items before a first release, and the gaps deliberately left off that list  |
-| [`docs/variance.md`](./docs/variance.md) | Inferring datatype variance: the lattice, the walk, the fixed point, worked examples |
-| [`docs/clti.md`](./docs/clti.md)         | The colored local type inference design the checker was built to                     |
+| Doc                                      | What it covers                                                                                    |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| [`docs/roadmap.md`](./docs/roadmap.md)   | What stands between here and a first release, what has landed, and the gaps deliberately left off |
+| [`docs/variance.md`](./docs/variance.md) | Inferring datatype variance: the lattice, the walk, the fixed point, worked examples              |
+| [`docs/clti.md`](./docs/clti.md)         | The colored local type inference design the checker was built to                                  |
 
 `CLAUDE.md` is the working description of how the checker is put together and
 why -- shorter than the docs above, and the first thing to read.
