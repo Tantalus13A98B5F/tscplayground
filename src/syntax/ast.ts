@@ -56,6 +56,25 @@ export type Param = {
   readonly at: Position;
 };
 
+/**
+ * One position in a domain -- an arrow's parameter, or a constructor's field --
+ * and the name the author may have written on it.
+ *
+ * The name is documentation, and dropping it at elaboration is what keeps it
+ * that: `(x: A) -> B` and `(A) -> B` are one type, so a name can never decide
+ * whether two types are equal, print differently, or make a cast go another
+ * way. Nothing downstream of elaboration learns names exist, exactly as with a
+ * transparent alias.
+ *
+ * What it does buy is the spelling, which is where a dependent arrow's binder
+ * goes when there is one to bind. Until then a name here scopes over nothing.
+ */
+export type DomainType = {
+  readonly name?: BindingIdent;
+  readonly type: TypeNode;
+  readonly at: Position;
+};
+
 export type TypeNode =
   /** `unknown` -- top. */
   | { readonly kind: "UnknownType"; readonly at: Position }
@@ -96,7 +115,7 @@ export type TypeNode =
   | {
     readonly kind: "FunType";
     readonly typeParams: readonly TypeParam[];
-    readonly params: readonly TypeNode[];
+    readonly params: readonly DomainType[];
     readonly result: TypeNode;
     readonly at: Position;
   };
@@ -200,9 +219,9 @@ export type DatatypeDecl = {
 };
 
 /**
- * Fields are types alone, positional as the patterns that take them apart are.
- * Names would be dropped on the way to `TFun`, which has none -- when a domain
- * carries names, a constructor's may come back with them.
+ * Fields are positional, as the patterns that take them apart are, and a name
+ * on one is the documentation a `DomainType` name always is -- an arrow's
+ * domain and a constructor's are one syntax, so they are one rule.
  *
  * `| C` and `| C()` are *different declarations*, which is why the domain is
  * absent rather than empty for the first: a bare name declares a value of the
@@ -214,7 +233,7 @@ export type DatatypeDecl = {
 export type CtorDecl = {
   readonly name: Ident;
   /** The domain, or absent for a bare name -- empty is `C()`, never `C`. */
-  readonly params?: readonly TypeNode[];
+  readonly params?: readonly DomainType[];
   readonly at: Position;
 };
 

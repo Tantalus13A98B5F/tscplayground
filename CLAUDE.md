@@ -80,6 +80,17 @@ every later reading asks. Patterns are untouched by the distinction: they take
 apart fields, a nullary constructor has none either way, and `| Nil ->` is the
 spelling whichever form declared it.
 
+A domain position -- an arrow's parameter, or a constructor's field -- may carry
+a name: `(x: A, B) -> C`, `| MkBox(flag: Bool, Bool)`. One syntax for both, so
+one rule, and the rule is that the name is documentation. It is dropped at
+elaboration, so `(x: A) -> B` and `(A) -> B` are one type and a name can never
+decide an equality, a cast, or what gets printed; it scopes over nothing, a
+dependent arrow being what would give it something to bind. What it reserves is
+the spelling. The parser reads a domain as a type and reinterprets it on the
+`:`, which costs no lookahead -- only a bare name can be a binder -- and lets
+the position obey the rules every binding position obeys, `_` and the refused
+trailing `!` included, rather than restating them.
+
 A datatype's variance is inferred, not declared -- read off its constructor
 fields by a fixed point over the whole declaration table, since two datatypes
 may name each other. `Variance` and _position_ stay the two things they were:

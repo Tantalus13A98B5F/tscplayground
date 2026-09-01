@@ -109,12 +109,15 @@ Deno.test("declarations are collected, never nested in the chain", () => {
     "A",
     "B",
   ]);
-  // Fields are types alone, positional as the patterns that take them apart.
+  // Fields are positional, as the patterns that take them apart are, and
+  // unnamed unless the declaration wrote names.
   expect(
     datatypes(program)[0]?.ctors[0]?.params?.map((f) =>
-      f.kind === "NameType" ? f.name.text : f.kind
+      f.type.kind === "NameType" ? f.type.name.text : f.type.kind
     ),
   ).toEqual(["A", "B"]);
+  expect(datatypes(program)[0]?.ctors[0]?.params?.map((f) => f.name))
+    .toEqual([undefined, undefined]);
   // Interleaving is erased: a `datatype` between two `let`s never entered the chain.
   expect(bindings(program.term)).toEqual(["a", "b"]);
 });
@@ -131,13 +134,40 @@ Deno.test("a bound is read where none is meant, then reported on itself", () => 
   expect(rest).toEqual([]);
 });
 
-Deno.test("a named constructor field is reported, a domain holding types alone", () => {
-  const [error, ...rest] = report("datatype Box where\n  | MkBox(x: A)\nx\n");
+Deno.test("a domain may name its positions, an arrow's and a constructor's alike", () => {
+  // One syntax, so one rule: the name is documentation and scopes over nothing
+  // until there is a dependent arrow to bind it.
+  const fields = datatypes(clean("datatype Box where\n  | MkBox(x: A)\nx\n"))[0]
+    ?.ctors[0]?.params;
+  expect(fields?.map((f) => f.name?.text)).toEqual(["x"]);
+  expect(fields?.map((f) => f.type.kind)).toEqual(["NameType"]);
+
+  const arrow = type("(x: A, B) -> A");
+  expect(arrow.kind).toBe("FunType");
+  // Optional, so one list may name some positions and not others.
+  expect(arrow.kind === "FunType" ? arrow.params.map((p) => p.name?.text) : [])
+    .toEqual(["x", undefined]);
+  // `_` names nothing here as it does everywhere a name is bound.
+  const wild = type("(_: A) -> A");
+  expect(wild.kind === "FunType" ? wild.params[0]?.name?.text : "?")
+    .toBeUndefined();
+});
+
+Deno.test("only a name may be given a type in a domain", () => {
+  // Read as a type and reinterpreted on the `:`, so what could not have been a
+  // binder is refused there -- and the caret goes back to where it started.
+  const [error, ...rest] = report("let f : (Pair[A]: B) -> A = g\nf\n");
   expect(error?.message).toBe(
-    "expected `,` or `)`, since a parameter list holds types alone, found `:`",
+    "only a name may be given a type in a parameter list",
   );
-  expect([error?.at.line, error?.at.column]).toEqual([2, 12]);
+  expect([error?.at.line, error?.at.column]).toEqual([1, 10]);
   expect(rest).toEqual([]);
+
+  // A name belongs to a parameter, so a named position in parentheses is a
+  // parameter list however many it holds, and needs its arrow.
+  expect(report("let f : (x: A) = g\nf\n")[0]?.message).toBe(
+    "expected `->`, since a parameter list is not a type, found `=`",
+  );
 });
 
 Deno.test("a constructor's fields are the same domain a function type has", () => {
