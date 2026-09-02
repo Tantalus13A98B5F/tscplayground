@@ -10,6 +10,7 @@ import { Subtyper } from "./subtype.ts";
 import {
   badUnder,
   BVar,
+  type DataType,
   FVar,
   type Level,
   mkTypeParamInfo,
@@ -53,6 +54,7 @@ function declare(
     ctors: [],
     ctorsReported: false,
     initialized: true,
+    ordinal: 0,
     at: somewhere,
   };
 }
@@ -66,6 +68,34 @@ const LIST = declare("List", 1);
 const SINK = declare("Sink", -1);
 const BOOL = declare("Bool");
 const INT = declare("Int");
+
+/**
+ * `child <: base`, with the base written over the *child's* parameters --
+ * `BVar j` is the child's j-th, which is how a declaration stores one and why
+ * reading it at a use is an `openMany`.
+ *
+ * At construction and not afterwards, as a signature carries it. So the
+ * consts below have to read in the order a source file would declare them:
+ * `Single` names `NonEmpty`, so `NonEmpty` comes first, and that is the whole
+ * of why a base chain cannot close on itself.
+ *
+ *     datatype NonEmpty[A] <: List[A]
+ *     datatype Single[A]   <: NonEmpty[A]
+ *     datatype Bag[A]      <: List[A]
+ *     datatype Rows[A]     <: List[List[A]]
+ *     datatype Flags       <: List[Bool]
+ *     datatype Sunk[A]     <: Sink[A]
+ */
+function under(child: DatatypeInfo, base: DataType): DatatypeInfo {
+  return { ...child, base };
+}
+
+const NONEMPTY = under(declare("NonEmpty", 1), TData(LIST, [BVar(0)]));
+const SINGLE = under(declare("Single", 1), TData(NONEMPTY, [BVar(0)]));
+const BAG = under(declare("Bag", 1), TData(LIST, [BVar(0)]));
+const ROWS = under(declare("Rows", 1), TData(LIST, [TData(LIST, [BVar(0)])]));
+const FLAGS = under(declare("Flags"), TData(LIST, [TData(BOOL)]));
+const SUNK = under(declare("Sunk", -1), TData(SINK, [BVar(0)]));
 
 /** A `<bad>` to hand the relation, under a report a test stands in for. */
 const TBad = badUnder(reportError("something was already wrong", somewhere));
@@ -117,15 +147,36 @@ const RefP = (arg: TypePattern) => TRef(arg);
 const List = (arg: Type) => TData(LIST, [arg]);
 const Sink = (arg: Type) => TData(SINK, [arg]);
 const fn = (params: readonly Type[], result: Type) => TFun([], params, result);
+const NonEmpty = (arg: Type) => TData(NONEMPTY, [arg]);
+const Single = (arg: Type) => TData(SINGLE, [arg]);
+const Bag = (arg: Type) => TData(BAG, [arg]);
+const Rows = (arg: Type) => TData(ROWS, [arg]);
+const Sunk = (arg: Type) => TData(SUNK, [arg]);
+const Flags = TData(FLAGS);
+const NonEmptyP = (arg: TypePattern) => TData(NONEMPTY, [arg]);
 
 /**
- * The table is still filled, though nothing in `subtype.ts` reads it any more:
- * a node carries its own head, so the relation asks the type in front of it
- * rather than a declaration behind it.
+ * A node carries its own head, so the relation asks the type in front of it
+ * for everything a walk needs. It asks the table for one thing: what a
+ * datatype presents as, which cannot live on a node -- so a datatype left out
+ * of this table is one that presents as nothing.
  */
 function fixture(): { context: Context; sub: Subtyper } {
   const declarations = new Declarations();
-  for (const datatype of [CELL, LIST, SINK, BOOL, INT]) {
+  const declared: readonly DatatypeInfo[] = [
+    CELL,
+    LIST,
+    SINK,
+    BOOL,
+    INT,
+    NONEMPTY,
+    SINGLE,
+    BAG,
+    ROWS,
+    FLAGS,
+    SUNK,
+  ];
+  for (const datatype of declared) {
     declarations.addDatatype(datatype);
   }
   const context = new Context(declarations);
@@ -1184,4 +1235,136 @@ Deno.test("a cast that succeeds is related to its input, always", () => {
   }
   // A grid that stopped relating anything would pass vacuously.
   expect(succeeded).toBeGreaterThan(100);
+});
+
+// ------------------------------- datatypes that present as another datatype
+
+Deno.test("a datatype is below the one it presents as, and not above it", () => {
+  const { sub } = fixture();
+  expect(sub.isSubtype(NonEmpty(Int), List(Int))).toBe(true);
+  expect(sub.isSubtype(List(Int), NonEmpty(Int))).toBe(false);
+});
+
+Deno.test("climbing composes with the ancestor's own variance", () => {
+  const { sub } = fixture();
+  expect(sub.isSubtype(NonEmpty(Int), List(TUnknown))).toBe(true);
+  expect(sub.isSubtype(NonEmpty(TUnknown), List(Int))).toBe(false);
+
+  // Contravariantly, so the argument goes the other way and the head still
+  // goes up: a chain does not decide which way an argument moves.
+  expect(sub.isSubtype(Sunk(TUnknown), Sink(Int))).toBe(true);
+  expect(sub.isSubtype(Sunk(Int), Sink(TUnknown))).toBe(false);
+});
+
+Deno.test("a contravariant position climbs the side being used", () => {
+  const { sub } = fixture();
+  // `#relateData` climbs its left and has no case for climbing its right,
+  // which holds because `#relate` swaps a contravariant pair rather than
+  // passing `-1` down. These are the two ways of reaching it swapped.
+  expect(sub.isSubtype(Sink(List(Int)), Sink(NonEmpty(Int)))).toBe(true);
+  expect(sub.isSubtype(Sink(NonEmpty(Int)), Sink(List(Int)))).toBe(false);
+
+  expect(sub.isSubtype(fn([List(Int)], Bool), fn([NonEmpty(Int)], Bool)))
+    .toBe(true);
+  expect(sub.isSubtype(fn([NonEmpty(Int)], Bool), fn([List(Int)], Bool)))
+    .toBe(false);
+});
+
+Deno.test("a base is instantiated at the child's arguments", () => {
+  const { sub } = fixture();
+  expect(sub.isSubtype(Rows(Int), List(List(Int)))).toBe(true);
+  expect(sub.isSubtype(Rows(Int), List(Int))).toBe(false);
+
+  // A base need not mention the child's parameters at all.
+  expect(sub.isSubtype(Flags, List(Bool))).toBe(true);
+  expect(sub.isSubtype(Flags, List(Int))).toBe(false);
+});
+
+Deno.test("the whole chain is climbed, not one step", () => {
+  const { sub } = fixture();
+  expect(sub.isSubtype(Single(Int), NonEmpty(Int))).toBe(true);
+  expect(sub.isSubtype(Single(Int), List(Int))).toBe(true);
+  expect(sub.isSubtype(Single(Int), Bag(Int))).toBe(false);
+});
+
+Deno.test("equivalence does not climb", () => {
+  const { sub } = fixture();
+  expect(castToString(sub, exact(sub, NonEmpty(Int), ListP(TMissing))))
+    .toBe("<none>");
+
+  // Nor does an invariant argument, which is that same ask one level in.
+  expect(sub.isSubtype(Cell(NonEmpty(Int)), Cell(List(Int)))).toBe(false);
+  expect(sub.isSubtype(TRef(NonEmpty(Int)), TRef(List(Int)))).toBe(false);
+});
+
+Deno.test("an upcast climbs to the head it was asked for", () => {
+  const { sub } = fixture();
+  expect(castToString(sub, up(sub, Single(Int), ListP(TMissing))))
+    .toBe("List[Int]");
+
+  // Downward there is nothing to descend to: a base says nothing about which
+  // child a value came from.
+  expect(castToString(sub, down(sub, List(Int), NonEmptyP(TMissing))))
+    .toBe("<none>");
+});
+
+Deno.test("join rises to the least common ancestor", () => {
+  const { sub } = fixture();
+  expect(typeToString(sub.join(Single(Int), Bag(Int)))).toBe("List[Int]");
+  expect(typeToString(sub.join(Single(Int), NonEmpty(Int))))
+    .toBe("NonEmpty[Int]");
+
+  // Names that already agree stay where they are, so a join is never loosened
+  // by a chain existing above it.
+  expect(typeToString(sub.join(NonEmpty(Int), NonEmpty(Bool))))
+    .toBe("NonEmpty[unknown]");
+
+  // Rising is not a way around an argument that cannot be joined.
+  expect(typeToString(sub.join(Rows(Int), NonEmpty(Int)))).toBe(
+    "List[unknown]",
+  );
+  expect(typeToString(sub.join(Flags, Cell(Int)))).toBe("unknown");
+});
+
+Deno.test("meet takes whichever side is already under the other", () => {
+  const { sub } = fixture();
+  expect(typeToString(sub.meet(NonEmpty(Int), List(Int)))).toBe(
+    "NonEmpty[Int]",
+  );
+  expect(typeToString(sub.meet(List(TUnknown), Single(Int))))
+    .toBe("Single[Int]");
+
+  // And says `never` otherwise, which is a lower bound whatever the names do:
+  // a child's parameters need not be recoverable from its base.
+  expect(typeToString(sub.meet(NonEmpty(Int), List(Bool)))).toBe("never");
+  expect(typeToString(sub.meet(NonEmpty(Int), Bag(Int)))).toBe("never");
+});
+
+Deno.test("a base is read from the table and not from the node", () => {
+  const { sub } = fixture();
+  // Carrying one and being declared are different things: `#baseOf` looks the
+  // declaration up by name, so an entry the table never saw presents as
+  // nothing however its own record reads.
+  const loose = under(declare("Loose", 1), TData(LIST, [BVar(0)]));
+  expect(sub.isSubtype(TData(loose, [Int]), List(Int))).toBe(false);
+});
+
+Deno.test("siblings relate to each other in neither direction", () => {
+  const { sub } = fixture();
+  expect(sub.isSubtype(NonEmpty(Int), Bag(Int))).toBe(false);
+  expect(sub.isSubtype(Bag(Int), NonEmpty(Int))).toBe(false);
+
+  // Two steps up on one side and one on the other still meet.
+  expect(typeToString(sub.join(Single(Int), Flags))).toBe("List[unknown]");
+});
+
+Deno.test("the ordinal is stamped by the table, not by the entry", () => {
+  const { context } = fixture();
+  const ordinalOf = (name: string) =>
+    context.declarations.datatypeOf(name)?.ordinal ?? -1;
+  // Every base was declared before the datatype presenting as it, which is
+  // what a climb counts down on. Elaboration gets this from its own order;
+  // here it is the order of `declared`.
+  expect(ordinalOf(LIST.name)).toBeLessThan(ordinalOf(NONEMPTY.name));
+  expect(ordinalOf(NONEMPTY.name)).toBeLessThan(ordinalOf(SINGLE.name));
 });

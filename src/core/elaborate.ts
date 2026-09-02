@@ -35,6 +35,7 @@ import {
   type TypeNode,
   type TypeParam,
 } from "../syntax/ast.ts";
+import { qualifiedCtor } from "../syntax/parser.ts";
 import type {
   AliasInfo,
   Context,
@@ -47,6 +48,7 @@ import {
   badUnder,
   BVar,
   closeFrom,
+  type DataType,
   flip,
   FVar,
   impossible,
@@ -59,6 +61,7 @@ import {
   TUnknown,
   type Type,
   type TypeParamInfo,
+  typeToString,
   type Variance,
 } from "./types.ts";
 
@@ -307,18 +310,82 @@ export class Elaborator {
     );
   }
 
-  /** Name and arity, all a constructor field needs to name this datatype. */
+  /**
+   * Name, arity and base -- all a constructor field needs to name this
+   * datatype, plus the one thing that cannot wait for the second pass.
+   *
+   * The base is elaborated *here*, against the table as it stands, and so
+   * against the declarations above this one only. Which is the alias rule and
+   * has the same two consequences: a datatype naming itself as its base is an
+   * `unknown type` rather than an infinite chain, and an ordinal strictly
+   * decreases along a chain because the base was in the table first. There is
+   * no cycle left to check for.
+   *
+   * The price is that a base may not name a datatype declared below it, in its
+   * head or in its arguments. Fields are unaffected -- those are the second
+   * pass, against the finished table.
+   */
   #elaborateSignature(
     decl: DatatypeDecl,
   ): DatatypeInfo {
-    return {
+    const signature = {
       name: decl.name.text,
       params: decl.typeParams.map(mkDataParamInfo),
       ctors: [],
       ctorsReported: false,
       initialized: false,
+      ordinal: 0,
       at: decl.at,
     };
+    const base = decl.base === undefined
+      ? undefined
+      : this.#elaborateBase(decl, decl.base);
+    return base === undefined ? signature : { ...signature, base };
+  }
+
+  /**
+   * A declared base, closed over the datatype's own parameters the way a field
+   * is, or `undefined` where it is no datatype to present as.
+   *
+   * A `<bad>` is passed over in silence -- a report already stands for it --
+   * where anything else with a shape of its own is refused here, `Ref` and the
+   * arrow included: a base is what a value of this datatype *also is*, and
+   * only a nominal type has room for another name's values.
+   */
+  #elaborateBase(decl: DatatypeDecl, node: TypeNode): DataType | undefined {
+    const base = this.context.inScope((mark) => {
+      this.#bindPlainParams(decl.typeParams);
+      return closeFrom(this.elaborateType(node), mark);
+    });
+    this.context.assertClosed(
+      `${decl.name.text}'s base`,
+      [base],
+      decl.typeParams.length,
+    );
+    if (base.kind !== "TData") {
+      // A `<bad>` is passed over: a report already stands for it.
+      if (base.kind !== "TBad") {
+        this.#report(
+          `${decl.name.text} may present as a datatype, and ` +
+            `${typeToString(base)} is not one`,
+          node.at,
+        );
+      }
+      return undefined;
+    }
+
+    // Written as that datatype and not merely equal to it, so an alias is
+    // refused here. Both later readers need the base's *name* from the tree --
+    // the checker to find the constructor a coercion names, and the evaluator
+    // to find it without a table at all -- and an alias is gone by then.
+    if (node.kind !== "NameType" || node.name.text !== base.name) {
+      this.#report(
+        `${decl.name.text} must name ${base.name} directly to present as it`,
+        node.at,
+      );
+      return undefined;
+    }
+    return base;
   }
 
   /** Elaborate a datatype's constructors under its type parameters. */
@@ -343,6 +410,7 @@ export class Elaborator {
           return [];
         }
         seen.add(ctor.name.text);
+        this.#reportCoercionPresence(ctor, decl);
         return [{
           name: ctor.name.text,
           // Closed over the datatype's parameters, so a use opens them.
@@ -363,6 +431,41 @@ export class Elaborator {
       decl.typeParams.length,
     );
     return ctors;
+  }
+
+  /**
+   * A coercion is written exactly where the datatype has a base, and the two
+   * halves of that are one rule: a base with no coercion leaves a value of
+   * this constructor with no image to present, and a coercion with no base has
+   * nothing to present it as.
+   *
+   * Presence only. Whether the name is a constructor of the base, at the right
+   * arity and given arguments of the right types, is `#checkCoercions` -- the
+   * constructors it would ask about are the second pass's, and this is the
+   * second pass.
+   */
+  #reportCoercionPresence(ctor: CtorDecl, decl: DatatypeDecl): void {
+    const name = ctor.name.text;
+    if (decl.base === undefined) {
+      if (ctor.coercion === undefined) return;
+      this.#report(
+        `${name} writes a coercion, but ${decl.name.text} presents as ` +
+          `nothing -- give it a base with \`<:\``,
+        ctor.coercion.at,
+      );
+      return;
+    }
+    if (ctor.coercion !== undefined) return;
+    // The written name, not the elaborated base: this runs outside the scope
+    // that binds the datatype's parameters, so elaborating here would report
+    // an `A` that is perfectly well bound where it was written.
+    const base = decl.base.kind === "NameType" ? decl.base.name.text : "a base";
+    this.#report(
+      `${name} needs a coercion: every ${decl.name.text} presents as ` +
+        `${base}, and this says which one`,
+      ctor.name.at,
+      name.length,
+    );
   }
 
   /**
@@ -416,15 +519,22 @@ export class Elaborator {
    * term form -- except where there is nothing to saturate, and `True` is a
    * plain value of type `Bool`. See `constructorType`.
    *
-   * Being ordinary, they sit outermost and anything of the same name shadows
-   * them silently -- a later `let`, or another datatype's constructor, this
-   * being the one place two datatypes' names meet. Patterns are unaffected,
-   * resolving against the scrutinee's own datatype.
+   * Twice each, plainly and qualified. Being ordinary, the plain name sits
+   * outermost and anything of the same name shadows it -- a later `let`, or
+   * another datatype's constructor, this being the one place two datatypes'
+   * names meet. `List.Cons` is the way past that, and cannot be shadowed in
+   * turn, the parser refusing the spelling at every binder.
+   *
+   * So the two are one rule and not two: the plain name is convenience and may
+   * be lost, the qualified one is the constructor's identity and may not.
+   * Patterns use neither, resolving against the scrutinee's own datatype.
    */
   seedConstructors(): void {
     for (const datatype of this.declarations.datatypes()) {
       for (const ctor of datatype.ctors) {
-        this.context.pushTermVar(constructorType(datatype, ctor), ctor.name);
+        const type = constructorType(datatype, ctor);
+        this.context.pushTermVar(type, ctor.name);
+        this.context.pushTermVar(type, qualifiedCtor(datatype.name, ctor.name));
       }
     }
   }
@@ -618,11 +728,15 @@ function flagsSet(table: Table): number {
 }
 
 /**
- * Walk one constructor field, merging what it finds into `row`.
+ * Walk one type a datatype's declaration is made of -- a constructor field, or
+ * the base it presents as -- merging every parameter occurrence it holds into
+ * `row`.
  *
- * Entered at `+1`: a field is projected by `match` and never assigned, which
- * is why there is no contravariant entry, and why a mutable cell has to arrive
- * as a builtin rather than as a datatype this walk would have to model.
+ * Entered at `+1` from either: a field is projected by `match` and never
+ * assigned, and a base is projected by every use of the child where the parent
+ * was asked for. Which is why there is no contravariant entry, and why a
+ * mutable cell has to arrive as a builtin rather than as a datatype this walk
+ * would have to model.
  *
  * `depth` tracks binders the way `openWith` does, because a field may hold a
  * function type of its own and those `BVar`s are not the datatype's. `row` is
@@ -630,7 +744,7 @@ function flagsSet(table: Table): number {
  * that same table, so a `TData` may read a row this round has already moved,
  * its own included.
  */
-function noteField(
+function noteOccurrencesIn(
   type: Type,
   depth: number,
   variance: Variance,
@@ -660,12 +774,12 @@ function noteField(
       // Bounds are parallel, so they stay at `depth`; both they and the
       // parameters are contravariant, and the result alone is not.
       for (const binder of type.typeParams) {
-        noteField(binder.bound, depth, flipped, row, table);
+        noteOccurrencesIn(binder.bound, depth, flipped, row, table);
       }
       for (const param of type.params) {
-        noteField(param, inner, flipped, row, table);
+        noteOccurrencesIn(param, inner, flipped, row, table);
       }
-      noteField(type.result, inner, variance, row, table);
+      noteOccurrencesIn(type.result, inner, variance, row, table);
       return;
     }
 
@@ -673,7 +787,7 @@ function noteField(
     // declaration to consult and so no round in which the answer could still
     // be moving.
     case "TRef":
-      noteField(type.arg, depth, 0, row, table);
+      noteOccurrencesIn(type.arg, depth, 0, row, table);
       return;
 
     case "TData": {
@@ -691,11 +805,11 @@ function noteField(
         // contributes nothing, so the sub-walk is dropped rather than run at
         // some position it would then have to invent.
         if (occurrence.covariantly && occurrence.contravariantly) {
-          noteField(arg, depth, 0, row, table);
+          noteOccurrencesIn(arg, depth, 0, row, table);
         } else if (occurrence.covariantly) {
-          noteField(arg, depth, variance, row, table);
+          noteOccurrencesIn(arg, depth, variance, row, table);
         } else if (occurrence.contravariantly) {
-          noteField(arg, depth, flip(variance), row, table);
+          noteOccurrencesIn(arg, depth, flip(variance), row, table);
         }
       });
       return;
@@ -703,14 +817,29 @@ function noteField(
   }
 }
 
-/** Every field of every datatype, once, merged into `table` as it goes. */
+/**
+ * Every field and every base of every datatype, once, merged into `table` as
+ * it goes.
+ *
+ * A base is one more occurrence and needs no rule of its own, but it does have
+ * to be covariant rather than merely allowed to be: `Foo[A] <: Foo[A']` has to
+ * imply their bases relate the same way, or transitivity fails. It is also
+ * sufficient, a parameter occurring contravariantly in the base being driven
+ * to invariant here, where the obligation is vacuous.
+ *
+ * Mutual recursion through bases needs nothing extra either -- it is the same
+ * fixed point that already handles two datatypes naming each other in a field.
+ */
 function oneRound(datatypes: readonly DatatypeInfo[], table: Table): void {
   for (const datatype of datatypes) {
     const row = table.get(datatype.name) ?? impossible("a row per datatype");
     for (const ctor of datatype.ctors) {
       for (const field of ctor.fields) {
-        noteField(field, 0, 1, row, table);
+        noteOccurrencesIn(field, 0, 1, row, table);
       }
+    }
+    if (datatype.base !== undefined) {
+      noteOccurrencesIn(datatype.base, 0, 1, row, table);
     }
   }
 }

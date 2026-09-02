@@ -23,12 +23,18 @@ import {
 import {
   bindingHint,
   type BindingIdent,
+  type CtorDecl,
   type MatchArm,
   type Program,
   type TermNode,
+  type TypeDecl,
 } from "../syntax/ast.ts";
 import { Context } from "./context.ts";
-import { type DataCtorInfo, Declarations } from "./context.ts";
+import {
+  type DataCtorInfo,
+  type DatatypeInfo,
+  Declarations,
+} from "./context.ts";
 import { ctorFieldsAt, Elaborator } from "./elaborate.ts";
 import { Subtyper, type Verdict } from "./subtype.ts";
 import {
@@ -72,7 +78,80 @@ export class Checker {
     this.elaborator.seedBuiltins();
     this.elaborator.elaborateDeclarations(program.decls);
     this.elaborator.seedConstructors();
+    this.#checkCoercions(program.decls);
     return this.infer(program.term);
+  }
+
+  /**
+   * Every coercion, after every constructor is seeded -- so a coercion may
+   * name any of them in its arguments, and two datatypes may present as each
+   * other's neighbours without an order to arrange.
+   *
+   * A declaration that reported already is skipped rather than checked into
+   * more of the same: no base, no entry, no constructor of its own to take
+   * fields from.
+   */
+  #checkCoercions(decls: readonly TypeDecl[]): void {
+    for (const decl of decls) {
+      if (decl.kind !== "DatatypeDecl") continue;
+      const datatype = this.declarations.datatypeOf(decl.name.text);
+      if (datatype?.base === undefined) continue;
+      for (const ctor of decl.ctors) {
+        const own = datatype.ctors.find((c) => c.name === ctor.name.text);
+        if (ctor.coercion === undefined || own === undefined) continue;
+        this.#checkCoercion(datatype, own, ctor, ctor.coercion);
+      }
+    }
+  }
+
+  /**
+   * One coercion: `| One(x: A) -> Cons(x, Nil())` under `NonEmpty[A] <:
+   * List[A]`.
+   *
+   * Checked as an ordinary term against the base, instantiated at this
+   * datatype's own parameters -- so arity, field types and everything a body
+   * may compute on the way are the machinery that was already here.
+   *
+   * That the *head* is a constructor of the base is not this method's to
+   * establish, and could not be: subsumption would let a sibling subtype's
+   * value check against the base perfectly well. It was settled on the tree by
+   * `resolveCoercionTails`, before either phase read it.
+   *
+   * The scope is the datatype's parameters, rigid, and its fields under the
+   * names the declaration gave them -- the first thing a `DomainType`'s name
+   * has bound. Everywhere else it is documentation; here it is the only way to
+   * reach the field.
+   */
+  #checkCoercion(
+    datatype: DatatypeInfo,
+    own: DataCtorInfo,
+    decl: CtorDecl,
+    body: TermNode,
+  ): void {
+    const base = datatype.base;
+    if (base === undefined) return impossible("a base, tested by the caller");
+    this.context.inScope(() => {
+      // Named, not only hinted: a type written inside the body -- `Nil[A]()`,
+      // an annotation on a lambda -- resolves against these, and a parameter
+      // the declaration deliberately left unnamed resolves to nothing.
+      const vars = datatype.params.map((param) =>
+        FVar(
+          param.named
+            ? this.context.pushTypeVar(TUnknown, param.hint)
+            : this.context.pushTypeVar(TUnknown),
+          param.hint,
+        )
+      );
+      const fields = ctorFieldsAt(own, vars);
+      (decl.params ?? []).forEach((param, i) => {
+        const name = param.name?.text;
+        const type = fields[i];
+        if (name !== undefined && type !== undefined) {
+          this.context.pushTermVar(type, name);
+        }
+      });
+      this.check(body, openMany(base, vars));
+    });
   }
 
   #report(message: string, at: Position, width = 1): Diagnostic {
@@ -614,6 +693,34 @@ export class Checker {
    * Each is about an arm against the ones before it, which is what an arm
    * cannot see and this method can.
    */
+  /**
+   * Record which datatype this match's patterns resolve against -- the one
+   * written `as`, if it agrees, and otherwise the scrutinee's own.
+   *
+   * The one thing the checker writes back into the tree, and it writes it for
+   * a reader that has no other way to the answer: a value presenting as
+   * something else carries every datatype along its chain, and two of them may
+   * spell a constructor the same. A name alone does not say which was meant.
+   *
+   * Filled rather than demanded, because the scrutinee's type already says it
+   * -- an annotation is asked for only where nothing else can supply one. An
+   * `as` that disagrees is a mistake and not a cast: there is no downcast
+   * here, and going *up* is what an ordinary annotation on the scrutinee does.
+   */
+  #settleMatchDatatype(
+    term: Extract<TermNode, { kind: "Match" }>,
+    datatype: string,
+  ): void {
+    const written = term.datatype;
+    if (written !== undefined && written !== datatype) {
+      this.#report(
+        `these patterns are matched against ${datatype}, not ${written}`,
+        term.at,
+      );
+    }
+    term.datatype = datatype;
+  }
+
   #checkMatch(
     term: Extract<TermNode, { kind: "Match" }>,
     expected: TypePattern,
@@ -624,6 +731,7 @@ export class Checker {
     }
     const datatype = this.declarations.datatypeOf(scrutinee.name) ??
       impossible("a TData whose name no declaration table holds");
+    this.#settleMatchDatatype(term, datatype.name);
     const remaining = new Set(datatype.ctors.map((ctor) => ctor.name));
 
     const types: Type[] = [];

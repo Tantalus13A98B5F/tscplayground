@@ -160,6 +160,14 @@ export type Type = TypeMaybe<never>;
 /** A type with parts not yet supplied. What a checking rule pushes inward. */
 export type TypePattern = TypeMaybe<unknown>;
 
+/**
+ * A type known to *be* a datatype: one saturated use of a declaration, where
+ * `DatatypeInfo` is the declaration itself. Named because subtyping passes
+ * these around -- a walk from a datatype to the one it presents as never
+ * leaves the kind, so the signatures say so rather than re-testing.
+ */
+export type DataType = Extract<Type, { kind: "TData" }>;
+
 export const TMissing: TypePattern = { kind: "TMissing" };
 
 export const TUnknown: Type = { kind: "TUnknown" };
@@ -233,7 +241,7 @@ export function TFun<M = never>(
 export function TData<M = never>(
   head: DataHead,
   args: readonly TypeMaybe<M>[] = [],
-): TypeMaybe<M> {
+): Extract<TypeMaybe<M>, { kind: "TData" }> {
   return { kind: "TData", name: head.name, params: head.params, args };
 }
 
@@ -279,6 +287,18 @@ export type Variance = -1 | 0 | 1;
  * that have nothing to say about it say so here rather than in a comment.
  */
 export type Direction = Exclude<Variance, 0>;
+
+/**
+ * A variance whose pair is already the right way round: `1` asks whether the
+ * left sits under the right, `0` whether the two are the same, and there is no
+ * third -- a contravariant position is answered by *swapping* the pair, never
+ * by handing `-1` inward.
+ *
+ * So a rule taking one may read its left as the side being used and needs no
+ * case for the other. In the type because the readings that depend on it fail
+ * quietly: at `-1` each answers a wrong `false`, which is sound and invisible.
+ */
+export type Oriented = Exclude<Variance, -1>;
 
 /**
  * Contravariant positions swap the two directions and fix invariance: negation,

@@ -49,6 +49,7 @@
 
 import type { Position } from "../diagnostics/diagnostic.ts";
 import {
+  type DataType,
   type DatatypeParam,
   FVar,
   type FVarRef,
@@ -138,6 +139,39 @@ export type DatatypeInfo = {
    * fields never walked.
    */
   ctorsReported: boolean;
+  /**
+   * The datatype every value of this one also presents as, closed over this
+   * declaration's parameters the way a constructor's fields are, so reading it
+   * at a use is an `openMany` at that use's arguments.
+   *
+   * Here and not on `DataHead`, which every `TData` carries: a base's `BVar`s
+   * count from this declaration's binder, and a walk descending into one from
+   * a node would read them against a binder it never entered. Constructor
+   * fields are unreachable from a type for that same reason.
+   *
+   * Set with the signature and never after, unlike `ctors`: a base is
+   * elaborated against the declarations above this one, which is what leaves
+   * no cycle to refuse. `docs/subtyping.md` has the rest.
+   */
+  readonly base?: DataType;
+  /**
+   * Where this declaration stands among the others -- what `Level` is to a
+   * context entry, at the table instead: its identity *is* its position, so
+   * the next one is the table's size and no allocator is needed.
+   *
+   * A base is elaborated against this table, so it names an entry already in
+   * it and an ordinal strictly decreases along a base chain. Which is the
+   * whole of what reads it: a climb terminates by that alone rather than by
+   * trusting a cycle check, and a target declared no earlier than where a
+   * climb stands cannot be above it.
+   *
+   * Not a depth in the chain. Two chains have nothing to say to each other
+   * about depth, where every declaration has an ordinal against every other.
+   *
+   * Written by `addDatatype` and nowhere else; what a builder puts here is
+   * replaced, as `ctors` and `initialized` are by the pass that fills them.
+   */
+  ordinal: number;
   readonly at: Position;
 };
 
@@ -180,10 +214,19 @@ export class Declarations {
    * Claim a name for a datatype signature, answering where it was already
    * declared if it was. Refused here rather than by the caller, so that "the
    * first declaration keeps the name" is a property of the table.
+   *
+   * The base arrives with the signature and is not set afterwards, which is
+   * what makes a base chain acyclic without anything checking: a base is
+   * elaborated against this table, so it is one of the entries already here,
+   * so its ordinal is below the one stamped now.
    */
   addDatatype(info: DatatypeInfo): Position | undefined {
     const previous = this.declaredAt(info.name);
     if (previous !== undefined) return previous;
+    // Stamped on the way in, from the size, the way a level is: a datatype
+    // that lost its name never gets one, and never needs one -- nothing looks
+    // an entry up except by the name the winner holds.
+    info.ordinal = this.#datatypes.size;
     this.#datatypes.set(info.name, info);
     return undefined;
   }

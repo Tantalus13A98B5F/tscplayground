@@ -253,3 +253,179 @@ Deno.test("a stack the host cannot grow is not reported as fuel", () => {
   expect(result.diagnostics.map((d) => d.message))
     .toEqual(["evaluation nested too deeply"]);
 });
+
+Deno.test("a qualified constructor runs to the one it names", () => {
+  const LIST = ["datatype List where", "  | Nil", "  | Cons(Bool, List)"];
+  const SNOC = ["datatype Snoc where", "  | Cons(Bool)"];
+
+  // The plain name is the last declaration of it, in both phases; the
+  // qualified one reaches the constructor a later `Cons` shadowed.
+  expect(valueOf(...BOOL, ...LIST, ...SNOC, "Cons(True)")).toBe("Cons(True)");
+  expect(valueOf(...BOOL, ...LIST, ...SNOC, "List.Cons(True, Nil)"))
+    .toBe("Cons(True, Nil)");
+
+  // And the value it built is the one its own datatype takes apart, which is
+  // what a bare name could not have promised.
+  expect(valueOf(
+    ...BOOL,
+    ...LIST,
+    ...SNOC,
+    "match List.Cons(True, Nil) with",
+    "  | Nil -> False",
+    "  | Cons(h, t) -> h",
+  )).toBe("True");
+});
+
+/** Monomorphic, so a pattern and a coercion read without type arguments. */
+const BOOLS = ["datatype Bools where", "  | Nil", "  | Cons(Bool, Bools)"];
+/** Every value of it is a `Bools`, and says which one. */
+const NONEMPTY = [
+  "datatype NonEmpty <: Bools where",
+  "  | One(x: Bool)            -> Cons(x, Nil)",
+  "  | More(x: Bool, r: Bools) -> Cons(x, r)",
+];
+
+Deno.test("a value carries what it presents as, matched through", () => {
+  // The value is its own constructor; the image is beside it, not instead.
+  expect(valueOf(...BOOL, ...BOOLS, ...NONEMPTY, "One(True)")).toBe(
+    "One(True)",
+  );
+  expect(valueOf(
+    ...BOOL,
+    ...BOOLS,
+    ...NONEMPTY,
+    "match One(True) with | One(x) -> x | More(x, r) -> x",
+  )).toBe("True");
+
+  // Which datatype a match takes apart is the scrutinee's own, so viewing one
+  // as its base is said and not guessed -- there is no downcast, and an
+  // annotation is the whole of what saying it costs.
+  expect(valueOf(
+    ...BOOL,
+    ...BOOLS,
+    ...NONEMPTY,
+    "let xs : Bools = One(True);",
+    "match xs with | Nil -> False | Cons(h, t) -> h",
+  )).toBe("True");
+
+  // And the tail the coercion built is the one it named.
+  expect(valueOf(
+    ...BOOL,
+    ...BOOLS,
+    ...NONEMPTY,
+    "let xs : Bools = More(False, Cons(True, Nil));",
+    "match xs with | Nil -> Nil | Cons(h, t) -> t",
+  )).toBe("Cons(True, Nil)");
+});
+
+Deno.test("the coercion runs once, at construction", () => {
+  // A `ref!` in a coercion allocates when the value is made and never again,
+  // so two views of one value read one cell. Lazily it would be two.
+  expect(valueOf(
+    ...BOOL,
+    "datatype Box where",
+    "  | MkBox(Ref[Bool])",
+    "datatype Flag <: Box where",
+    "  | On() -> MkBox(ref!(True))",
+    "let f : Box = On();",
+    "let written = (match f with | MkBox(c) -> set!(c, False));",
+    "match f with | MkBox(c) -> get!(c)",
+  )).toBe("False");
+});
+
+Deno.test("a chain is built whole, and walked whole", () => {
+  expect(valueOf(
+    ...BOOL,
+    ...BOOLS,
+    ...NONEMPTY,
+    "datatype Single <: NonEmpty where",
+    "  | Just(x: Bool) -> One(x)",
+    "let xs : Bools = Just(True);",
+    "match xs with | Cons(h, t) -> h | Nil -> False",
+  )).toBe("True");
+});
+
+Deno.test("a pattern no view admits is stuck, naming the value's own", () => {
+  expect(
+    run(...BOOL, ...BOOLS, ...NONEMPTY, "match One(True) with | Z -> True")[1],
+  ).toBe("Z is not a constructor of NonEmpty");
+});
+
+Deno.test("a coercion may branch, and each tail is pinned on its own", () => {
+  const run = (...lines: readonly string[]) =>
+    valueOf(
+      ...BOOL,
+      ...BOOLS,
+      "datatype Maybe <: Bools where",
+      "  | Keep(b: Bool) ->",
+      "      match b with",
+      "      | True -> Cons(b, Nil)",
+      "      | False -> Nil",
+      ...lines,
+    );
+  // The value stays a `Keep` -- an annotation is a view and not a conversion
+  // -- so which tail ran is read through a match on the base.
+  const kept = (b: string) =>
+    run(
+      `let xs : Bools = Keep(${b});`,
+      "match xs with | Nil -> False | Cons(h, t) -> h",
+    );
+  expect(kept("True")).toBe("True");
+  expect(kept("False")).toBe("False");
+});
+
+Deno.test("a tail is not reached by a shadowing let", () => {
+  // `Cons` in a tail was rewritten to its qualified form before any scope
+  // existed, so the `let` reaches the arguments and never the head.
+  expect(valueOf(
+    ...BOOL,
+    ...BOOLS,
+    "datatype One <: Bools where",
+    "  | Mk(x: Bool) ->",
+    "      let Cons = True;",
+    "      Cons(x, Nil)",
+    "let xs : Bools = Mk(True);",
+    "match xs with | Nil -> False | Cons(h, t) -> h",
+  )).toBe("True");
+});
+
+Deno.test("two datatypes in one chain may spell a constructor the same", () => {
+  // `Top.Same` and `Mid.Same` differ in arity, and a `Leaf` presents as both.
+  // Nothing untyped tells them apart; the datatype the checker recorded does.
+  const CHAIN = [
+    "datatype Top where",
+    "  | Same(Bool, Bool)",
+    "datatype Mid <: Top where",
+    "  | Same(b: Bool) -> Same(b, False)",
+    "datatype Leaf <: Mid where",
+    "  | L(b: Bool) -> Same(b)",
+  ];
+  expect(valueOf(
+    ...BOOL,
+    ...CHAIN,
+    "let x : Top = L(True);",
+    "match x with | Same(p, q) -> q",
+  )).toBe("False");
+  expect(valueOf(
+    ...BOOL,
+    ...CHAIN,
+    "let x : Mid = L(True);",
+    "match x with | Same(p) -> p",
+  )).toBe("True");
+
+  // Written `as`, and it must agree with what the scrutinee is.
+  expect(valueOf(
+    ...BOOL,
+    ...CHAIN,
+    "let x : Top = L(True);",
+    "match x as Top with | Same(p, q) -> p",
+  )).toBe("True");
+  expect(
+    run(
+      ...BOOL,
+      ...CHAIN,
+      "let x : Top = L(True);",
+      "match x as Mid with | Same(p, q) -> p",
+    )[1],
+  ).toBe("these patterns are matched against Top, not Mid");
+});

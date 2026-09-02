@@ -175,6 +175,25 @@ export type TermNode =
     readonly kind: "Match";
     readonly scrutinee: TermNode;
     readonly arms: readonly MatchArm[];
+    /**
+     * Which datatype the arms' patterns resolve against, written
+     * `match xs as List with` and otherwise **filled by the checker**, which
+     * knows it from the scrutinee's type.
+     *
+     * The one thing in this tree a later phase writes, and the exception is
+     * paid for: a pattern name alone does not say which datatype it belongs
+     * to once a value presents as another, and two datatypes along one chain
+     * may spell a constructor the same. Nothing untyped can tell those apart,
+     * so either the author says it or the checker records what it already
+     * worked out -- and demanding it of the author would be demanding
+     * bookkeeping, which is the thing `def`'s annotation rule exists to avoid.
+     *
+     * Absent where a program was not checked, or checking failed here.
+     * Evaluation then falls back to the nearest datatype in the value's own
+     * chain admitting the pattern's name: exact wherever the chain spells no
+     * constructor twice, and a tiebreak where it does.
+     */
+    datatype?: string;
     readonly at: Position;
   };
 
@@ -214,6 +233,14 @@ export type DatatypeDecl = {
   readonly kind: "DatatypeDecl";
   readonly name: Ident;
   readonly typeParams: readonly BindingIdent[];
+  /**
+   * `datatype NonEmpty[A] <: List[A]` -- the datatype every value of this one
+   * also presents as, and absent for one that presents as nothing.
+   *
+   * Written where a quantifier writes its bound and with the same token, which
+   * is the same idea at a declaration: what may stand in for this.
+   */
+  readonly base?: TypeNode;
   readonly ctors: readonly CtorDecl[];
   readonly at: Position;
 };
@@ -234,8 +261,43 @@ export type CtorDecl = {
   readonly name: Ident;
   /** The domain, or absent for a bare name -- empty is `C()`, never `C`. */
   readonly params?: readonly DomainType[];
+  /** `-> Cons(x, r)`. Required exactly where the datatype has a base. */
+  readonly coercion?: TermNode;
   readonly at: Position;
 };
+
+/**
+ * Which of the base's constructors a value of this one presents as, and what
+ * it is built from: `| One(x: A) -> Cons(x, Nil())`.
+ *
+ * A constructor *name* and not a term, which is the whole of why this is
+ * affordable. A term would have to be typed at the base, and subsumption
+ * unpins a head -- so nothing downstream could say which of the base's
+ * constructors a value presents as without asking the checker, and evaluation
+ * does not ask. As a slot the answer is in the tree, and the same rule spells
+ * Scala's `extends Bar(args)`.
+ *
+ * The *arguments* are ordinary terms, so a coercion may still compute; they
+ * are checked against the named constructor's fields, and scope over the
+ * fields of the constructor declaring it -- which is the first thing a
+ * `DomainType`'s name has ever bound.
+ */
+/**
+ * What a value of this constructor presents as: an ordinary term, restricted
+ * so that **every tail position is a constructor of the declared base**.
+ *
+ * Tails distribute through `let` and `match`, so a coercion may compute and
+ * may branch, and each branch is pinned on its own. The restriction is not
+ * about types -- a body merely *typed* at the base would have its head unpinned
+ * by subsumption, a sibling subtype's value having the base's type -- so it is
+ * enforced on the tree, by `resolveCoercionTails`, which also rewrites each
+ * tail name to its qualified form. Both later phases then read one tree that
+ * already says which constructor was meant.
+ *
+ * The arguments scope over the fields of the constructor declaring it, under
+ * the names the declaration gave them -- which is the first thing a
+ * `DomainType`'s name has ever bound.
+ */
 
 /**
  * `typedef Endo[A] = (A) -> A`, transparent and expanded during elaboration:

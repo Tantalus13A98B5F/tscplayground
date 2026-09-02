@@ -25,6 +25,12 @@ const LIST = ["datatype List[A] where", "  | Nil()", "  | Cons(A, List[A])"];
 const CELL = ["datatype Cell[A] where", "  | MkCell((A) -> A)"];
 /** Contravariant, and the only shape that gets there. */
 const SINK = ["datatype Sink[A] where", "  | MkSink((A) -> Bool)"];
+/** A `List` that is never empty, and so presents as one. */
+const NONEMPTY = [
+  "datatype NonEmpty[A] <: List[A] where",
+  "  | One(x: A)              -> Cons(x, Nil())",
+  "  | More(x: A, r: List[A]) -> Cons(x, r)",
+];
 
 Deno.test("a constructor is a function of its fields", () => {
   expect(typeOf(...BOOL, "True")).toBe("Bool");
@@ -1129,4 +1135,140 @@ Deno.test("a def bound twice in one group is reported once", () => {
     run(...NAT, "def f(n: Nat): Nat = n", "def f(n: Nat): Nat = n", "Z")[1],
   )
     .toBe("f is bound twice in one def group");
+});
+
+Deno.test("a datatype may be used as the one it presents as", () => {
+  // Every `List` function takes a `NonEmpty` and needs no word about it.
+  expect(typeOf(
+    ...LIST,
+    ...BOOL,
+    ...NONEMPTY,
+    "def length(xs: List[Bool]): Bool = True;",
+    "length(One(True))",
+  )).toBe("Bool");
+
+  // Covariantly, and no further: a `List` is not a `NonEmpty`.
+  expect(
+    run(
+      ...LIST,
+      ...BOOL,
+      ...NONEMPTY,
+      "def head(xs: NonEmpty[Bool]): Bool = True;",
+      "head(Nil[Bool]())",
+    )[1],
+  ).toBe("expected NonEmpty[Bool], found List[Bool]");
+});
+
+Deno.test("arms of two datatypes join at the one they present as", () => {
+  // A head-level join, where `#latticeData` used to have nothing above two
+  // names and answer top.
+  expect(typeOf(
+    ...LIST,
+    ...BOOL,
+    ...NONEMPTY,
+    "fn (b: Bool) -> match b with",
+    "  | True -> One(True)",
+    "  | False -> Nil[Bool]()",
+  )).toBe("Bool -> List[Bool]");
+
+  // Two children of one base rise past both, and no further than they must.
+  expect(typeOf(
+    ...LIST,
+    ...BOOL,
+    ...NONEMPTY,
+    "fn (b: Bool) -> match b with",
+    "  | True -> One(True)",
+    "  | False -> More(True, Nil[Bool]())",
+  )).toBe("Bool -> NonEmpty[Bool]");
+});
+
+Deno.test("a constructor is reachable through the datatype that declared it", () => {
+  expect(typeOf(...LIST, ...BOOL, "List.Cons(True, List.Nil[Bool]())"))
+    .toBe("List[Bool]");
+
+  // Which is what the plain name cannot promise. `Cons` is whatever was
+  // declared last, and the qualified one reaches past it either way.
+  const SNOC = ["datatype Snoc where", "  | Cons(Bool)"];
+  expect(typeOf(...LIST, ...BOOL, ...SNOC, "Cons(True)")).toBe("Snoc");
+  expect(typeOf(...LIST, ...BOOL, ...SNOC, "List.Cons(True, Nil[Bool]())"))
+    .toBe("List[Bool]");
+  expect(typeOf(...LIST, ...BOOL, ...SNOC, "Snoc.Cons(True)")).toBe("Snoc");
+
+  // A `let` may take the plain name and never the qualified one.
+  expect(typeOf(
+    ...LIST,
+    ...BOOL,
+    "let Cons = True;",
+    "List.Cons(Cons, Nil[Bool]())",
+  )).toBe("List[Bool]");
+});
+
+Deno.test("a qualified name may be used, never bound", () => {
+  expect(run(...LIST, ...BOOL, "let List.Cons = True; True")[1])
+    .toBe(
+      "List.Cons may not be bound: a `.` names a constructor of a datatype",
+    );
+  expect(run(...BOOL, "Bool.Nope")[1]).toBe("unknown name Bool.Nope");
+});
+
+Deno.test("a coercion is checked as a term against the base", () => {
+  const bad = (...arms: readonly string[]) =>
+    run(...LIST, ...BOOL, "datatype One[A] <: List[A] where", ...arms, "True")
+      .slice(1);
+
+  expect(bad("  | Mk(x: A) -> Cons(x, Nil())")).toEqual([]);
+  // The field's type comes from the base instantiated at *this* datatype's
+  // arguments, so the tail's second field wants a `List[A]`.
+  expect(bad("  | Mk(x: A) -> Cons(x, x)"))
+    .toEqual(["expected List[?], found A"]);
+  expect(bad("  | Mk(x: A) -> Cons(x)"))
+    .toEqual(["expected 2 arguments, found 1"]);
+
+  // A field with no name cannot be reached, the name being the only way in.
+  expect(bad("  | Mk(A) -> Cons(x, Nil())")).toEqual(["unknown name x"]);
+});
+
+Deno.test("every tail is a constructor of the base, on the tree", () => {
+  const bad = (...arms: readonly string[]) =>
+    run(...LIST, ...BOOL, "datatype One[A] <: List[A] where", ...arms, "True")
+      .slice(1);
+
+  // Named against the base and not the term scope, so neither a shadowing
+  // `let` nor a constructor of some other datatype can stand in a tail.
+  expect(bad("  | Mk(x: A) -> Snoc(x)"))
+    .toEqual(["unknown name List.Snoc"]);
+  // A `let` may shadow `Cons` for the arguments and never for the tail: the
+  // tail was rewritten to `List.Cons` before any scope existed.
+  expect(bad(
+    "  | Mk(x: A) ->",
+    "      let Cons = True;",
+    "      Cons(x, Nil())",
+  )).toEqual([]);
+  expect(bad("  | Mk(x: A) -> x")).toEqual(["unknown name List.x"]);
+  // A tail that is no application of a name at all.
+  expect(bad("  | Mk(x: A) -> fn (y: A) -> Cons(y, Nil())")).toEqual([
+    "a coercion ends in a constructor of List, applied to its fields",
+    "expected List[A], found A -> List[A]",
+  ]);
+});
+
+Deno.test("a coercion may compute, and may name any constructor", () => {
+  expect(typeOf(
+    ...LIST,
+    ...BOOL,
+    "datatype Pair[A] <: List[A] where",
+    "  | Two(x: A, y: A) -> Cons(x, Cons(y, Nil()))",
+    "def swap(p: Pair[Bool]): List[Bool] = p;",
+    "swap(Two(True, False))",
+  )).toBe("List[Bool]");
+});
+
+Deno.test("a coercion body may write the datatype's own parameters", () => {
+  expect(typeOf(
+    ...LIST,
+    ...BOOL,
+    "datatype One[A] <: List[A] where",
+    "  | Mk(x: A) -> Cons(x, Nil[A]())",
+    "Mk(True)",
+  )).toBe("One[Bool]");
 });

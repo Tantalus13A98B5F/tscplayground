@@ -21,9 +21,10 @@
  * once the last one is in, which is why no operation ever has to be undone.
  *
  * `join` and `meet` do not, and are the only operations here that read as
- * plain questions. They are structural: heads that cannot be ordered by
- * looking at them settle for top or bottom, and only a variable -- whose order
- * lives in its bound, not its head -- is worth asking the relation about.
+ * plain questions. They are structural wherever the order is in the head, and
+ * two heads do not carry theirs: a variable's order lives in its bound, a
+ * datatype's in what it presents as. Those two are what is worth asking the
+ * relation about; every other pair settles for top or bottom.
  *
  * They record nothing because they are never handed a type naming an EVar. An
  * EVar entry stands only across `#applyCall`, and inside that window the only
@@ -50,6 +51,7 @@ import {
   completePattern,
   composeVariance,
   type DataHead,
+  type DataType,
   type Direction,
   flip,
   FVar,
@@ -57,6 +59,7 @@ import {
   impossible,
   mkTypeParamInfo,
   openMany,
+  type Oriented,
   TData,
   TFun,
   TNever,
@@ -192,6 +195,62 @@ export class Subtyper {
   #declaredBoundOf(type: Type): Type | undefined {
     if (type.kind !== "FVar") return undefined;
     return this.context.typeVarAt(type)?.bound;
+  }
+
+  // --------------------------------------------------------------- datatypes
+
+  /**
+   * The datatype `type` also presents as, at `type`'s own arguments, or
+   * `undefined` where it presents as nothing.
+   *
+   * The one thing here read from a declaration rather than from the node in
+   * front of it, and it has to be: a base is closed over its declaration's
+   * parameters, so it cannot sit in a type without putting `BVar`s of one
+   * binder inside a walk over another. Reading it is what `#declaredBoundOf`
+   * is for a variable -- the step where structure runs out and one type stands
+   * aside for another.
+   */
+  #baseOf(type: DataType): DataType | undefined {
+    const base = this.context.declarations.datatypeOf(type.name)?.base;
+    if (base === undefined) return undefined;
+    const opened = openMany(base, type.args);
+    if (opened.kind !== "TData") impossible("a base opened to something else");
+    return opened;
+  }
+
+  /**
+   * Where `name` was declared among the datatypes, `-1` for one declared
+   * nowhere -- which is below every real ordinal, so an undeclared name is
+   * above nothing and every climb past it stops.
+   */
+  #ordinalOf(name: string): number {
+    return this.context.declarations.datatypeOf(name)?.ordinal ?? -1;
+  }
+
+  /**
+   * `type` presented as the datatype `name`, or `undefined` if it presents as
+   * no such thing. Reflexive: a type already is the datatype it names.
+   *
+   * Upward only, and there is no descending walk to write: a base says nothing
+   * about which of its children a value came from, which is the whole of why
+   * exhaustiveness stays a set-membership test.
+   *
+   * The ordinal is what stops it, and stops it early: a base is declared
+   * before its child, so a target no earlier than where the walk stands is not
+   * above it, and the common case of two unrelated datatypes costs no step at
+   * all. Termination comes from the same fact and not from the chain being
+   * checked acyclic -- `expose`'s argument about levels, at the table.
+   */
+  #riseTo(type: DataType, name: string): DataType | undefined {
+    const target = this.#ordinalOf(name);
+    let current = type;
+    while (current.name !== name) {
+      if (this.#ordinalOf(current.name) <= target) return undefined;
+      const above = this.#baseOf(current);
+      if (above === undefined) return undefined;
+      current = above;
+    }
+    return current;
   }
 
   // ----------------------------------------------------------- error reporting
@@ -478,6 +537,15 @@ export class Subtyper {
     // questions and not one, so what reaches `#liftExtreme` is a `Direction`
     // rather than a promise about one.
     if (dir === 0) return head;
+
+    // A fourth way to stand aside, and directional like promotion: a datatype
+    // asked for one it presents as climbs to it. After the extremes because a
+    // risen head is not one, so the two tests never contend.
+    if (dir > 0 && pattern.kind === "TData" && head.kind === "TData") {
+      const risen = this.#riseTo(head, pattern.name);
+      if (risen !== undefined) return risen;
+    }
+
     if (head.kind !== (dir > 0 ? "TNever" : "TUnknown")) return head;
 
     return this.#liftExtreme(type, pattern, dir);
@@ -776,6 +844,12 @@ export class Subtyper {
    * Relate `s` to `t` at a position of `variance`: under it, over it, or the
    * same as it. The one place the two relations are told apart, so every rule
    * that has a position to name can be written once.
+   *
+   * A contravariant position is answered by *swapping the pair*, never by
+   * handing a negative position further down. So the shape rules below are
+   * reached at `+1` or `0` and never at `-1`, and their left is the used side
+   * wherever there is one -- which is what lets `#relateData` climb `s` and
+   * have no case for climbing `t`.
    */
   #relate(s: Type, t: Type, variance: Variance): boolean {
     if (variance === 0) return this.#eqtype(s, t);
@@ -783,32 +857,40 @@ export class Subtyper {
   }
 
   /**
-   * Two datatypes, related at a position of `variance`. Nominal, so the names
-   * have to agree and there is nothing to unfold; what is left is the
+   * Two datatypes, related at a position of `variance`. Still nominal, so the
+   * names have to agree and there is nothing to unfold; what subtyping adds is
+   * that the left may *climb* to a name that agrees. After that it is the
    * arguments, each taken at its own parameter's variance composed with
    * wherever the pair itself stands.
    *
-   * Which is why equivalence needs no case of its own: `0` absorbs, so asking
-   * two datatypes to be the same asks it of every argument whatever its
-   * parameter says.
+   * The left and only the left, which is what `Oriented` is for: a
+   * contravariant pair arrives swapped, so the left is the used side and
+   * there is no case for climbing the right.
+   *
+   * One test covers equivalence too: at `0` the left stays where it is, so
+   * two datatypes are the same only when they are the same one. `0` absorbing
+   * is what spares equivalence a case of its own -- asking two datatypes to
+   * be equal asks it of every argument whatever its parameter says.
    *
    * Arity is part of the type -- an arity mismatch is reported where the type
    * was written, so a `Foo[A]` and a `Foo[A, B]` reaching here simply do not
    * relate.
    */
   #relateData(
-    s: Extract<Type, { kind: "TData" }>,
-    t: Extract<Type, { kind: "TData" }>,
-    variance: Variance,
+    s: DataType,
+    t: DataType,
+    variance: Oriented,
   ): boolean {
-    return s.name === t.name && allPairs(
-      s.args,
+    const from = variance > 0 ? this.#riseTo(s, t.name) : s;
+    if (from === undefined || from.name !== t.name) return false;
+    return allPairs(
+      from.args,
       t.args,
       (a, b, i) =>
         this.#relate(
           a,
           b,
-          composeVariance(variance, argVarianceOf(s, i)),
+          composeVariance(variance, argVarianceOf(from, i)),
         ),
     );
   }
@@ -820,13 +902,17 @@ export class Subtyper {
    * which `variance` already says. Invariance flips to itself, so the same
    * walk asks for equivalence throughout.
    *
+   * `flip` is used freely here and `-1` goes to `#relate` on every bound and
+   * every parameter; what `Oriented` rules out is *arriving* at one. The
+   * opening below is what depends on that, and says why.
+   *
    * Arity is part of the type, for parameters and for the quantifier alike;
    * `allPairs` is what turns a mismatch down.
    */
   #relateFun(
     s: Extract<Type, { kind: "TFun" }>,
     t: Extract<Type, { kind: "TFun" }>,
-    variance: Variance,
+    variance: Oriented,
   ): boolean {
     // Full Fsub: a bound sits in a contravariant position, like a parameter.
     // Kernel Fsub would demand `alphaEq` here and be decidable; this is the
@@ -844,6 +930,13 @@ export class Subtyper {
     // the left's too, and under equivalence the two are the same bounds
     // anyway. Bounds are parallel, already in the enclosing scope, so they are
     // pushed as they stand.
+    //
+    // The *right* side's, and so a reading of `Oriented` rather than a free
+    // choice: full Fsub compares the bodies under the supertype's bound, and
+    // the supertype is the right one only because a contravariant pair
+    // arrives swapped. At `-1` this would open under the subtype's, which is
+    // the larger bound and so proves less -- refusing arrows that do relate,
+    // rather than accepting ones that do not.
     //
     // Nameless: nothing elaborates surface syntax mid-comparison, so the
     // variable is reached only through the `FVar` built here. `hint` prints.
@@ -1261,24 +1354,83 @@ export class Subtyper {
   }
 
   /**
-   * Join or meet two datatypes argumentwise, or `undefined` where their shapes
-   * leave nothing better than top or bottom to say.
+   * Join or meet two datatypes, or `undefined` where their shapes leave
+   * nothing better than top or bottom to say.
    *
-   * Nominal, so two names that differ have nothing between them either way --
-   * there is no structure to walk and no third datatype to appeal to. Same
-   * name, and each argument goes where its parameter's variance sends it,
-   * which is `#lattice`'s question and not this one's: a covariant argument
-   * the way the pair went, a contravariant one the other way, and an invariant
-   * one nowhere. That last has no answer, so neither does the datatype around
-   * it -- there is no `Foo` between two that disagree on an argument that
-   * cannot move.
+   * Two names that differ have an answer only upward. Joining rises both sides
+   * to the nearest datatype each presents as and goes on argumentwise from
+   * there. Meeting cannot do the same: a child's parameters need not be
+   * recoverable from its base, so there is no `Foo` to build, and all that can
+   * be said is whether one side already sits under the other -- which is what
+   * `#meet` says of a variable, asked of the relation for the same reason.
+   *
+   * Only one of the two asks can hold, the base relation being acyclic, so the
+   * order they are asked in decides nothing.
    */
   #latticeData(
-    s: Extract<Type, { kind: "TData" }>,
-    t: Extract<Type, { kind: "TData" }>,
+    s: DataType,
+    t: DataType,
     dir: Direction,
   ): Type | undefined {
-    if (s.name !== t.name || s.args.length !== t.args.length) return undefined;
+    if (s.name === t.name) return this.#latticeDataArgs(s, t, dir);
+    if (dir > 0) {
+      const common = this.#leastCommonData(s, t);
+      return common === undefined
+        ? undefined
+        : this.#latticeDataArgs(common[0], common[1], dir);
+    }
+    // The ordinal picks the side, so the relation is asked once and not twice:
+    // a base is declared before its child, so only the later-declared of two
+    // can be the one that presents as the other.
+    const later = this.#ordinalOf(s.name) > this.#ordinalOf(t.name);
+    const [under, over] = later ? [s, t] : [t, s];
+    return this.#subtype(under, over) ? under : undefined;
+  }
+
+  /**
+   * The nearest datatype both `s` and `t` present as, each risen to it, or
+   * `undefined` where they share none.
+   *
+   * Two chains merged by ordinal: whichever side stands later is the one that
+   * cannot yet be the answer, so it is the one that climbs. Their common
+   * ancestors are declared before both, so nothing this steps past could have
+   * been one -- which is what makes the first agreement the *least* such
+   * datatype and not merely a common one.
+   *
+   * The ordinal is what buys the single walk. Without it the only way to the
+   * least is to try each of one chain against all of the other, instantiating
+   * a base at every try and throwing it away.
+   */
+  #leastCommonData(
+    s: DataType,
+    t: DataType,
+  ): readonly [DataType, DataType] | undefined {
+    let left = s;
+    let right = t;
+    while (left.name !== right.name) {
+      const climbs = this.#ordinalOf(left.name) >= this.#ordinalOf(right.name);
+      const above = this.#baseOf(climbs ? left : right);
+      if (above === undefined) return undefined;
+      if (climbs) left = above;
+      else right = above;
+    }
+    return [left, right];
+  }
+
+  /**
+   * Two datatypes of one name, argumentwise: each argument goes where its
+   * parameter's variance sends it, which is `#lattice`'s question and not this
+   * one's -- a covariant argument the way the pair went, a contravariant one
+   * the other way, and an invariant one nowhere. That last has no answer, so
+   * neither does the datatype around it: there is no `Foo` between two that
+   * disagree on an argument that cannot move.
+   */
+  #latticeDataArgs(
+    s: DataType,
+    t: DataType,
+    dir: Direction,
+  ): Type | undefined {
+    if (s.args.length !== t.args.length) return undefined;
     const args = [];
     for (const [i, mine] of s.args.entries()) {
       const other = t.args[i] ?? impossible("arities agree above");

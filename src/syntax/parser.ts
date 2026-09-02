@@ -215,7 +215,7 @@ class Parser {
     this.cursor.fail(`\`;\` or a new line, then the rest of the ${what}`);
   }
 
-  /** `datatype Pair[A, B] where` then its constructor arms. */
+  /** `datatype Pair[A, B] <: Base where` then its constructor arms. */
   private datatypeDecl(): DatatypeDecl {
     const keyword = this.cursor.peek(); // the `datatype` the block loop saw
     this.cursor.advance();
@@ -224,11 +224,24 @@ class Parser {
     const typeParams = this.cursor.at("lbracket")
       ? this.plainTypeBinders()
       : [];
+    // A whole type and not a name with arguments, so an alias may stand here;
+    // what it has to *be* is elaboration's question, which is where the table
+    // saying so lives.
+    const base = this.cursor.accept("subtype") === undefined
+      ? undefined
+      : this.type();
     // A pure delimiter: nothing but constructors may follow it, which is what
     // lets layout open their block wherever it sits.
     this.cursor.expect("where", "`where`, then the constructors");
     const ctors = this.arms("constructor", (at) => this.ctorDecl(at));
-    return { kind: "DatatypeDecl", name, typeParams, ctors, at: keyword.at };
+    const decl = {
+      kind: "DatatypeDecl",
+      name,
+      typeParams,
+      ctors,
+      at: keyword.at,
+    } as const;
+    return base === undefined ? decl : { ...decl, base };
   }
 
   /** `typedef Endo[A] = (A) -> A`. Transparent, so it has no constructors. */
@@ -254,8 +267,25 @@ class Parser {
     // A constructor is an ordinary function, so its fields are a domain --
     // absent, and not empty, where none is written: `C()` is the nullary
     // function and `C` the value, which is a different declaration.
-    if (!this.cursor.at("lparen")) return { name, at };
-    return { name, params: this.domainTypes(), at };
+    const params = this.cursor.at("lparen") ? this.domainTypes() : undefined;
+    const coercion = this.cursor.accept("arrow") === undefined
+      ? undefined
+      : this.coercion();
+    const decl = { name, at };
+    return {
+      ...decl,
+      ...(params === undefined ? {} : { params }),
+      ...(coercion === undefined ? {} : { coercion }),
+    };
+  }
+
+  /**
+   * `-> Cons(x, r)`, after a constructor's fields. An ordinary term, read the
+   * way an arm's body is; which of its positions have to be constructors of
+   * the base is `resolveCoercionTails`, not a shape this rule can insist on.
+   */
+  private coercion(): TermNode {
+    return this.blockOrExp("the coercion, indented past its `|`");
   }
 
   /**
@@ -439,9 +469,16 @@ class Parser {
     const keyword = this.cursor.peek();
     this.cursor.advance();
     const scrutinee = this.exp(PREFIX + 1);
+    // `as List`, saying which datatype the patterns are of. Optional, the
+    // checker filling it from the scrutinee's type -- so this is for a program
+    // meant to be run without being checked, and for saying it on purpose.
+    const datatype = this.cursor.accept("as") === undefined
+      ? undefined
+      : this.declName("the datatype the patterns are of").text;
     this.cursor.expect("with", "`with`, then the arms");
     const arms = this.arms("arm", (at) => this.matchArm(at));
-    return { kind: "Match", scrutinee, arms, at: keyword.at };
+    const match = { kind: "Match", scrutinee, arms, at: keyword.at } as const;
+    return datatype === undefined ? match : { ...match, datatype };
   }
 
   private matchArm(at: Position): MatchArm {
@@ -756,7 +793,7 @@ class Parser {
   private declName(what: string): Ident {
     const name = this.ident(what);
     if (name.text === WILDCARD) this.cursor.failAt(name.at, what);
-    this.refuseBang(name);
+    this.requirePlainName(name);
     return name;
   }
 
@@ -776,28 +813,44 @@ class Parser {
       text: name.text === WILDCARD ? undefined : name.text,
       at: name.at,
     };
-    this.refuseBang(bound);
+    this.requirePlainName(bound);
     return bound;
   }
 
   /**
-   * A trailing `!` marks a builtin, and only the checker names one. Refused
-   * everywhere a name is *written to be resolved against* -- a binder, a
-   * declaration, a constructor, the head of a pattern -- which leaves the one
-   * position that matters: a use, so `set!(c, x)` is the point, and a use that
-   * resolves to nothing is an unknown name like any other, which is what a
-   * misspelt `st!` should be told.
+   * A position that *binds* takes a plain name. Two spellings are refused
+   * here, and for one reason: each names something only the checker seeds, so
+   * writing one at a binder would be redeclaring a name its owner already
+   * holds. A trailing `!` marks a builtin; an interior `.` qualifies a
+   * constructor by its datatype, and `List.Cons` belongs to the declaration of
+   * `List` and to nothing an author writes.
    *
-   * Here for the same reason `_`'s rule is here. Both are ordinary identifiers
-   * to the lexer, so which positions admit them is a decision the parser makes
-   * once, and nothing downstream compares against either again.
+   * Which leaves the position that matters, a *use*: `set!(c, x)` is the
+   * point, and so is `List.Cons(x, xs)`. A use resolving to nothing is an
+   * unknown name like any other, which is what a misspelt `st!` or
+   * `Lst.Cons` should be told.
+   *
+   * Here for the same reason `_`'s rule is here. All three are ordinary
+   * identifiers to the lexer, so which positions admit them is a decision the
+   * parser makes once, and nothing downstream compares against any of them
+   * again.
    */
-  private refuseBang(name: BindingIdent | Ident): void {
-    if (name.text === undefined || !name.text.endsWith(BANG)) return;
-    this.cursor.failAt(
-      name.at,
-      `${name.text} may not be bound: a trailing \`${BANG}\` marks a builtin`,
-    );
+  private requirePlainName(name: BindingIdent | Ident): void {
+    const text = name.text;
+    if (text === undefined) return;
+    if (text.endsWith(BANG)) {
+      this.cursor.failAt(
+        name.at,
+        `${text} may not be bound: a trailing \`${BANG}\` marks a builtin`,
+      );
+    }
+    if (text.includes(QUALIFIER)) {
+      this.cursor.failAt(
+        name.at,
+        `${text} may not be bound: a \`${QUALIFIER}\` names a ` +
+          `constructor of a datatype`,
+      );
+    }
   }
 }
 
@@ -810,9 +863,30 @@ export const WILDCARD = "_";
 
 /**
  * The suffix that marks a builtin operation. Lexically part of the name, so
- * this is what tells a use from a declaration of one -- see `refuseBang`.
+ * this is what tells a use from a declaration of one -- see
+ * `requirePlainName`.
  */
 export const BANG = "!";
+
+/**
+ * What separates a datatype from one of its constructors, `List.Cons`. Part of
+ * the name for the same reason `BANG` is, and refused at a binder for the same
+ * reason: it names what a declaration of `List` produced, so nothing else may
+ * claim it.
+ */
+export const QUALIFIER = ".";
+
+/**
+ * `List.Cons` -- a constructor named through the datatype that declares it.
+ *
+ * One function, called by both phases that seed constructors, which is the
+ * point: they resolve a qualified name to the same constructor because they
+ * build the same string. A plain name only agrees because both happen to take
+ * the last declaration of it.
+ */
+export function qualifiedCtor(datatype: string, ctor: string): string {
+  return `${datatype}${QUALIFIER}${ctor}`;
+}
 
 function wildcard(at: Position): BindingIdent {
   return { text: undefined, at };

@@ -47,6 +47,7 @@ import type {
   TermNode,
   TypeDecl,
 } from "../syntax/ast.ts";
+import { qualifiedCtor } from "../syntax/parser.ts";
 
 /**
  * What a constructor is, apart from its fields: the datatype it builds, and
@@ -56,8 +57,24 @@ import type {
 type CtorShape = {
   readonly name: string;
   readonly datatype: string;
-  readonly arity: number;
+  /**
+   * The name of each field, or `undefined` where the declaration gave none.
+   * Its length is the arity. Names because a coercion's arguments are the one
+   * thing that reaches a field by name -- everywhere else a `DomainType`'s
+   * name is documentation.
+   */
+  readonly fields: readonly (string | undefined)[];
   readonly isValue: boolean;
+  readonly at: Position;
+  /**
+   * What a value built here presents as: the coercion's body, a term whose
+   * tails already name the base's constructors -- `resolveCoercionTails`
+   * qualified them before anything read this tree.
+   *
+   * Absent where the datatype has no base, which is where a coercion is
+   * refused; this file is not the place that says so.
+   */
+  readonly coercion?: TermNode;
 };
 
 /** Where a cell lives. An index into the run's `Heap`, and nothing else. */
@@ -76,6 +93,18 @@ export type Value =
     readonly kind: "VData";
     readonly ctor: CtorShape;
     readonly fields: readonly Value[];
+    /**
+     * What this presents as, built here rather than at each match: the
+     * coercion runs once, when the value is made.
+     *
+     * Eager because lazy would run the body per inspection, so a `ref!` in a
+     * coercion would allocate every time a value was looked at as its base,
+     * which nothing in the program text says. Safe because a datatype's fields
+     * never change -- the only mutation is through a cell, and a coercion
+     * passing one through passes the same cell -- so an image computed once
+     * cannot go stale.
+     */
+    readonly base?: Value;
   }
   /** A cell, as its address. What is at that address is the heap's business. */
   | { readonly kind: "VRef"; readonly addr: Addr }
@@ -214,24 +243,44 @@ const FUEL = 2000;
 class Evaluator {
   #fuel: number;
   readonly #heap = new Heap();
-  /** Constructor by name, last declaration winning, as the checker's seeding does. */
-  readonly #ctors = new Map<string, CtorShape>();
+  /**
+   * Every constructor, in declaration order -- not by name, since a name is
+   * not an identity: two datatypes may spell one the same, and both are still
+   * reachable through the datatype that declared them.
+   */
+  readonly #ctors: CtorShape[] = [];
   /** Which names a datatype's patterns may use, which is what resolves them. */
   readonly #fields = new Map<string, Set<string>>();
+  /**
+   * The outermost scope, as far as it has been built. What a coercion's
+   * arguments are evaluated over -- they are terms, so they need one, and it
+   * is the same one every other term starts from.
+   */
+  #globals: Scope = undefined;
 
   constructor(decls: readonly TypeDecl[], readonly budget: number) {
     this.#fuel = budget;
     for (const decl of decls) {
       if (decl.kind !== "DatatypeDecl") continue;
       const datatype = decl.name.text;
+      // The first declaration of a name keeps it, as the checker's table has
+      // it: reading the parse tree rather than that table is what makes an
+      // ill-typed program runnable, and is no reason to answer differently.
+      if (this.#fields.has(datatype)) continue;
       const names = new Set<string>();
       for (const ctor of decl.ctors) {
-        this.#ctors.set(ctor.name.text, {
+        if (names.has(ctor.name.text)) continue;
+        const shape = {
           name: ctor.name.text,
           datatype,
-          arity: ctor.params?.length ?? 0,
+          fields: (ctor.params ?? []).map((param) => param.name?.text),
           isValue: ctor.params === undefined,
-        });
+          at: ctor.name.at,
+        };
+        const coercion = ctor.coercion;
+        this.#ctors.push(
+          coercion === undefined ? shape : { ...shape, coercion },
+        );
         names.add(ctor.name.text);
       }
       this.#fields.set(datatype, names);
@@ -279,23 +328,75 @@ class Evaluator {
       }),
     );
 
-    for (const ctor of this.#ctors.values()) {
-      push(
-        ctor.name,
-        ctor.isValue
-          ? { kind: "VData", ctor, fields: [] }
-          : prim(ctor.name, ctor.arity, (fields) => ({
-            kind: "VData",
-            ctor,
-            fields,
-          })),
-      );
+    // Twice each, plainly and qualified, in declaration order -- so the last
+    // declaration of a plain name wins where the checker's seeding has it win,
+    // and `List.Cons` reaches the one a later `Cons` shadowed. The two agree
+    // because both build the string with `qualifiedCtor`.
+    for (const ctor of this.#ctors) {
+      const qualified = qualifiedCtor(ctor.datatype, ctor.name);
+      const value: Value = ctor.isValue
+        ? this.#construct(ctor, [], ctor.at)
+        : prim(
+          ctor.name,
+          ctor.fields.length,
+          (fields, at) => this.#construct(ctor, fields, at),
+        );
+      push(ctor.name, value);
+      push(qualified, value);
+      // Kept level with the loop, because a *value* constructor is built as
+      // it is pushed and its coercion runs there and then. A base is declared
+      // before the datatype presenting as it, so the constructor a coercion
+      // names is always already here; an argument reaching for one declared
+      // further down is what this does not reach, and gets an unknown name.
+      this.#globals = scope;
     }
     return scope;
   }
 
   run(term: TermNode): Value {
     return this.#eval(term, this.#outermost());
+  }
+
+  /**
+   * A constructor applied to its fields, together with what it presents as.
+   *
+   * The image is built here and not at each match, so a coercion runs once per
+   * value however often it is looked at. It recurses through `#coerce`, so a
+   * chain is built whole; it terminates because a base is declared before the
+   * datatype presenting as it, and so cannot come round again.
+   */
+  #construct(
+    ctor: CtorShape,
+    fields: readonly Value[],
+    at: Position,
+  ): Value {
+    const base = this.#coerce(ctor, fields);
+    return base === undefined
+      ? { kind: "VData", ctor, fields }
+      : { kind: "VData", ctor, fields, base };
+  }
+
+  /**
+   * What a value of `ctor` presents as, or absent where it presents as
+   * nothing.
+   *
+   * An ordinary term, evaluated over a scope binding this constructor's fields
+   * by the names the declaration gave them. No type is read and none is
+   * needed: which constructor each tail names was settled on the tree by
+   * `resolveCoercionTails`, before this file or the checker saw it, so what
+   * this builds is what the checker was told it would build.
+   */
+  #coerce(
+    ctor: CtorShape,
+    fields: readonly Value[],
+  ): Value | undefined {
+    if (ctor.coercion === undefined) return undefined;
+    let scope = this.#globals;
+    for (const [index, field] of ctor.fields.entries()) {
+      if (field === undefined) continue;
+      scope = { name: field, value: fields[index]!, outer: scope };
+    }
+    return this.#eval(ctor.coercion, scope);
   }
 
   #eval(term: TermNode, scope: Scope): Value {
@@ -431,7 +532,7 @@ class Evaluator {
       );
     }
     for (const arm of term.arms) {
-      const bound = this.#bindPattern(arm.pattern, scrutinee, scope);
+      const bound = this.#bindPattern(arm.pattern, scrutinee, term, scope);
       if (bound !== undefined) return this.#eval(arm.body, bound.scope);
     }
     stuck(`no arm matches ${scrutinee.ctor.name}`, term.at);
@@ -441,36 +542,84 @@ class Evaluator {
    * The scope an arm runs in, or absent where the pattern is for another
    * constructor. Wrapped, since an empty scope is `undefined` too.
    *
-   * A name is resolved against the scrutinee's own datatype, as the checker
-   * resolves it -- so a constructor of some *other* datatype is a mistake here
-   * and not merely an arm that does not fire.
+   * A name is resolved against the scrutinee's own datatype, or against the
+   * nearest one it presents as that admits the name -- so a constructor of
+   * some datatype the value is nothing of is a mistake here and not merely an
+   * arm that does not fire.
    */
   #bindPattern(
     pattern: MatchPat,
     scrutinee: Extract<Value, { kind: "VData" }>,
+    term: Extract<TermNode, { kind: "Match" }>,
     scope: Scope,
   ): { scope: Scope } | undefined {
     if (pattern.kind === "PWild") return { scope };
-    const known = this.#fields.get(scrutinee.ctor.datatype);
-    if (known === undefined || !known.has(pattern.name.text)) {
+    const matched = this.#viewAs(scrutinee, term, pattern.name);
+    if (pattern.name.text !== matched.ctor.name) return undefined;
+    if (pattern.args.length !== matched.fields.length) {
       stuck(
-        `${pattern.name.text} is not a constructor of ${scrutinee.ctor.datatype}`,
-        pattern.name.at,
-        pattern.name.text.length,
-      );
-    }
-    if (pattern.name.text !== scrutinee.ctor.name) return undefined;
-    if (pattern.args.length !== scrutinee.fields.length) {
-      stuck(
-        `${pattern.name.text} has ${scrutinee.fields.length} fields, bound ${pattern.args.length}`,
+        `${pattern.name.text} has ${matched.fields.length} fields, bound ${pattern.args.length}`,
         pattern.at,
       );
     }
     let bound = scope;
     for (const [index, name] of pattern.args.entries()) {
-      bound = bind(bound, name, scrutinee.fields[index]!);
+      bound = bind(bound, name, matched.fields[index]!);
     }
     return { scope: bound };
+  }
+
+  /**
+   * The value `scrutinee` is, viewed as the datatype this match takes apart:
+   * the one the match names, walked to along the chain.
+   *
+   * The name is the answer and the chain only finds it, which is why the
+   * `datatype` on the tree has to be there. Two datatypes along one chain may
+   * spell a constructor the same, and then a pattern name says nothing about
+   * which was meant -- a `Leaf` that presents as a `Mid` that presents as a
+   * `Top`, all three with a `Same`, is one program where guessing is wrong
+   * rather than merely arbitrary.
+   *
+   * Where the match names none -- an unchecked program, or one whose checking
+   * failed here -- the nearest datatype admitting the name is the fallback.
+   * Exact wherever a chain spells no constructor twice; a tiebreak where it
+   * does, and there is no untyped answer to prefer over it.
+   */
+  #viewAs(
+    scrutinee: Extract<Value, { kind: "VData" }>,
+    term: Extract<TermNode, { kind: "Match" }>,
+    name: Ident,
+  ): Extract<Value, { kind: "VData" }> {
+    const wanted = term.datatype;
+    for (let view = scrutinee;;) {
+      const here = wanted === undefined
+        ? this.#fields.get(view.ctor.datatype)?.has(name.text) === true
+        : view.ctor.datatype === wanted;
+      if (here) {
+        // Found the view. Where the match named a datatype, the pattern still
+        // has to be one of *its* constructors -- a name from somewhere else is
+        // a mistake and not an arm that fails to fire. Where it named none,
+        // admitting the name is how the view was found in the first place.
+        if (wanted !== undefined && !this.#fields.get(wanted)?.has(name.text)) {
+          stuck(
+            `${name.text} is not a constructor of ${wanted}`,
+            name.at,
+            name.text.length,
+          );
+        }
+        return view;
+      }
+      const base = view.base;
+      if (base === undefined || base.kind !== "VData") break;
+      view = base;
+    }
+    stuck(
+      wanted === undefined
+        ? `${name.text} is not a constructor of ${scrutinee.ctor.datatype}`
+        : `a ${scrutinee.ctor.datatype} does not present as a ${wanted}`,
+      name.at,
+      name.text.length,
+    );
   }
 }
 

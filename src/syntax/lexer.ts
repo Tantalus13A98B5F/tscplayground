@@ -24,6 +24,7 @@ export type TokenKind =
   | "datatype"
   | "typedef"
   | "match"
+  | "as" // names the datatype a `match`'s patterns resolve against
   | "fn"
   | "with" // delimits a match's scrutinee from its arms
   | "where" // the same, for a datatype's constructors
@@ -101,6 +102,7 @@ const KEYWORDS = new Map<string, TokenKind>([
   ["datatype", "datatype"],
   ["typedef", "typedef"],
   ["match", "match"],
+  ["as", "as"],
   ["fn", "fn"],
   ["with", "with"],
   ["where", "where"],
@@ -126,18 +128,18 @@ const PUNCTUATION: readonly (readonly [string, TokenKind])[] = [
 ];
 
 /**
- * A trailing `!` is part of the name, so `set!` is one identifier and not a
- * name beside a stray byte. It is what the builtins are spelled with -- there
- * is nothing else `!` could mean, and a bare one is still an unexpected
- * character.
+ * Two marks are part of a name rather than beside it. A trailing `!` is what
+ * the builtins are spelled with, so `set!` is one identifier; an interior `.`
+ * qualifies a constructor by its datatype, so `List.Cons` is one too. Neither
+ * is anything else here -- a bare `!` or `.` is still an unexpected character.
  *
  * Lexically ordinary, which is the point: nothing here knows which names the
- * checker will seed, and nothing has to. Which positions admit the spelling is
- * the parser's decision -- it refuses one at every position that *binds*, so a
- * bang name can only ever be used -- and it is made in the same place, and for
+ * checker will seed, and nothing has to. Which positions admit the spellings
+ * is the parser's decision -- it refuses both at every position that *binds*,
+ * so either can only ever be used -- and it is made in the same place, and for
  * the same reason, as the one about `_`.
  */
-const IDENTIFIER = /[A-Za-z_][A-Za-z0-9_]*!?/y;
+const IDENTIFIER = /[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?!?/y;
 
 /**
  * Tokenize every line. Blank lines contribute nothing, so they cannot affect

@@ -601,3 +601,82 @@ Deno.test("a dropped duplicate takes its fields, so no phantom either", () => {
     "  | MkTag(A)",
   )).toEqual(["error: datatype Tag already has a constructor MkTag"]);
 });
+
+Deno.test("a base is one more occurrence in the fixed point, covariant", () => {
+  expect(variancesOf(
+    ...BOOL,
+    "datatype Box[A] where",
+    "  | MkBox(A)",
+    // No fields at all, so the base is the only place the parameter occurs and
+    // the only thing that can answer for it.
+    "datatype Small[A] <: Box[A] where",
+    "  | MkSmall()",
+    // A base is walked like a field, so a parameter under an arrow in one
+    // flips.
+    "datatype Flip[A] <: Box[(A) -> Bool] where",
+    "  | MkFlip()",
+    // Covariant from the base and contravariant from a field, which meet at
+    // invariant -- and that is what makes the covariance requirement vacuous.
+    "datatype Both[A] <: Box[A] where",
+    "  | MkBoth((A) -> Bool)",
+  )).toEqual(["Box[+A]", "Small[+A]", "Flip[-A]", "Both[=A]"]);
+});
+
+Deno.test("a base must be a datatype declared above", () => {
+  expect(saidOf(
+    ...BOOL,
+    "datatype Cells <: Ref[Bool] where",
+    "  | MkCells() -> MkCells()",
+  )).toEqual([
+    "error: Cells may present as a datatype, and Ref[Bool] is not one",
+  ]);
+
+  // Equal to a datatype is not the same as naming one: the base's name has to
+  // be readable off the tree, and an alias is gone by the time anything looks.
+  expect(saidOf(
+    ...BOOL,
+    "datatype Box where",
+    "  | MkBox(Bool)",
+    "typedef Alias = Box",
+    "datatype Small <: Alias where",
+    "  | MkSmall(Bool) -> MkBox(True)",
+  )).toEqual(["error: Small must name Box directly to present as it"]);
+
+  // Declared below, so the table has not got it yet -- the alias rule, and it
+  // is what leaves a base chain no way to close on itself.
+  expect(saidOf(
+    ...BOOL,
+    "datatype Early <: Late where",
+    "  | MkEarly() -> MkLate",
+    "datatype Late where",
+    "  | MkLate",
+  )).toEqual(["error: unknown type Late"]);
+
+  expect(saidOf(
+    ...BOOL,
+    "datatype Loop <: Loop where",
+    "  | MkLoop() -> MkLoop()",
+  )).toEqual(["error: unknown type Loop"]);
+});
+
+Deno.test("a coercion is written exactly where there is a base", () => {
+  expect(saidOf(
+    ...BOOL,
+    "datatype Box where",
+    "  | MkBox(Bool) -> MkBox(True)",
+  )).toEqual([
+    "error: MkBox writes a coercion, but Box presents as nothing -- " +
+    "give it a base with `<:`",
+  ]);
+
+  expect(saidOf(
+    ...BOOL,
+    "datatype Box where",
+    "  | MkBox(Bool)",
+    "datatype Small <: Box where",
+    "  | MkSmall(Bool)",
+  )).toEqual([
+    "error: MkSmall needs a coercion: every Small presents as Box, " +
+    "and this says which one",
+  ]);
+});
