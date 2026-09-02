@@ -168,10 +168,11 @@ export type DatatypeInfo = {
    * Not a depth in the chain. Two chains have nothing to say to each other
    * about depth, where every declaration has an ordinal against every other.
    *
-   * Written by `addDatatype` and nowhere else; what a builder puts here is
-   * replaced, as `ctors` and `initialized` are by the pass that fills them.
+   * Stamped by `addDatatype`, which is the only thing that may write it: a
+   * signature is built without one, so there is no moment at which the field
+   * holds a number that means nothing.
    */
-  ordinal: number;
+  readonly ordinal: number;
   readonly at: Position;
 };
 
@@ -220,14 +221,13 @@ export class Declarations {
    * elaborated against this table, so it is one of the entries already here,
    * so its ordinal is below the one stamped now.
    */
-  addDatatype(info: DatatypeInfo): Position | undefined {
+  addDatatype(info: Omit<DatatypeInfo, "ordinal">): Position | undefined {
     const previous = this.declaredAt(info.name);
     if (previous !== undefined) return previous;
-    // Stamped on the way in, from the size, the way a level is: a datatype
-    // that lost its name never gets one, and never needs one -- nothing looks
-    // an entry up except by the name the winner holds.
-    info.ordinal = this.#datatypes.size;
-    this.#datatypes.set(info.name, info);
+    // From the size, the way a level is taken: a datatype that lost its name
+    // never gets an ordinal, and never needs one -- nothing looks an entry up
+    // except by the name the winner holds.
+    this.#datatypes.set(info.name, { ...info, ordinal: this.#datatypes.size });
     return undefined;
   }
 

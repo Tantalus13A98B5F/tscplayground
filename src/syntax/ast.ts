@@ -12,6 +12,25 @@ export type Ident = {
 };
 
 /**
+ * What separates a datatype from one of its constructors, `List.Cons`. Part of
+ * the name to the lexer, and refused at every binding position: it names what
+ * a declaration of `List` produced, so nothing else may claim it.
+ */
+export const QUALIFIER = ".";
+
+/**
+ * `List.Cons` -- a constructor named through the datatype that declares it.
+ *
+ * Both phases that seed constructors call this, and that is the point: they
+ * resolve a qualified name to the same constructor because they build the same
+ * string. A plain name only agrees because both take the last declaration of
+ * it.
+ */
+export function qualifiedCtor(datatype: string, ctor: string): string {
+  return `${datatype}${QUALIFIER}${ctor}`;
+}
+
+/**
  * An `Ident` at a binding occurrence, which may decline to name itself. The
  * record is always there; only the name inside it may not be.
  *
@@ -185,8 +204,7 @@ export type TermNode =
      * to once a value presents as another, and two datatypes along one chain
      * may spell a constructor the same. Nothing untyped can tell those apart,
      * so either the author says it or the checker records what it already
-     * worked out -- and demanding it of the author would be demanding
-     * bookkeeping, which is the thing `def`'s annotation rule exists to avoid.
+     * worked out.
      *
      * Absent where a program was not checked, or checking failed here.
      * Evaluation then falls back to the nearest datatype in the value's own
@@ -261,43 +279,26 @@ export type CtorDecl = {
   readonly name: Ident;
   /** The domain, or absent for a bare name -- empty is `C()`, never `C`. */
   readonly params?: readonly DomainType[];
-  /** `-> Cons(x, r)`. Required exactly where the datatype has a base. */
+  /**
+   * What a value of this constructor presents as: an ordinary term, restricted
+   * so that **every tail position is a constructor of the declared base**.
+   * Written exactly where the datatype has a base.
+   *
+   * Tails distribute through `let` and `match`, so a coercion may compute and
+   * may branch, and each branch is pinned on its own. The restriction is not
+   * about types -- a body merely *typed* at the base would have its head
+   * unpinned by subsumption, a sibling subtype's value having the base's type
+   * -- so it is enforced on the tree, by `resolveCoercionTails`, which also
+   * rewrites each tail name to its qualified form. Both later phases then read
+   * one tree that already says which constructor was meant.
+   *
+   * The arguments scope over the fields of the constructor declaring it, under
+   * the names the declaration gave them -- which is the first thing a
+   * `DomainType`'s name has ever bound.
+   */
   readonly coercion?: TermNode;
   readonly at: Position;
 };
-
-/**
- * Which of the base's constructors a value of this one presents as, and what
- * it is built from: `| One(x: A) -> Cons(x, Nil())`.
- *
- * A constructor *name* and not a term, which is the whole of why this is
- * affordable. A term would have to be typed at the base, and subsumption
- * unpins a head -- so nothing downstream could say which of the base's
- * constructors a value presents as without asking the checker, and evaluation
- * does not ask. As a slot the answer is in the tree, and the same rule spells
- * Scala's `extends Bar(args)`.
- *
- * The *arguments* are ordinary terms, so a coercion may still compute; they
- * are checked against the named constructor's fields, and scope over the
- * fields of the constructor declaring it -- which is the first thing a
- * `DomainType`'s name has ever bound.
- */
-/**
- * What a value of this constructor presents as: an ordinary term, restricted
- * so that **every tail position is a constructor of the declared base**.
- *
- * Tails distribute through `let` and `match`, so a coercion may compute and
- * may branch, and each branch is pinned on its own. The restriction is not
- * about types -- a body merely *typed* at the base would have its head unpinned
- * by subsumption, a sibling subtype's value having the base's type -- so it is
- * enforced on the tree, by `resolveCoercionTails`, which also rewrites each
- * tail name to its qualified form. Both later phases then read one tree that
- * already says which constructor was meant.
- *
- * The arguments scope over the fields of the constructor declaring it, under
- * the names the declaration gave them -- which is the first thing a
- * `DomainType`'s name has ever bound.
- */
 
 /**
  * `typedef Endo[A] = (A) -> A`, transparent and expanded during elaboration:

@@ -47,7 +47,7 @@ import type {
   TermNode,
   TypeDecl,
 } from "../syntax/ast.ts";
-import { qualifiedCtor } from "../syntax/parser.ts";
+import { qualifiedCtor } from "../syntax/ast.ts";
 
 /**
  * What a constructor is, apart from its fields: the datatype it builds, and
@@ -252,9 +252,13 @@ class Evaluator {
   /** Which names a datatype's patterns may use, which is what resolves them. */
   readonly #fields = new Map<string, Set<string>>();
   /**
-   * The outermost scope, as far as it has been built. What a coercion's
-   * arguments are evaluated over -- they are terms, so they need one, and it
-   * is the same one every other term starts from.
+   * The outermost scope as far as `#outermost` has built it -- what a
+   * coercion's body is evaluated over, that being an ordinary term.
+   *
+   * A coercion of a *value* constructor runs during that build, so what it
+   * sees is the constructors pushed before it; every later reader sees the
+   * finished scope. Both are enough because a base is declared before the
+   * datatype presenting as it.
    */
   #globals: Scope = undefined;
 
@@ -334,20 +338,16 @@ class Evaluator {
     // because both build the string with `qualifiedCtor`.
     for (const ctor of this.#ctors) {
       const qualified = qualifiedCtor(ctor.datatype, ctor.name);
-      const value: Value = ctor.isValue
-        ? this.#construct(ctor, [], ctor.at)
-        : prim(
-          ctor.name,
-          ctor.fields.length,
-          (fields, at) => this.#construct(ctor, fields, at),
-        );
+      const value: Value = ctor.isValue ? this.#construct(ctor, []) : prim(
+        ctor.name,
+        ctor.fields.length,
+        (fields) => this.#construct(ctor, fields),
+      );
       push(ctor.name, value);
       push(qualified, value);
-      // Kept level with the loop, because a *value* constructor is built as
-      // it is pushed and its coercion runs there and then. A base is declared
-      // before the datatype presenting as it, so the constructor a coercion
-      // names is always already here; an argument reaching for one declared
-      // further down is what this does not reach, and gets an unknown name.
+      // Level with the loop, a value constructor's coercion running as it is
+      // pushed. An argument naming something declared further down is what
+      // this does not reach, and gets an unknown name.
       this.#globals = scope;
     }
     return scope;
@@ -368,7 +368,6 @@ class Evaluator {
   #construct(
     ctor: CtorShape,
     fields: readonly Value[],
-    at: Position,
   ): Value {
     const base = this.#coerce(ctor, fields);
     return base === undefined
@@ -532,7 +531,12 @@ class Evaluator {
       );
     }
     for (const arm of term.arms) {
-      const bound = this.#bindPattern(arm.pattern, scrutinee, term, scope);
+      const bound = this.#bindPattern(
+        arm.pattern,
+        scrutinee,
+        term.datatype,
+        scope,
+      );
       if (bound !== undefined) return this.#eval(arm.body, bound.scope);
     }
     stuck(`no arm matches ${scrutinee.ctor.name}`, term.at);
@@ -550,11 +554,11 @@ class Evaluator {
   #bindPattern(
     pattern: MatchPat,
     scrutinee: Extract<Value, { kind: "VData" }>,
-    term: Extract<TermNode, { kind: "Match" }>,
+    wanted: string | undefined,
     scope: Scope,
   ): { scope: Scope } | undefined {
     if (pattern.kind === "PWild") return { scope };
-    const matched = this.#viewAs(scrutinee, term, pattern.name);
+    const matched = this.#viewAs(scrutinee, wanted, pattern.name);
     if (pattern.name.text !== matched.ctor.name) return undefined;
     if (pattern.args.length !== matched.fields.length) {
       stuck(
@@ -570,45 +574,42 @@ class Evaluator {
   }
 
   /**
-   * The value `scrutinee` is, viewed as the datatype this match takes apart:
-   * the one the match names, walked to along the chain.
+   * `scrutinee` viewed as `wanted`, walked to along its chain.
    *
-   * The name is the answer and the chain only finds it, which is why the
-   * `datatype` on the tree has to be there. Two datatypes along one chain may
-   * spell a constructor the same, and then a pattern name says nothing about
-   * which was meant -- a `Leaf` that presents as a `Mid` that presents as a
-   * `Top`, all three with a `Same`, is one program where guessing is wrong
-   * rather than merely arbitrary.
+   * The name is the answer and the chain only finds it, which is why a match
+   * carries one. Two datatypes along one chain may spell a constructor the
+   * same, and then a pattern name says nothing about which was meant -- a
+   * `Leaf` presenting as a `Mid` presenting as a `Top`, all three with a
+   * `Same`, is one program where guessing is wrong rather than arbitrary.
    *
-   * Where the match names none -- an unchecked program, or one whose checking
-   * failed here -- the nearest datatype admitting the name is the fallback.
-   * Exact wherever a chain spells no constructor twice; a tiebreak where it
-   * does, and there is no untyped answer to prefer over it.
+   * With no `wanted` -- an unchecked program, or one whose checking failed
+   * here -- the nearest datatype admitting the name is the fallback: exact
+   * wherever a chain spells no constructor twice, a tiebreak where it does,
+   * and there is no untyped answer to prefer over it.
    */
   #viewAs(
     scrutinee: Extract<Value, { kind: "VData" }>,
-    term: Extract<TermNode, { kind: "Match" }>,
+    wanted: string | undefined,
     name: Ident,
   ): Extract<Value, { kind: "VData" }> {
-    const wanted = term.datatype;
-    for (let view = scrutinee;;) {
-      const here = wanted === undefined
+    // Where the match named a datatype, whether the pattern is one of *its*
+    // constructors does not depend on where the walk stands, so it is asked
+    // once: a name from somewhere else is a mistake and not an arm that fails
+    // to fire. Where it named none, admitting the name is the search itself.
+    if (wanted !== undefined && !this.#fields.get(wanted)?.has(name.text)) {
+      stuck(
+        `${name.text} is not a constructor of ${wanted}`,
+        name.at,
+        name.text.length,
+      );
+    }
+    const found = (view: Extract<Value, { kind: "VData" }>) =>
+      wanted === undefined
         ? this.#fields.get(view.ctor.datatype)?.has(name.text) === true
         : view.ctor.datatype === wanted;
-      if (here) {
-        // Found the view. Where the match named a datatype, the pattern still
-        // has to be one of *its* constructors -- a name from somewhere else is
-        // a mistake and not an arm that fails to fire. Where it named none,
-        // admitting the name is how the view was found in the first place.
-        if (wanted !== undefined && !this.#fields.get(wanted)?.has(name.text)) {
-          stuck(
-            `${name.text} is not a constructor of ${wanted}`,
-            name.at,
-            name.text.length,
-          );
-        }
-        return view;
-      }
+
+    for (let view = scrutinee;;) {
+      if (found(view)) return view;
       const base = view.base;
       if (base === undefined || base.kind !== "VData") break;
       view = base;

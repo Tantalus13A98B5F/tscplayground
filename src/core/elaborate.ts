@@ -35,7 +35,8 @@ import {
   type TypeNode,
   type TypeParam,
 } from "../syntax/ast.ts";
-import { qualifiedCtor } from "../syntax/parser.ts";
+import { qualifiedCtor } from "../syntax/ast.ts";
+
 import type {
   AliasInfo,
   Context,
@@ -327,14 +328,13 @@ export class Elaborator {
    */
   #elaborateSignature(
     decl: DatatypeDecl,
-  ): DatatypeInfo {
+  ): Omit<DatatypeInfo, "ordinal"> {
     const signature = {
       name: decl.name.text,
       params: decl.typeParams.map(mkDataParamInfo),
       ctors: [],
       ctorsReported: false,
       initialized: false,
-      ordinal: 0,
       at: decl.at,
     };
     const base = decl.base === undefined
@@ -363,7 +363,6 @@ export class Elaborator {
       decl.typeParams.length,
     );
     if (base.kind !== "TData") {
-      // A `<bad>` is passed over: a report already stands for it.
       if (base.kind !== "TBad") {
         this.#report(
           `${decl.name.text} may present as a datatype, and ` +

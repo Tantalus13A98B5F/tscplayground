@@ -89,7 +89,9 @@ export class Checker {
    *
    * A declaration that reported already is skipped rather than checked into
    * more of the same: no base, no entry, no constructor of its own to take
-   * fields from.
+   * fields from. Its elaborated constructors are found by name and not by
+   * index, the two lists parting company wherever a duplicate name was
+   * dropped.
    */
   #checkCoercions(decls: readonly TypeDecl[]): void {
     for (const decl of decls) {
@@ -693,34 +695,6 @@ export class Checker {
    * Each is about an arm against the ones before it, which is what an arm
    * cannot see and this method can.
    */
-  /**
-   * Record which datatype this match's patterns resolve against -- the one
-   * written `as`, if it agrees, and otherwise the scrutinee's own.
-   *
-   * The one thing the checker writes back into the tree, and it writes it for
-   * a reader that has no other way to the answer: a value presenting as
-   * something else carries every datatype along its chain, and two of them may
-   * spell a constructor the same. A name alone does not say which was meant.
-   *
-   * Filled rather than demanded, because the scrutinee's type already says it
-   * -- an annotation is asked for only where nothing else can supply one. An
-   * `as` that disagrees is a mistake and not a cast: there is no downcast
-   * here, and going *up* is what an ordinary annotation on the scrutinee does.
-   */
-  #settleMatchDatatype(
-    term: Extract<TermNode, { kind: "Match" }>,
-    datatype: string,
-  ): void {
-    const written = term.datatype;
-    if (written !== undefined && written !== datatype) {
-      this.#report(
-        `these patterns are matched against ${datatype}, not ${written}`,
-        term.at,
-      );
-    }
-    term.datatype = datatype;
-  }
-
   #checkMatch(
     term: Extract<TermNode, { kind: "Match" }>,
     expected: TypePattern,
@@ -800,6 +774,34 @@ export class Checker {
    * reaches a `never` scrutinee's arms at all, and past a `<bad>` there is
    * nothing a join could be trusted to say.
    */
+  /**
+   * Record which datatype this match's patterns resolve against -- the one
+   * written `as`, if it agrees, and otherwise the scrutinee's own.
+   *
+   * The one thing the checker writes back into the tree, and it writes it for
+   * a reader that has no other way to the answer: a value presenting as
+   * something else carries every datatype along its chain, and two of them may
+   * spell a constructor the same. A name alone does not say which was meant.
+   *
+   * Filled rather than demanded, because the scrutinee's type already says it
+   * -- an annotation is asked for only where nothing else can supply one. An
+   * `as` that disagrees is a mistake and not a cast: there is no downcast
+   * here, and going *up* is what an ordinary annotation on the scrutinee does.
+   */
+  #settleMatchDatatype(
+    term: Extract<TermNode, { kind: "Match" }>,
+    datatype: string,
+  ): void {
+    const written = term.datatype;
+    if (written !== undefined && written !== datatype) {
+      this.#report(
+        `these patterns are matched against ${datatype}, not ${written}`,
+        term.at,
+      );
+    }
+    term.datatype = datatype;
+  }
+
   #checkUnmatchable(
     term: Extract<TermNode, { kind: "Match" }>,
     scrutinee: Type,

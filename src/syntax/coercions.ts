@@ -31,7 +31,7 @@
 import type { Diagnostic, Position } from "../diagnostics/diagnostic.ts";
 import { reportError } from "../diagnostics/diagnostic.ts";
 import type { CtorDecl, DatatypeDecl, Program, TermNode } from "./ast.ts";
-import { qualifiedCtor, QUALIFIER } from "./parser.ts";
+import { qualifiedCtor, QUALIFIER } from "./ast.ts";
 
 /**
  * Rewrite every coercion tail in `program` to name its constructor through the
@@ -80,7 +80,6 @@ function resolveTails(
 ): TermNode {
   switch (term.kind) {
     case "Let":
-      return { ...term, body: resolveTails(term.body, base, diagnostics) };
     case "LetRec":
       return { ...term, body: resolveTails(term.body, base, diagnostics) };
     case "Match":

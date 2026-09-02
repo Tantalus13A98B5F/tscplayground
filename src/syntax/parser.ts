@@ -44,6 +44,7 @@ import type {
   TypeNode,
   TypeParam,
 } from "./ast.ts";
+import { QUALIFIER } from "./ast.ts";
 import { isCloser, type Token, type TokenKind } from "./lexer.ts";
 import { Cursor, rethrowUnexpected } from "./cursor.ts";
 
@@ -234,14 +235,14 @@ class Parser {
     // lets layout open their block wherever it sits.
     this.cursor.expect("where", "`where`, then the constructors");
     const ctors = this.arms("constructor", (at) => this.ctorDecl(at));
-    const decl = {
+    return {
       kind: "DatatypeDecl",
       name,
       typeParams,
       ctors,
       at: keyword.at,
-    } as const;
-    return base === undefined ? decl : { ...decl, base };
+      ...(base === undefined ? {} : { base }),
+    };
   }
 
   /** `typedef Endo[A] = (A) -> A`. Transparent, so it has no constructors. */
@@ -271,9 +272,9 @@ class Parser {
     const coercion = this.cursor.accept("arrow") === undefined
       ? undefined
       : this.coercion();
-    const decl = { name, at };
     return {
-      ...decl,
+      name,
+      at,
       ...(params === undefined ? {} : { params }),
       ...(coercion === undefined ? {} : { coercion }),
     };
@@ -477,8 +478,13 @@ class Parser {
       : this.declName("the datatype the patterns are of").text;
     this.cursor.expect("with", "`with`, then the arms");
     const arms = this.arms("arm", (at) => this.matchArm(at));
-    const match = { kind: "Match", scrutinee, arms, at: keyword.at } as const;
-    return datatype === undefined ? match : { ...match, datatype };
+    return {
+      kind: "Match",
+      scrutinee,
+      arms,
+      at: keyword.at,
+      ...(datatype === undefined ? {} : { datatype }),
+    };
   }
 
   private matchArm(at: Position): MatchArm {
@@ -867,26 +873,6 @@ export const WILDCARD = "_";
  * `requirePlainName`.
  */
 export const BANG = "!";
-
-/**
- * What separates a datatype from one of its constructors, `List.Cons`. Part of
- * the name for the same reason `BANG` is, and refused at a binder for the same
- * reason: it names what a declaration of `List` produced, so nothing else may
- * claim it.
- */
-export const QUALIFIER = ".";
-
-/**
- * `List.Cons` -- a constructor named through the datatype that declares it.
- *
- * One function, called by both phases that seed constructors, which is the
- * point: they resolve a qualified name to the same constructor because they
- * build the same string. A plain name only agrees because both happen to take
- * the last declaration of it.
- */
-export function qualifiedCtor(datatype: string, ctor: string): string {
-  return `${datatype}${QUALIFIER}${ctor}`;
-}
 
 function wildcard(at: Position): BindingIdent {
   return { text: undefined, at };
