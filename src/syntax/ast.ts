@@ -1,7 +1,8 @@
 /**
  * Surface syntax: names rather than identities, a `Position` on every node, and
  * sugar. Core kinds are `T`-prefixed (`TFun`), surface kinds `Type`-suffixed
- * (`FunType`); elaboration handles both at once, so they must not be confusable.
+ * (`FunType`); elaboration handles both at once, so they must not be
+ * confusable.
  */
 
 import type { Position } from "../diagnostics/diagnostic.ts";
@@ -16,7 +17,7 @@ export type Ident = {
  * the name to the lexer, and refused at every binding position: it names what
  * a declaration of `List` produced, so nothing else may claim it.
  */
-export const QUALIFIER = ".";
+export const DOT = ".";
 
 /**
  * `List.Cons` -- a constructor named through the datatype that declares it.
@@ -27,7 +28,7 @@ export const QUALIFIER = ".";
  * it.
  */
 export function qualifiedCtor(datatype: string, ctor: string): string {
-  return `${datatype}${QUALIFIER}${ctor}`;
+  return `${datatype}${DOT}${ctor}`;
 }
 
 /**
@@ -165,7 +166,8 @@ export type TermNode =
   }
   /**
    * `let x = e1; e2`, or `let x : A = e1; e2`. With no ascription node this is
-   * the only way into checking mode, so checking a subexpression means naming it.
+   * the only way into checking mode, so checking a subexpression means naming
+   * it.
    */
   | {
     readonly kind: "Let";
@@ -258,7 +260,7 @@ export type DatatypeDecl = {
    * Written where a quantifier writes its bound and with the same token, which
    * is the same idea at a declaration: what may stand in for this.
    */
-  readonly base?: TypeNode;
+  readonly superType?: TypeNode;
   readonly ctors: readonly CtorDecl[];
   readonly at: Position;
 };
@@ -281,22 +283,25 @@ export type CtorDecl = {
   readonly params?: readonly DomainType[];
   /**
    * What a value of this constructor presents as: an ordinary term, restricted
-   * so that **every tail position is a constructor of the declared base**.
-   * Written exactly where the datatype has a base.
+   * so that **every tail position is a constructor of the declared super
+   * type**. Written exactly where the datatype has a super type.
    *
-   * Tails distribute through `let` and `match`, so a coercion may compute and
-   * may branch, and each branch is pinned on its own. The restriction is not
-   * about types -- a body merely *typed* at the base would have its head
-   * unpinned by subsumption, a sibling subtype's value having the base's type
-   * -- so it is enforced on the tree, by `resolveCoercionTails`, which also
-   * rewrites each tail name to its qualified form. Both later phases then read
-   * one tree that already says which constructor was meant.
+   * Tails distribute through `let` and `match`, so a super constructor may
+   * compute and may branch, and each branch is pinned on its own. The
+   * restriction is not about types -- a body merely *typed* at the super type
+   * would have its head unpinned by subsumption, a sibling subtype's value
+   * having that type too -- so it is enforced on the tree.
+   *
+   * Mutable for the same reason `Match.datatype` is: elaboration writes the
+   * tails back qualified, once the super type has been resolved to a datatype,
+   * and the checker and the evaluator then read one tree that already says
+   * which constructor was meant.
    *
    * The arguments scope over the fields of the constructor declaring it, under
    * the names the declaration gave them -- which is the first thing a
    * `DomainType`'s name has ever bound.
    */
-  readonly coercion?: TermNode;
+  superCtor?: TermNode;
   readonly at: Position;
 };
 

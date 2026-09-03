@@ -276,7 +276,7 @@ Deno.test("a qualified constructor runs to the one it names", () => {
   )).toBe("True");
 });
 
-/** Monomorphic, so a pattern and a coercion read without type arguments. */
+/** Monomorphic, so a pattern and a super constructor read without type arguments. */
 const BOOLS = ["datatype Bools where", "  | Nil", "  | Cons(Bool, Bools)"];
 /** Every value of it is a `Bools`, and says which one. */
 const NONEMPTY = [
@@ -298,7 +298,7 @@ Deno.test("a value carries what it presents as, matched through", () => {
   )).toBe("True");
 
   // Which datatype a match takes apart is the scrutinee's own, so viewing one
-  // as its base is said and not guessed -- there is no downcast, and an
+  // as its super type is said and not guessed -- there is no downcast, and an
   // annotation is the whole of what saying it costs.
   expect(valueOf(
     ...BOOL,
@@ -308,7 +308,7 @@ Deno.test("a value carries what it presents as, matched through", () => {
     "match xs with | Nil -> False | Cons(h, t) -> h",
   )).toBe("True");
 
-  // And the tail the coercion built is the one it named.
+  // And the tail the super constructor built is the one it named.
   expect(valueOf(
     ...BOOL,
     ...BOOLS,
@@ -318,8 +318,8 @@ Deno.test("a value carries what it presents as, matched through", () => {
   )).toBe("Cons(True, Nil)");
 });
 
-Deno.test("the coercion runs once, at construction", () => {
-  // A `ref!` in a coercion allocates when the value is made and never again,
+Deno.test("the super constructor runs once, at construction", () => {
+  // A `ref!` in a super constructor allocates when the value is made and never again,
   // so two views of one value read one cell. Lazily it would be two.
   expect(valueOf(
     ...BOOL,
@@ -351,7 +351,7 @@ Deno.test("a pattern no view admits is stuck, naming the value's own", () => {
   ).toBe("Z is not a constructor of NonEmpty");
 });
 
-Deno.test("a coercion may branch, and each tail is pinned on its own", () => {
+Deno.test("a super constructor may branch, and each tail is pinned on its own", () => {
   const run = (...lines: readonly string[]) =>
     valueOf(
       ...BOOL,
@@ -364,7 +364,7 @@ Deno.test("a coercion may branch, and each tail is pinned on its own", () => {
       ...lines,
     );
   // The value stays a `Keep` -- an annotation is a view and not a conversion
-  // -- so which tail ran is read through a match on the base.
+  // -- so which tail ran is read through a match on the super type.
   const kept = (b: string) =>
     run(
       `let xs : Bools = Keep(${b});`,

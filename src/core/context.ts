@@ -48,8 +48,9 @@
  */
 
 import type { Position } from "../diagnostics/diagnostic.ts";
+import type { TermNode } from "../syntax/ast.ts";
 import {
-  type DataType,
+  type DataInst,
   type DatatypeParam,
   FVar,
   type FVarRef,
@@ -86,6 +87,23 @@ export type DataCtorInfo = {
   readonly name: string;
   /** Field types, closed over the owning datatype's parameters. */
   readonly fields: readonly Type[];
+  /**
+   * The name of each field, or `undefined` where the declaration gave none.
+   * Positional with `fields`. Names because a super constructor's arguments are
+   * the one thing that reaches a field by name -- everywhere else a
+   * `DomainType`'s name is documentation.
+   */
+  readonly fieldNames: readonly (string | undefined)[];
+  /**
+   * What a value of this constructor presents as: the super constructor's body,
+   * tails already qualified against the super type by elaboration.
+   *
+   * Present exactly where the declaration wrote a super type, that being the
+   * rule `#acceptSuperCtor` enforces as it fills this in. So a reader that has
+   * the elaborated `superType` has the body too, and the two are never asked
+   * about separately.
+   */
+  readonly superCtor?: TermNode;
   /**
    * Declared as a bare name, so this constructor *is* a value of its datatype
    * rather than a function of its fields. Implies no fields and a monomorphic
@@ -144,26 +162,26 @@ export type DatatypeInfo = {
    * declaration's parameters the way a constructor's fields are, so reading it
    * at a use is an `openMany` at that use's arguments.
    *
-   * Here and not on `DataHead`, which every `TData` carries: a base's `BVar`s
-   * count from this declaration's binder, and a walk descending into one from
-   * a node would read them against a binder it never entered. Constructor
-   * fields are unreachable from a type for that same reason.
+   * Here and not on `DataHead`, which every `TData` carries: a super type's
+   * `BVar`s count from this declaration's binder, and a walk descending into
+   * one from a node would read them against a binder it never entered.
+   * Constructor fields are unreachable from a type for that same reason.
    *
-   * Set with the signature and never after, unlike `ctors`: a base is
+   * Set with the signature and never after, unlike `ctors`: a super type is
    * elaborated against the declarations above this one, which is what leaves
    * no cycle to refuse. `docs/subtyping.md` has the rest.
    */
-  readonly base?: DataType;
+  readonly superType?: DataInst;
   /**
    * Where this declaration stands among the others -- what `Level` is to a
    * context entry, at the table instead: its identity *is* its position, so
    * the next one is the table's size and no allocator is needed.
    *
-   * A base is elaborated against this table, so it names an entry already in
-   * it and an ordinal strictly decreases along a base chain. Which is the
-   * whole of what reads it: a climb terminates by that alone rather than by
-   * trusting a cycle check, and a target declared no earlier than where a
-   * climb stands cannot be above it.
+   * A super type is elaborated against this table, so it names an entry already
+   * in it and an ordinal strictly decreases along a super-type chain. Which is
+   * the whole of what reads it: a climb terminates by that alone rather than by
+   * trusting a cycle check, and a target declared no earlier than where a climb
+   * stands cannot be above it.
    *
    * Not a depth in the chain. Two chains have nothing to say to each other
    * about depth, where every declaration has an ordinal against every other.
@@ -216,10 +234,10 @@ export class Declarations {
    * declared if it was. Refused here rather than by the caller, so that "the
    * first declaration keeps the name" is a property of the table.
    *
-   * The base arrives with the signature and is not set afterwards, which is
-   * what makes a base chain acyclic without anything checking: a base is
-   * elaborated against this table, so it is one of the entries already here,
-   * so its ordinal is below the one stamped now.
+   * The super type arrives with the signature and is not set afterwards, which
+   * is what makes a super-type chain acyclic without anything checking: a super
+   * type is elaborated against this table, so it is one of the entries already
+   * here, so its ordinal is below the one stamped now.
    */
   addDatatype(info: Omit<DatatypeInfo, "ordinal">): Position | undefined {
     const previous = this.declaredAt(info.name);
@@ -328,10 +346,11 @@ export class EVarEntry {
    *
    * Carried because a constraint may not mention *any* EVar of its own batch,
    * not merely one to its right. Leftward looks harmless, the solver going
-   * ascending, but `?a`'s choice is made by where it occurs in the *result type*
-   * alone, blind to `?a` standing inside `?b`'s pending bounds. Refusing the
-   * dependency keeps every batch a set of independent variables, which is the
-   * condition under which each variable's own occurrences are the whole story.
+   * ascending, but `?a`'s choice is made by where it occurs in the *result
+   * type* alone, blind to `?a` standing inside `?b`'s pending bounds. Refusing
+   * the dependency keeps every batch a set of independent variables, which is
+   * the condition under which each variable's own occurrences are the whole
+   * story.
    */
   readonly batch: number;
 

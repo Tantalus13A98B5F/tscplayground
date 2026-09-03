@@ -49,17 +49,17 @@ negation. See §7 for what is said about it instead.
 
 ## 2. The walk
 
-One walk per constructor field and one per declared base, each entered at
-variance `+1` -- a field is projected by `match` and never assigned, a base by
-every use of the child where the parent was asked for, which is why there is no
-contravariant entry and why mutability arrives as a builtin `Ref` rather than as
-a declared datatype the walk would have to model. `Ref` is a type former of its
-own -- `TRef`, not a `TData` -- so this pass has nothing to compute for it and
-nothing to leave out: the walk has a `TRef` case that recurses at `0`, and a
-datatype holding a cell comes out invariant with no table entry involved. Had it
-been a datatype instead, optimism would have been exactly the unsound kind: no
-constructor field of it mentions a `T`, so the walk would find nothing and
-conclude that nothing observes one.
+One walk per constructor field and one per declared super type, each entered at
+variance `+1` -- a field is projected by `match` and never assigned, a super
+type by every use of the child where the parent was asked for, which is why
+there is no contravariant entry and why mutability arrives as a builtin `Ref`
+rather than as a declared datatype the walk would have to model. `Ref` is a type
+former of its own -- `TRef`, not a `TData` -- so this pass has nothing to
+compute for it and nothing to leave out: the walk has a `TRef` case that
+recurses at `0`, and a datatype holding a cell comes out invariant with no table
+entry involved. Had it been a datatype instead, optimism would have been exactly
+the unsound kind: no constructor field of it mentions a `T`, so the walk would
+find nothing and conclude that nothing observes one.
 
 Carrying a `Variance` end to end:
 
@@ -85,18 +85,19 @@ against the general position-composition on the cases that could disagree
 bivariant); they agree everywhere, so the branch is exact and not an
 approximation.
 
-A **base** is not a case either -- it is one more type walked by the rules
+A **super type** is not a case either -- it is one more type walked by the rules
 above, at `+1`, into the same row. What it needs is an argument that `+1` is the
 right entry, and that argument is different from a field's: covariance is
 _required_, because `Foo[A] <: Foo[A']` has to imply that their bases relate the
 same way or transitivity fails. It is also sufficient, since a parameter
-occurring contravariantly in the base is driven to invariant by the merge, and
-an invariant parameter makes the obligation vacuous -- there is no `Foo[A']` to
-be under in the first place. §6 has `Small`, `Flip` and `Both` worked through.
+occurring contravariantly in the super type is driven to invariant by the merge,
+and an invariant parameter makes the obligation vacuous -- there is no `Foo[A']`
+to be under in the first place. §6 has `Small`, `Flip` and `Both` worked
+through.
 
 Mutual recursion through bases needs nothing extra: it is the same fixed point
 that already handles two datatypes naming each other in a field, and it is why
-this cannot be a per-declaration pass ordered by the base relation.
+this cannot be a per-declaration pass ordered by the super-type relation.
 
 Aliases are not a case. They are transparent and expanded during elaboration, so
 by the time `ctors` is walked no field holds one.
@@ -280,19 +281,19 @@ order is the whole of what keeps them honest, so it is worth a line in both.
     datatype Both[A]  <: Box[A] where
     | MkBoth((A) -> Bool)
 
-`Small` has no fields at all, so the base is the only thing that can answer for
-`A`, and it answers `+`: walked at `+1`, `Box`'s row says covariant, recurse at
-`+1`, merge. Without the base in the walk `A` would come out bivariant and be
-reported as a phantom -- a parameter observed by every use of `Small` where a
-`Box` was wanted.
+`Small` has no fields at all, so the super type is the only thing that can
+answer for `A`, and it answers `+`: walked at `+1`, `Box`'s row says covariant,
+recurse at `+1`, merge. Without the super type in the walk `A` would come out
+bivariant and be reported as a phantom -- a parameter observed by every use of
+`Small` where a `Box` was wanted.
 
 `Flip` reaches the same `Box` argument through an arrow, so the parameter flips
-and the answer is `-`. Nothing about a base's own position survives that: it is
-walked by the rules in §2 like anything else.
+and the answer is `-`. Nothing about a super type's own position survives that:
+it is walked by the rules in §2 like anything else.
 
-`Both` gets `+` from the base and `-` from its field, which merge to invariant.
-That is the case the covariance requirement is vacuous on -- there is no
-`Both[A']` above `Both[A]` for the base obligation to be about.
+`Both` gets `+` from the super type and `-` from its field, which merge to
+invariant. That is the case the covariance requirement is vacuous on -- there is
+no `Both[A']` above `Both[A]` for the super type obligation to be about.
 
 ## 7. What gets reported
 

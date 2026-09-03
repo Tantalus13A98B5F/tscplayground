@@ -23,11 +23,9 @@ import {
 import {
   bindingHint,
   type BindingIdent,
-  type CtorDecl,
   type MatchArm,
   type Program,
   type TermNode,
-  type TypeDecl,
 } from "../syntax/ast.ts";
 import { Context } from "./context.ts";
 import {
@@ -41,6 +39,7 @@ import {
   badUnder,
   closeFrom,
   completePattern,
+  type DataInst,
   FVar,
   impossible,
   mkLevel,
@@ -78,60 +77,58 @@ export class Checker {
     this.elaborator.seedBuiltins();
     this.elaborator.elaborateDeclarations(program.decls);
     this.elaborator.seedConstructors();
-    this.#checkCoercions(program.decls);
+    this.#checkSuperCtors();
     return this.infer(program.term);
   }
 
   /**
-   * Every coercion, after every constructor is seeded -- so a coercion may
-   * name any of them in its arguments, and two datatypes may present as each
-   * other's neighbours without an order to arrange.
+   * Every super constructor, after every constructor is seeded -- so a super
+   * constructor may name any of them in its arguments, and two datatypes may
+   * present as each other's neighbours without an order to arrange.
    *
-   * A declaration that reported already is skipped rather than checked into
-   * more of the same: no base, no entry, no constructor of its own to take
-   * fields from. Its elaborated constructors are found by name and not by
-   * index, the two lists parting company wherever a duplicate name was
-   * dropped.
+   * Read off the declaration table rather than the tree it was elaborated from:
+   * a datatype whose super type was refused has none to check against, and a
+   * duplicate constructor was dropped on the way in, so walking the entries is
+   * how both are skipped without asking about either. Having the super type is
+   * having the super constructors -- elaboration records one exactly where a
+   * super type was written.
    */
-  #checkCoercions(decls: readonly TypeDecl[]): void {
-    for (const decl of decls) {
-      if (decl.kind !== "DatatypeDecl") continue;
-      const datatype = this.declarations.datatypeOf(decl.name.text);
-      if (datatype?.base === undefined) continue;
-      for (const ctor of decl.ctors) {
-        const own = datatype.ctors.find((c) => c.name === ctor.name.text);
-        if (ctor.coercion === undefined || own === undefined) continue;
-        this.#checkCoercion(datatype, own, ctor, ctor.coercion);
+  #checkSuperCtors(): void {
+    for (const datatype of this.declarations.datatypes()) {
+      const superType = datatype.superType;
+      if (superType === undefined) continue;
+      for (const ctor of datatype.ctors) {
+        if (ctor.superCtor !== undefined) {
+          this.#checkSuperCtor(datatype, superType, ctor, ctor.superCtor);
+        }
       }
     }
   }
 
   /**
-   * One coercion: `| One(x: A) -> Cons(x, Nil())` under `NonEmpty[A] <:
-   * List[A]`.
+   * One super constructor: `| One(x: A) -> Cons(x, Nil())` under `NonEmpty[A]
+   * <: List[A]`.
    *
-   * Checked as an ordinary term against the base, instantiated at this
+   * Checked as an ordinary term against the super type, instantiated at this
    * datatype's own parameters -- so arity, field types and everything a body
    * may compute on the way are the machinery that was already here.
    *
-   * That the *head* is a constructor of the base is not this method's to
+   * That the *head* is a constructor of the super type is not this method's to
    * establish, and could not be: subsumption would let a sibling subtype's
-   * value check against the base perfectly well. It was settled on the tree by
-   * `resolveCoercionTails`, before either phase read it.
+   * value check against the super type perfectly well. It was settled on the
+   * tree by elaboration, before any term was checked.
    *
    * The scope is the datatype's parameters, rigid, and its fields under the
    * names the declaration gave them -- the first thing a `DomainType`'s name
    * has bound. Everywhere else it is documentation; here it is the only way to
    * reach the field.
    */
-  #checkCoercion(
+  #checkSuperCtor(
     datatype: DatatypeInfo,
+    superType: DataInst,
     own: DataCtorInfo,
-    decl: CtorDecl,
     body: TermNode,
   ): void {
-    const base = datatype.base;
-    if (base === undefined) return impossible("a base, tested by the caller");
     this.context.inScope(() => {
       // Named, not only hinted: a type written inside the body -- `Nil[A]()`,
       // an annotation on a lambda -- resolves against these, and a parameter
@@ -144,15 +141,10 @@ export class Checker {
           param.hint,
         )
       );
-      const fields = ctorFieldsAt(own, vars);
-      (decl.params ?? []).forEach((param, i) => {
-        const name = param.name?.text;
-        const type = fields[i];
-        if (name !== undefined && type !== undefined) {
-          this.context.pushTermVar(type, name);
-        }
-      });
-      this.check(body, openMany(base, vars));
+      ctorFieldsAt(own, vars).forEach((type, i) =>
+        this.context.pushTermVar(type, own.fieldNames[i])
+      );
+      this.check(body, openMany(superType, vars));
     });
   }
 
@@ -753,28 +745,6 @@ export class Checker {
   }
 
   /**
-   * A `match` with no set of constructors to work with, which is why none of
-   * the analysis above applies: no arm is covered by another, none of them
-   * together leave a value over, and no name written resolves. Three heads
-   * arrive here and each answers for the whole match, binders and result
-   * alike -- `<bad>` where a report already stands, `never` where no value
-   * arrives to be taken apart, and a fresh `<bad>` for a head that is simply
-   * not matchable, said once about the scrutinee rather than once per name
-   * that failed to be a constructor of it.
-   *
-   * A `Ref` is the interesting member of that third group. It is *inhabited*
-   * and still has nothing to take apart, which is exactly why it is not a
-   * datatype with no constructors: the analysis above would read an empty
-   * constructor set as an empty type, call every arm unreachable and answer
-   * `never`.
-   *
-   * The arms are still checked, since what is written in them is as wrong as
-   * it would be anywhere else. Their types are dropped rather than joined,
-   * which is the unreachable-arm rule with every arm unreachable: nothing
-   * reaches a `never` scrutinee's arms at all, and past a `<bad>` there is
-   * nothing a join could be trusted to say.
-   */
-  /**
    * Record which datatype this match's patterns resolve against -- the one
    * written `as`, if it agrees, and otherwise the scrutinee's own.
    *
@@ -802,6 +772,28 @@ export class Checker {
     term.datatype = datatype;
   }
 
+  /**
+   * A `match` with no set of constructors to work with, which is why none of
+   * the analysis above applies: no arm is covered by another, none of them
+   * together leave a value over, and no name written resolves. Three heads
+   * arrive here and each answers for the whole match, binders and result
+   * alike -- `<bad>` where a report already stands, `never` where no value
+   * arrives to be taken apart, and a fresh `<bad>` for a head that is simply
+   * not matchable, said once about the scrutinee rather than once per name
+   * that failed to be a constructor of it.
+   *
+   * A `Ref` is the interesting member of that third group. It is *inhabited*
+   * and still has nothing to take apart, which is exactly why it is not a
+   * datatype with no constructors: the analysis above would read an empty
+   * constructor set as an empty type, call every arm unreachable and answer
+   * `never`.
+   *
+   * The arms are still checked, since what is written in them is as wrong as
+   * it would be anywhere else. Their types are dropped rather than joined,
+   * which is the unreachable-arm rule with every arm unreachable: nothing
+   * reaches a `never` scrutinee's arms at all, and past a `<bad>` there is
+   * nothing a join could be trusted to say.
+   */
   #checkUnmatchable(
     term: Extract<TermNode, { kind: "Match" }>,
     scrutinee: Type,

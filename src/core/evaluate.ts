@@ -58,23 +58,23 @@ type CtorShape = {
   readonly name: string;
   readonly datatype: string;
   /**
-   * The name of each field, or `undefined` where the declaration gave none.
-   * Its length is the arity. Names because a coercion's arguments are the one
-   * thing that reaches a field by name -- everywhere else a `DomainType`'s
+   * The name of each field, or `undefined` where the declaration gave none. Its
+   * length is the arity. Names because a super constructor's arguments are the
+   * one thing that reaches a field by name -- everywhere else a `DomainType`'s
    * name is documentation.
    */
   readonly fields: readonly (string | undefined)[];
   readonly isValue: boolean;
   readonly at: Position;
   /**
-   * What a value built here presents as: the coercion's body, a term whose
-   * tails already name the base's constructors -- `resolveCoercionTails`
-   * qualified them before anything read this tree.
+   * What a value built here presents as: the super constructor's body, a term
+   * whose tails already name the super type's constructors -- elaboration
+   * qualified them in the tree, once it knew what the super type resolved to.
    *
-   * Absent where the datatype has no base, which is where a coercion is
-   * refused; this file is not the place that says so.
+   * Absent where the datatype has no super type, which is where a super
+   * constructor is refused; this file is not the place that says so.
    */
-  readonly coercion?: TermNode;
+  readonly superCtor?: TermNode;
 };
 
 /** Where a cell lives. An index into the run's `Heap`, and nothing else. */
@@ -95,16 +95,16 @@ export type Value =
     readonly fields: readonly Value[];
     /**
      * What this presents as, built here rather than at each match: the
-     * coercion runs once, when the value is made.
+     * super constructor runs once, when the value is made.
      *
      * Eager because lazy would run the body per inspection, so a `ref!` in a
-     * coercion would allocate every time a value was looked at as its base,
-     * which nothing in the program text says. Safe because a datatype's fields
-     * never change -- the only mutation is through a cell, and a coercion
-     * passing one through passes the same cell -- so an image computed once
-     * cannot go stale.
+     * super constructor would allocate every time a value was looked at as its
+     * super type, which nothing in the program text says. Safe because a
+     * datatype's fields never change -- the only mutation is through a cell,
+     * and a super constructor passing one through passes the same cell -- so an
+     * image computed once cannot go stale.
      */
-    readonly base?: Value;
+    readonly superType?: Value;
   }
   /** A cell, as its address. What is at that address is the heap's business. */
   | { readonly kind: "VRef"; readonly addr: Addr }
@@ -253,12 +253,12 @@ class Evaluator {
   readonly #fields = new Map<string, Set<string>>();
   /**
    * The outermost scope as far as `#outermost` has built it -- what a
-   * coercion's body is evaluated over, that being an ordinary term.
+   * super constructor's body is evaluated over, that being an ordinary term.
    *
-   * A coercion of a *value* constructor runs during that build, so what it
-   * sees is the constructors pushed before it; every later reader sees the
-   * finished scope. Both are enough because a base is declared before the
-   * datatype presenting as it.
+   * A super constructor of a *value* constructor runs during that build, so
+   * what it sees is the constructors pushed before it; every later reader sees
+   * the finished scope. Both are enough because a super type is declared before
+   * the datatype presenting as it.
    */
   #globals: Scope = undefined;
 
@@ -281,9 +281,9 @@ class Evaluator {
           isValue: ctor.params === undefined,
           at: ctor.name.at,
         };
-        const coercion = ctor.coercion;
+        const superCtor = ctor.superCtor;
         this.#ctors.push(
-          coercion === undefined ? shape : { ...shape, coercion },
+          superCtor === undefined ? shape : { ...shape, superCtor },
         );
         names.add(ctor.name.text);
       }
@@ -345,9 +345,9 @@ class Evaluator {
       );
       push(ctor.name, value);
       push(qualified, value);
-      // Level with the loop, a value constructor's coercion running as it is
-      // pushed. An argument naming something declared further down is what
-      // this does not reach, and gets an unknown name.
+      // Level with the loop, a value constructor's super constructor running as
+      // it is pushed. An argument naming something declared further down is
+      // what this does not reach, and gets an unknown name.
       this.#globals = scope;
     }
     return scope;
@@ -360,19 +360,20 @@ class Evaluator {
   /**
    * A constructor applied to its fields, together with what it presents as.
    *
-   * The image is built here and not at each match, so a coercion runs once per
-   * value however often it is looked at. It recurses through `#coerce`, so a
-   * chain is built whole; it terminates because a base is declared before the
-   * datatype presenting as it, and so cannot come round again.
+   * The image is built here and not at each match, so a super constructor runs
+   * once per value however often it is looked at. It recurses through
+   * `#coerce`, so a chain is built whole; it terminates because a super type is
+   * declared before the datatype presenting as it, and so cannot come round
+   * again.
    */
   #construct(
     ctor: CtorShape,
     fields: readonly Value[],
   ): Value {
-    const base = this.#coerce(ctor, fields);
-    return base === undefined
+    const superType = this.#coerce(ctor, fields);
+    return superType === undefined
       ? { kind: "VData", ctor, fields }
-      : { kind: "VData", ctor, fields, base };
+      : { kind: "VData", ctor, fields, superType };
   }
 
   /**
@@ -382,20 +383,20 @@ class Evaluator {
    * An ordinary term, evaluated over a scope binding this constructor's fields
    * by the names the declaration gave them. No type is read and none is
    * needed: which constructor each tail names was settled on the tree by
-   * `resolveCoercionTails`, before this file or the checker saw it, so what
-   * this builds is what the checker was told it would build.
+   * elaboration, before this file or any term was checked, so what this builds
+   * is what the checker was told it would build.
    */
   #coerce(
     ctor: CtorShape,
     fields: readonly Value[],
   ): Value | undefined {
-    if (ctor.coercion === undefined) return undefined;
+    if (ctor.superCtor === undefined) return undefined;
     let scope = this.#globals;
     for (const [index, field] of ctor.fields.entries()) {
       if (field === undefined) continue;
       scope = { name: field, value: fields[index]!, outer: scope };
     }
-    return this.#eval(ctor.coercion, scope);
+    return this.#eval(ctor.superCtor, scope);
   }
 
   #eval(term: TermNode, scope: Scope): Value {
@@ -610,9 +611,9 @@ class Evaluator {
 
     for (let view = scrutinee;;) {
       if (found(view)) return view;
-      const base = view.base;
-      if (base === undefined || base.kind !== "VData") break;
-      view = base;
+      const superType = view.superType;
+      if (superType === undefined || superType.kind !== "VData") break;
+      view = superType;
     }
     stuck(
       wanted === undefined

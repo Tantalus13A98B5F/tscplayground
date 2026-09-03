@@ -51,7 +51,7 @@ import {
   completePattern,
   composeVariance,
   type DataHead,
-  type DataType,
+  type DataInst,
   type Direction,
   flip,
   FVar,
@@ -204,17 +204,20 @@ export class Subtyper {
    * `undefined` where it presents as nothing.
    *
    * The one thing here read from a declaration rather than from the node in
-   * front of it, and it has to be: a base is closed over its declaration's
-   * parameters, so it cannot sit in a type without putting `BVar`s of one
-   * binder inside a walk over another. Reading it is what `#declaredBoundOf`
-   * is for a variable -- the step where structure runs out and one type stands
-   * aside for another.
+   * front of it, and it has to be: a super type is closed over its
+   * declaration's parameters, so it cannot sit in a type without putting
+   * `BVar`s of one binder inside a walk over another. Reading it is what
+   * `#declaredBoundOf` is for a variable -- the step where structure runs out
+   * and one type stands aside for another.
    */
-  #baseOf(type: DataType): DataType | undefined {
-    const base = this.context.declarations.datatypeOf(type.name)?.base;
-    if (base === undefined) return undefined;
-    const opened = openMany(base, type.args);
-    if (opened.kind !== "TData") impossible("a base opened to something else");
+  #superTypeOf(type: DataInst): DataInst | undefined {
+    const superType = this.context.declarations.datatypeOf(type.name)
+      ?.superType;
+    if (superType === undefined) return undefined;
+    const opened = openMany(superType, type.args);
+    if (opened.kind !== "TData") {
+      impossible("a super type opened to something else");
+    }
     return opened;
   }
 
@@ -231,22 +234,22 @@ export class Subtyper {
    * `type` presented as the datatype `name`, or `undefined` if it presents as
    * no such thing. Reflexive: a type already is the datatype it names.
    *
-   * Upward only, and there is no descending walk to write: a base says nothing
-   * about which of its children a value came from, which is the whole of why
-   * exhaustiveness stays a set-membership test.
+   * Upward only, and there is no descending walk to write: a super type says
+   * nothing about which of its children a value came from, which is the whole
+   * of why exhaustiveness stays a set-membership test.
    *
-   * The ordinal is what stops it, and stops it early: a base is declared
+   * The ordinal is what stops it, and stops it early: a super type is declared
    * before its child, so a target no earlier than where the walk stands is not
    * above it, and the common case of two unrelated datatypes costs no step at
    * all. Termination comes from the same fact and not from the chain being
    * checked acyclic -- `expose`'s argument about levels, at the table.
    */
-  #riseTo(type: DataType, name: string): DataType | undefined {
+  #riseTo(type: DataInst, name: string): DataInst | undefined {
     const target = this.#ordinalOf(name);
     let current = type;
     while (current.name !== name) {
       if (this.#ordinalOf(current.name) <= target) return undefined;
-      const above = this.#baseOf(current);
+      const above = this.#superTypeOf(current);
       if (above === undefined) return undefined;
       current = above;
     }
@@ -877,8 +880,8 @@ export class Subtyper {
    * relate.
    */
   #relateData(
-    s: DataType,
-    t: DataType,
+    s: DataInst,
+    t: DataInst,
     variance: Oriented,
   ): boolean {
     const from = variance > 0 ? this.#riseTo(s, t.name) : s;
@@ -1360,16 +1363,17 @@ export class Subtyper {
    * Two names that differ have an answer only upward. Joining rises both sides
    * to the nearest datatype each presents as and goes on argumentwise from
    * there. Meeting cannot do the same: a child's parameters need not be
-   * recoverable from its base, so there is no `Foo` to build, and all that can
-   * be said is whether one side already sits under the other -- which is what
-   * `#meet` says of a variable, asked of the relation for the same reason.
+   * recoverable from its super type, so there is no `Foo` to build, and all
+   * that can be said is whether one side already sits under the other -- which
+   * is what `#meet` says of a variable, asked of the relation for the same
+   * reason.
    *
-   * Only one of the two asks can hold, the base relation being acyclic, so the
-   * order they are asked in decides nothing.
+   * Only one of the two asks can hold, the super-type relation being acyclic,
+   * so the order they are asked in decides nothing.
    */
   #latticeData(
-    s: DataType,
-    t: DataType,
+    s: DataInst,
+    t: DataInst,
     dir: Direction,
   ): Type | undefined {
     if (s.name === t.name) return this.#latticeDataArgs(s, t, dir);
@@ -1380,8 +1384,8 @@ export class Subtyper {
         : this.#latticeDataArgs(common[0], common[1], dir);
     }
     // The ordinal picks the side, so the relation is asked once and not twice:
-    // a base is declared before its child, so only the later-declared of two
-    // can be the one that presents as the other.
+    // a super type is declared before its child, so only the later-declared of
+    // two can be the one that presents as the other.
     const later = this.#ordinalOf(s.name) > this.#ordinalOf(t.name);
     const [under, over] = later ? [s, t] : [t, s];
     return this.#subtype(under, over) ? under : undefined;
@@ -1399,17 +1403,17 @@ export class Subtyper {
    *
    * The ordinal is what buys the single walk. Without it the only way to the
    * least is to try each of one chain against all of the other, instantiating
-   * a base at every try and throwing it away.
+   * a super type at every try and throwing it away.
    */
   #leastCommonData(
-    s: DataType,
-    t: DataType,
-  ): readonly [DataType, DataType] | undefined {
+    s: DataInst,
+    t: DataInst,
+  ): readonly [DataInst, DataInst] | undefined {
     let left = s;
     let right = t;
     while (left.name !== right.name) {
       const climbs = this.#ordinalOf(left.name) >= this.#ordinalOf(right.name);
-      const above = this.#baseOf(climbs ? left : right);
+      const above = this.#superTypeOf(climbs ? left : right);
       if (above === undefined) return undefined;
       if (climbs) left = above;
       else right = above;
@@ -1426,8 +1430,8 @@ export class Subtyper {
    * disagree on an argument that cannot move.
    */
   #latticeDataArgs(
-    s: DataType,
-    t: DataType,
+    s: DataInst,
+    t: DataInst,
     dir: Direction,
   ): Type | undefined {
     if (s.args.length !== t.args.length) return undefined;

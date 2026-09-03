@@ -1,6 +1,6 @@
 # Before the first release
 
-GaML runs end to end today -- lex, lay out, parse, elaborate, check, evaluate,
+GaLa runs end to end today -- lex, lay out, parse, elaborate, check, evaluate,
 print a value and its type. What follows is the work between here and a version
 anyone else should use. One item left, with the reason it is on the list rather
 than merely desirable -- then what has landed, and then the things deliberately

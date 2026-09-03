@@ -602,27 +602,27 @@ Deno.test("a dropped duplicate takes its fields, so no phantom either", () => {
   )).toEqual(["error: datatype Tag already has a constructor MkTag"]);
 });
 
-Deno.test("a base is one more occurrence in the fixed point, covariant", () => {
+Deno.test("a super type is one more occurrence in the fixed point, covariant", () => {
   expect(variancesOf(
     ...BOOL,
     "datatype Box[A] where",
     "  | MkBox(A)",
-    // No fields at all, so the base is the only place the parameter occurs and
+    // No fields at all, so the super type is the only place the parameter occurs and
     // the only thing that can answer for it.
     "datatype Small[A] <: Box[A] where",
     "  | MkSmall()",
-    // A base is walked like a field, so a parameter under an arrow in one
+    // A super type is walked like a field, so a parameter under an arrow in one
     // flips.
     "datatype Flip[A] <: Box[(A) -> Bool] where",
     "  | MkFlip()",
-    // Covariant from the base and contravariant from a field, which meet at
+    // Covariant from the super type and contravariant from a field, which meet at
     // invariant -- and that is what makes the covariance requirement vacuous.
     "datatype Both[A] <: Box[A] where",
     "  | MkBoth((A) -> Bool)",
   )).toEqual(["Box[+A]", "Small[+A]", "Flip[-A]", "Both[=A]"]);
 });
 
-Deno.test("a base must be a datatype declared above", () => {
+Deno.test("a super type must be a datatype declared above", () => {
   expect(saidOf(
     ...BOOL,
     "datatype Cells <: Ref[Bool] where",
@@ -631,8 +631,8 @@ Deno.test("a base must be a datatype declared above", () => {
     "error: Cells may present as a datatype, and Ref[Bool] is not one",
   ]);
 
-  // Equal to a datatype is not the same as naming one: the base's name has to
-  // be readable off the tree, and an alias is gone by the time anything looks.
+  // An alias expands to the datatype it names, and nothing downstream reads
+  // the spelling: the tail below qualifies to `Box.MkBox` all the same.
   expect(saidOf(
     ...BOOL,
     "datatype Box where",
@@ -640,10 +640,10 @@ Deno.test("a base must be a datatype declared above", () => {
     "typedef Alias = Box",
     "datatype Small <: Alias where",
     "  | MkSmall(Bool) -> MkBox(True)",
-  )).toEqual(["error: Small must name Box directly to present as it"]);
+  )).toEqual([]);
 
   // Declared below, so the table has not got it yet -- the alias rule, and it
-  // is what leaves a base chain no way to close on itself.
+  // is what leaves a super-type chain no way to close on itself.
   expect(saidOf(
     ...BOOL,
     "datatype Early <: Late where",
@@ -659,14 +659,14 @@ Deno.test("a base must be a datatype declared above", () => {
   )).toEqual(["error: unknown type Loop"]);
 });
 
-Deno.test("a coercion is written exactly where there is a base", () => {
+Deno.test("a super constructor is written exactly where there is a super type", () => {
   expect(saidOf(
     ...BOOL,
     "datatype Box where",
     "  | MkBox(Bool) -> MkBox(True)",
   )).toEqual([
-    "error: MkBox writes a coercion, but Box presents as nothing -- " +
-    "give it a base with `<:`",
+    "error: MkBox writes a super constructor, but Box presents as nothing -- " +
+    "give it a super type with `<:`",
   ]);
 
   expect(saidOf(
@@ -676,7 +676,7 @@ Deno.test("a coercion is written exactly where there is a base", () => {
     "datatype Small <: Box where",
     "  | MkSmall(Bool)",
   )).toEqual([
-    "error: MkSmall needs a coercion: every Small presents as Box, " +
+    "error: MkSmall needs a super constructor: every Small presents as Box, " +
     "and this says which one",
   ]);
 });

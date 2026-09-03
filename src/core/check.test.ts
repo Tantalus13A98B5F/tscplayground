@@ -1171,7 +1171,7 @@ Deno.test("arms of two datatypes join at the one they present as", () => {
     "  | False -> Nil[Bool]()",
   )).toBe("Bool -> List[Bool]");
 
-  // Two children of one base rise past both, and no further than they must.
+  // Two children of one super type rise past both, and no further than they must.
   expect(typeOf(
     ...LIST,
     ...BOOL,
@@ -1211,13 +1211,13 @@ Deno.test("a qualified name may be used, never bound", () => {
   expect(run(...BOOL, "Bool.Nope")[1]).toBe("unknown name Bool.Nope");
 });
 
-Deno.test("a coercion is checked as a term against the base", () => {
+Deno.test("a super constructor is checked as a term against the super type", () => {
   const bad = (...arms: readonly string[]) =>
     run(...LIST, ...BOOL, "datatype One[A] <: List[A] where", ...arms, "True")
       .slice(1);
 
   expect(bad("  | Mk(x: A) -> Cons(x, Nil())")).toEqual([]);
-  // The field's type comes from the base instantiated at *this* datatype's
+  // The field's type comes from the super type instantiated at *this* datatype's
   // arguments, so the tail's second field wants a `List[A]`.
   expect(bad("  | Mk(x: A) -> Cons(x, x)"))
     .toEqual(["expected List[?], found A"]);
@@ -1228,12 +1228,12 @@ Deno.test("a coercion is checked as a term against the base", () => {
   expect(bad("  | Mk(A) -> Cons(x, Nil())")).toEqual(["unknown name x"]);
 });
 
-Deno.test("every tail is a constructor of the base, on the tree", () => {
+Deno.test("every tail is a constructor of the super type, on the tree", () => {
   const bad = (...arms: readonly string[]) =>
     run(...LIST, ...BOOL, "datatype One[A] <: List[A] where", ...arms, "True")
       .slice(1);
 
-  // Named against the base and not the term scope, so neither a shadowing
+  // Named against the super type and not the term scope, so neither a shadowing
   // `let` nor a constructor of some other datatype can stand in a tail.
   expect(bad("  | Mk(x: A) -> Snoc(x)"))
     .toEqual(["unknown name List.Snoc"]);
@@ -1247,12 +1247,12 @@ Deno.test("every tail is a constructor of the base, on the tree", () => {
   expect(bad("  | Mk(x: A) -> x")).toEqual(["unknown name List.x"]);
   // A tail that is no application of a name at all.
   expect(bad("  | Mk(x: A) -> fn (y: A) -> Cons(y, Nil())")).toEqual([
-    "a coercion ends in a constructor of List, applied to its fields",
+    "a super constructor ends in a constructor of List, applied to its fields",
     "expected List[A], found A -> List[A]",
   ]);
 });
 
-Deno.test("a coercion may compute, and may name any constructor", () => {
+Deno.test("a super constructor may compute, and may name any constructor", () => {
   expect(typeOf(
     ...LIST,
     ...BOOL,
@@ -1263,7 +1263,7 @@ Deno.test("a coercion may compute, and may name any constructor", () => {
   )).toBe("List[Bool]");
 });
 
-Deno.test("a coercion body may write the datatype's own parameters", () => {
+Deno.test("a super constructor body may write the datatype's own parameters", () => {
   expect(typeOf(
     ...LIST,
     ...BOOL,

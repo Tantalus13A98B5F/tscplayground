@@ -31,11 +31,13 @@ import {
   type CtorDecl,
   type DatatypeDecl,
   type Ident,
+  type TermNode,
   type TypeDecl,
   type TypeNode,
   type TypeParam,
 } from "../syntax/ast.ts";
 import { qualifiedCtor } from "../syntax/ast.ts";
+import { resolveSuperCtorTails } from "../syntax/superctors.ts";
 
 import type {
   AliasInfo,
@@ -49,7 +51,7 @@ import {
   badUnder,
   BVar,
   closeFrom,
-  type DataType,
+  type DataInst,
   flip,
   FVar,
   impossible,
@@ -276,13 +278,20 @@ export class Elaborator {
    * before the next one's.
    */
   elaborateDeclarations(decls: readonly TypeDecl[]): void {
+    // Kept from the first pass rather than looked up in the second: a
+    // declaration that lost its name to an earlier one is not in the table,
+    // and the entry standing there is somebody else's super type.
+    const superTypes = new Map<DatatypeDecl, DataInst | undefined>();
     for (const decl of decls) {
-      this.#reportRedeclaration(
-        decl.name,
-        decl.kind === "DatatypeDecl"
-          ? this.declarations.addDatatype(this.#elaborateSignature(decl))
-          : this.declarations.addAlias(this.#elaborateAlias(decl)),
-      );
+      let claimed: Position | undefined;
+      if (decl.kind === "DatatypeDecl") {
+        const signature = this.#elaborateSignature(decl);
+        superTypes.set(decl, signature.superType);
+        claimed = this.declarations.addDatatype(signature);
+      } else {
+        claimed = this.declarations.addAlias(this.#elaborateAlias(decl));
+      }
+      this.#reportRedeclaration(decl.name, claimed);
     }
 
     for (const decl of decls) {
@@ -290,7 +299,7 @@ export class Elaborator {
       // Measured here because nothing read back off the field types answers
       // it -- see `DatatypeInfo.ctorsReported`.
       const before = this.diagnostics.length;
-      const ctors = this.#elaborateCtors(decl);
+      const ctors = this.#elaborateCtors(decl, superTypes.get(decl));
       this.declarations.initCtors(
         decl.name.text,
         ctors,
@@ -312,19 +321,19 @@ export class Elaborator {
   }
 
   /**
-   * Name, arity and base -- all a constructor field needs to name this
+   * Name, arity and super type -- all a constructor field needs to name this
    * datatype, plus the one thing that cannot wait for the second pass.
    *
-   * The base is elaborated *here*, against the table as it stands, and so
+   * The super type is elaborated *here*, against the table as it stands, and so
    * against the declarations above this one only. Which is the alias rule and
-   * has the same two consequences: a datatype naming itself as its base is an
-   * `unknown type` rather than an infinite chain, and an ordinal strictly
-   * decreases along a chain because the base was in the table first. There is
-   * no cycle left to check for.
+   * has the same two consequences: a datatype naming itself as its super type
+   * is an `unknown type` rather than an infinite chain, and an ordinal strictly
+   * decreases along a chain because the super type was in the table first.
+   * There is no cycle left to check for.
    *
-   * The price is that a base may not name a datatype declared below it, in its
-   * head or in its arguments. Fields are unaffected -- those are the second
-   * pass, against the finished table.
+   * The price is that a super type may not name a datatype declared below it,
+   * in its head or in its arguments. Fields are unaffected -- those are the
+   * second pass, against the finished table.
    */
   #elaborateSignature(
     decl: DatatypeDecl,
@@ -337,59 +346,57 @@ export class Elaborator {
       initialized: false,
       at: decl.at,
     };
-    const base = decl.base === undefined
+    const superType = decl.superType === undefined
       ? undefined
-      : this.#elaborateBase(decl, decl.base);
-    return base === undefined ? signature : { ...signature, base };
+      : this.#elaborateSuperType(decl, decl.superType);
+    return superType === undefined ? signature : { ...signature, superType };
   }
 
   /**
-   * A declared base, closed over the datatype's own parameters the way a field
-   * is, or `undefined` where it is no datatype to present as.
+   * A declared super type, closed over the datatype's own parameters the way a
+   * field is, or `undefined` where it is no datatype to present as.
    *
    * A `<bad>` is passed over in silence -- a report already stands for it --
    * where anything else with a shape of its own is refused here, `Ref` and the
-   * arrow included: a base is what a value of this datatype *also is*, and
-   * only a nominal type has room for another name's values.
+   * arrow included: a super type is what a value of this datatype *also is*,
+   * and only a nominal type has room for another name's values.
+   *
+   * An alias is not one of those. It expands to the datatype it names, and
+   * everything downstream reads the *elaborated* super type -- the tails are
+   * rewritten against `superType.name`, and the subtyper walks the table. So
+   * `<: Alias` and `<: Box` reach the same entry, and neither the tree nor a
+   * spelling has to be preserved for a later phase to read.
    */
-  #elaborateBase(decl: DatatypeDecl, node: TypeNode): DataType | undefined {
-    const base = this.context.inScope((mark) => {
+  #elaborateSuperType(
+    decl: DatatypeDecl,
+    node: TypeNode,
+  ): DataInst | undefined {
+    const superType = this.context.inScope((mark) => {
       this.#bindPlainParams(decl.typeParams);
       return closeFrom(this.elaborateType(node), mark);
     });
     this.context.assertClosed(
-      `${decl.name.text}'s base`,
-      [base],
+      `${decl.name.text}'s super type`,
+      [superType],
       decl.typeParams.length,
     );
-    if (base.kind !== "TData") {
-      if (base.kind !== "TBad") {
+    if (superType.kind !== "TData") {
+      if (superType.kind !== "TBad") {
         this.#report(
           `${decl.name.text} may present as a datatype, and ` +
-            `${typeToString(base)} is not one`,
+            `${typeToString(superType)} is not one`,
           node.at,
         );
       }
       return undefined;
     }
-
-    // Written as that datatype and not merely equal to it, so an alias is
-    // refused here. Both later readers need the base's *name* from the tree --
-    // the checker to find the constructor a coercion names, and the evaluator
-    // to find it without a table at all -- and an alias is gone by then.
-    if (node.kind !== "NameType" || node.name.text !== base.name) {
-      this.#report(
-        `${decl.name.text} must name ${base.name} directly to present as it`,
-        node.at,
-      );
-      return undefined;
-    }
-    return base;
+    return superType;
   }
 
   /** Elaborate a datatype's constructors under its type parameters. */
   #elaborateCtors(
     decl: DatatypeDecl,
+    superType: DataInst | undefined,
   ): DataCtorInfo[] {
     const ctors = this.context.inScope((mark) => {
       this.#bindPlainParams(decl.typeParams);
@@ -409,15 +416,17 @@ export class Elaborator {
           return [];
         }
         seen.add(ctor.name.text);
-        this.#reportCoercionPresence(ctor, decl);
+        const superCtor = this.#acceptSuperCtor(ctor, decl, superType);
         return [{
           name: ctor.name.text,
           // Closed over the datatype's parameters, so a use opens them.
           fields: (ctor.params ?? []).map((field) =>
             closeFrom(this.elaborateType(field.type), mark)
           ),
+          fieldNames: (ctor.params ?? []).map((field) => field.name?.text),
           isValue: this.#reportValueCtor(ctor, decl),
           at: ctor.at,
+          ...(superCtor === undefined ? {} : { superCtor }),
         }];
       });
     });
@@ -433,38 +442,66 @@ export class Elaborator {
   }
 
   /**
-   * A coercion is written exactly where the datatype has a base, and the two
-   * halves of that are one rule: a base with no coercion leaves a value of
-   * this constructor with no image to present, and a coercion with no base has
-   * nothing to present it as.
+   * The body to record for this constructor: its tails rewritten to name the
+   * super type's constructors, and nothing at all where the two disagree.
    *
-   * Presence only. Whether the name is a constructor of the base, at the right
-   * arity and given arguments of the right types, is `#checkCoercions` -- the
-   * constructors it would ask about are the second pass's, and this is the
-   * second pass.
+   * A super constructor is written exactly where the datatype has a super type,
+   * and the two halves of that are one rule: a super type with no super
+   * constructor leaves a value of this constructor with no image to present,
+   * and a super constructor with no super type has nothing to present it as.
+   * Recording only what passes is what lets every later reader take the pair as
+   * given.
+   *
+   * The rewrite belongs with that rule and not before it. It needs the super
+   * type's identity, which is a name resolved here, and a body it rewrote
+   * against a super type that turned out to be no datatype would be a tree the
+   * checker and the evaluator went on to trust. So `superType` is the
+   * *elaborated* one, and where there is none the body is dropped, a report
+   * already standing for why.
+   *
+   * What is still not asked: whether a tail names a constructor of the super
+   * type, at the right arity and given arguments of the right types. That is
+   * `#checkSuperCtors` -- the constructors it asks about are this pass's, and
+   * this is that pass.
    */
-  #reportCoercionPresence(ctor: CtorDecl, decl: DatatypeDecl): void {
+  #acceptSuperCtor(
+    ctor: CtorDecl,
+    decl: DatatypeDecl,
+    superType: DataInst | undefined,
+  ): TermNode | undefined {
     const name = ctor.name.text;
-    if (decl.base === undefined) {
-      if (ctor.coercion === undefined) return;
+    if (decl.superType === undefined) {
+      if (ctor.superCtor === undefined) return undefined;
       this.#report(
-        `${name} writes a coercion, but ${decl.name.text} presents as ` +
-          `nothing -- give it a base with \`<:\``,
-        ctor.coercion.at,
+        `${name} writes a super constructor, but ${decl.name.text} presents as ` +
+          `nothing -- give it a super type with \`<:\``,
+        ctor.superCtor.at,
       );
-      return;
+      return undefined;
     }
-    if (ctor.coercion !== undefined) return;
-    // The written name, not the elaborated base: this runs outside the scope
-    // that binds the datatype's parameters, so elaborating here would report
-    // an `A` that is perfectly well bound where it was written.
-    const base = decl.base.kind === "NameType" ? decl.base.name.text : "a base";
+    if (ctor.superCtor !== undefined) {
+      if (superType === undefined) return undefined;
+      // Back into the tree, the evaluator having no other way to the answer.
+      ctor.superCtor = resolveSuperCtorTails(
+        ctor.superCtor,
+        superType.name,
+        this.diagnostics,
+      );
+      return ctor.superCtor;
+    }
+    // The written name where the super type was refused, there being no
+    // elaborated one to name it by.
+    const shown = superType?.name ??
+      (decl.superType.kind === "NameType"
+        ? decl.superType.name.text
+        : "a super type");
     this.#report(
-      `${name} needs a coercion: every ${decl.name.text} presents as ` +
-        `${base}, and this says which one`,
+      `${name} needs a super constructor: every ${decl.name.text} presents as ` +
+        `${shown}, and this says which one`,
       ctor.name.at,
       name.length,
     );
+    return undefined;
   }
 
   /**
@@ -728,12 +765,12 @@ function flagsSet(table: Table): number {
 
 /**
  * Walk one type a datatype's declaration is made of -- a constructor field, or
- * the base it presents as -- merging every parameter occurrence it holds into
- * `row`.
+ * the super type it presents as -- merging every parameter occurrence it holds
+ * into `row`.
  *
  * Entered at `+1` from either: a field is projected by `match` and never
- * assigned, and a base is projected by every use of the child where the parent
- * was asked for. Which is why there is no contravariant entry, and why a
+ * assigned, and a super type is projected by every use of the child where the
+ * parent was asked for. Which is why there is no contravariant entry, and why a
  * mutable cell has to arrive as a builtin rather than as a datatype this walk
  * would have to model.
  *
@@ -817,17 +854,18 @@ function noteOccurrencesIn(
 }
 
 /**
- * Every field and every base of every datatype, once, merged into `table` as
- * it goes.
+ * Every field and every super type of every datatype, once, merged into `table`
+ * as it goes.
  *
- * A base is one more occurrence and needs no rule of its own, but it does have
- * to be covariant rather than merely allowed to be: `Foo[A] <: Foo[A']` has to
- * imply their bases relate the same way, or transitivity fails. It is also
- * sufficient, a parameter occurring contravariantly in the base being driven
- * to invariant here, where the obligation is vacuous.
+ * A super type is one more occurrence and needs no rule of its own, but it does
+ * have to be covariant rather than merely allowed to be: `Foo[A] <: Foo[A']`
+ * has to imply their super types relate the same way, or transitivity fails. It
+ * is also sufficient, a parameter occurring contravariantly in the super type
+ * being driven to invariant here, where the obligation is vacuous.
  *
- * Mutual recursion through bases needs nothing extra either -- it is the same
- * fixed point that already handles two datatypes naming each other in a field.
+ * Mutual recursion through super types needs nothing extra either -- it is the
+ * same fixed point that already handles two datatypes naming each other in a
+ * field.
  */
 function oneRound(datatypes: readonly DatatypeInfo[], table: Table): void {
   for (const datatype of datatypes) {
@@ -837,8 +875,8 @@ function oneRound(datatypes: readonly DatatypeInfo[], table: Table): void {
         noteOccurrencesIn(field, 0, 1, row, table);
       }
     }
-    if (datatype.base !== undefined) {
-      noteOccurrencesIn(datatype.base, 0, 1, row, table);
+    if (datatype.superType !== undefined) {
+      noteOccurrencesIn(datatype.superType, 0, 1, row, table);
     }
   }
 }

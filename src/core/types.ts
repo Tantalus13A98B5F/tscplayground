@@ -161,12 +161,16 @@ export type Type = TypeMaybe<never>;
 export type TypePattern = TypeMaybe<unknown>;
 
 /**
- * A type known to *be* a datatype: one saturated use of a declaration, where
- * `DatatypeInfo` is the declaration itself. Named because subtyping passes
- * these around -- a walk from a datatype to the one it presents as never
- * leaves the kind, so the signatures say so rather than re-testing.
+ * A type known to *be* a datatype: one **instantiation** of a declaration, its
+ * parameters saturated by this use's arguments. `DatatypeInfo` is the
+ * declaration being instantiated, and `DataHead` the part of it a use carries
+ * by reference.
+ *
+ * Named because subtyping passes these around -- a walk from a datatype to the
+ * one it presents as never leaves the kind, so the signatures say so rather
+ * than re-testing.
  */
-export type DataType = Extract<Type, { kind: "TData" }>;
+export type DataInst = Extract<Type, { kind: "TData" }>;
 
 export const TMissing: TypePattern = { kind: "TMissing" };
 

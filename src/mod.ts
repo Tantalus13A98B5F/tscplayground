@@ -47,7 +47,6 @@ import { loadSources } from "./syntax/require.ts";
 import type { FileSystem } from "./io/files.ts";
 import type { Program } from "./syntax/ast.ts";
 import { parseProgram } from "./syntax/parser.ts";
-import { resolveCoercionTails } from "./syntax/coercions.ts";
 import { checkProgram } from "./core/check.ts";
 import { type Type, typeToString } from "./core/types.ts";
 import { evaluate, type Value, valueToString } from "./core/evaluate.ts";
@@ -241,12 +240,7 @@ function loadProgram(
     return { ...failed<Program>(diagnostics), sources };
   }
 
-  // Between parsing and everything else, so both the checker and the evaluator
-  // read one tree that already says which constructor each coercion tail
-  // names. It takes no types, so there is no phase it has to come after.
-  const resolved = resolveCoercionTails(parsed.value);
-  diagnostics.push(...resolved.diagnostics);
-  return { ...produced(resolved.program), diagnostics, sources };
+  return { ...produced(parsed.value), diagnostics, sources };
 }
 
 export { evaluate, hasErrors, typeToString, valueToString };

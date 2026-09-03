@@ -7,8 +7,8 @@
  *
  * `parseProgram` is the entry point that matters. The top level is one flat
  * loop over a block's parts -- declaration, binding, or the final expression --
- * whose bindings fold into a `Let` chain at the end, so declarations never nest,
- * never need lifting, and `exp` has no `datatype` case at all.
+ * whose bindings fold into a `Let` chain at the end, so declarations never
+ * nest, never need lifting, and `exp` has no `datatype` case at all.
  *
  * Errors are fatal to the construct being read: a rule reports and throws, and
  * only the two loops over a `;`- or `|`-separated run catch -- `blockBody` and
@@ -44,7 +44,7 @@ import type {
   TypeNode,
   TypeParam,
 } from "./ast.ts";
-import { QUALIFIER } from "./ast.ts";
+import { DOT } from "./ast.ts";
 import { isCloser, type Token, type TokenKind } from "./lexer.ts";
 import { Cursor, rethrowUnexpected } from "./cursor.ts";
 
@@ -228,7 +228,7 @@ class Parser {
     // A whole type and not a name with arguments, so an alias may stand here;
     // what it has to *be* is elaboration's question, which is where the table
     // saying so lives.
-    const base = this.cursor.accept("subtype") === undefined
+    const superType = this.cursor.accept("subtype") === undefined
       ? undefined
       : this.type();
     // A pure delimiter: nothing but constructors may follow it, which is what
@@ -241,7 +241,7 @@ class Parser {
       typeParams,
       ctors,
       at: keyword.at,
-      ...(base === undefined ? {} : { base }),
+      ...(superType === undefined ? {} : { superType }),
     };
   }
 
@@ -269,24 +269,18 @@ class Parser {
     // absent, and not empty, where none is written: `C()` is the nullary
     // function and `C` the value, which is a different declaration.
     const params = this.cursor.at("lparen") ? this.domainTypes() : undefined;
-    const coercion = this.cursor.accept("arrow") === undefined
+    // `-> Cons(x, r)`: an ordinary term, read the way an arm's body is, since
+    // which of its positions have to be constructors of the super type is
+    // settled during elaboration, not a shape this rule can insist on.
+    const superCtor = this.cursor.accept("arrow") === undefined
       ? undefined
-      : this.coercion();
+      : this.blockOrExp("the super constructor, indented past its `|`");
     return {
       name,
       at,
       ...(params === undefined ? {} : { params }),
-      ...(coercion === undefined ? {} : { coercion }),
+      ...(superCtor === undefined ? {} : { superCtor }),
     };
-  }
-
-  /**
-   * `-> Cons(x, r)`, after a constructor's fields. An ordinary term, read the
-   * way an arm's body is; which of its positions have to be constructors of
-   * the base is `resolveCoercionTails`, not a shape this rule can insist on.
-   */
-  private coercion(): TermNode {
-    return this.blockOrExp("the coercion, indented past its `|`");
   }
 
   /**
@@ -298,8 +292,8 @@ class Parser {
    * The block is required, and only here is its absence reported: layout opens
    * one wherever the arms clear the column their keyword set, and says nothing
    * when they do not. Arms short of it bind innermost with no way to spell the
-   * other reading, so reading them would be guessing which construct they belong
-   * to. Placement past that column is free -- tidying ragged arms is a
+   * other reading, so reading them would be guessing which construct they
+   * belong to. Placement past that column is free -- tidying ragged arms is a
    * formatter's job.
    *
    * So there is no unbraced run to read: a `}` here always closes a `{` this
@@ -491,7 +485,8 @@ class Parser {
     const pattern = this.matchPat();
     this.cursor.expect("arrow", "`->`");
     // Past its `|`, not level with it: the arm list's items begin one column
-    // right of the bar, so a body there is the next item rather than this one's.
+    // right of the bar, so a body there is the next item rather than this
+    // one's.
     const body = this.blockOrExp("the arm's body, indented past its `|`");
     return { pattern, body, at };
   }
@@ -850,10 +845,10 @@ class Parser {
         `${text} may not be bound: a trailing \`${BANG}\` marks a builtin`,
       );
     }
-    if (text.includes(QUALIFIER)) {
+    if (text.includes(DOT)) {
       this.cursor.failAt(
         name.at,
-        `${text} may not be bound: a \`${QUALIFIER}\` names a ` +
+        `${text} may not be bound: a \`${DOT}\` names a ` +
           `constructor of a datatype`,
       );
     }
@@ -862,8 +857,8 @@ class Parser {
 
 /**
  * An ordinary identifier to the lexer, so which positions admit it is decided
- * here. Downstream sees an `BindingIdent` that either has a name or does not, and
- * no pass walking binders compares against this again.
+ * here. Downstream sees an `BindingIdent` that either has a name or does not,
+ * and no pass walking binders compares against this again.
  */
 export const WILDCARD = "_";
 

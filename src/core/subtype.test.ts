@@ -10,7 +10,7 @@ import { Subtyper } from "./subtype.ts";
 import {
   badUnder,
   BVar,
-  type DataType,
+  type DataInst,
   FVar,
   type Level,
   mkTypeParamInfo,
@@ -70,14 +70,14 @@ const BOOL = declare("Bool");
 const INT = declare("Int");
 
 /**
- * `child <: base`, with the base written over the *child's* parameters --
+ * `child <: super type`, with the super type written over the *child's* parameters --
  * `BVar j` is the child's j-th, which is how a declaration stores one and why
  * reading it at a use is an `openMany`.
  *
  * At construction and not afterwards, as a signature carries it. So the
  * consts below have to read in the order a source file would declare them:
  * `Single` names `NonEmpty`, so `NonEmpty` comes first, and that is the whole
- * of why a base chain cannot close on itself.
+ * of why a super-type chain cannot close on itself.
  *
  *     datatype NonEmpty[A] <: List[A]
  *     datatype Single[A]   <: NonEmpty[A]
@@ -86,8 +86,8 @@ const INT = declare("Int");
  *     datatype Flags       <: List[Bool]
  *     datatype Sunk[A]     <: Sink[A]
  */
-function under(child: DatatypeInfo, base: DataType): DatatypeInfo {
-  return { ...child, base };
+function under(child: DatatypeInfo, superType: DataInst): DatatypeInfo {
+  return { ...child, superType };
 }
 
 const NONEMPTY = under(declare("NonEmpty", 1), TData(LIST, [BVar(0)]));
@@ -1270,12 +1270,12 @@ Deno.test("a contravariant position climbs the side being used", () => {
     .toBe(false);
 });
 
-Deno.test("a base is instantiated at the child's arguments", () => {
+Deno.test("a super type is instantiated at the child's arguments", () => {
   const { sub } = fixture();
   expect(sub.isSubtype(Rows(Int), List(List(Int)))).toBe(true);
   expect(sub.isSubtype(Rows(Int), List(Int))).toBe(false);
 
-  // A base need not mention the child's parameters at all.
+  // A super type need not mention the child's parameters at all.
   expect(sub.isSubtype(Flags, List(Bool))).toBe(true);
   expect(sub.isSubtype(Flags, List(Int))).toBe(false);
 });
@@ -1302,7 +1302,7 @@ Deno.test("an upcast climbs to the head it was asked for", () => {
   expect(castToString(sub, up(sub, Single(Int), ListP(TMissing))))
     .toBe("List[Int]");
 
-  // Downward there is nothing to descend to: a base says nothing about which
+  // Downward there is nothing to descend to: a super type says nothing about which
   // child a value came from.
   expect(castToString(sub, down(sub, List(Int), NonEmptyP(TMissing))))
     .toBe("<none>");
@@ -1335,14 +1335,14 @@ Deno.test("meet takes whichever side is already under the other", () => {
     .toBe("Single[Int]");
 
   // And says `never` otherwise, which is a lower bound whatever the names do:
-  // a child's parameters need not be recoverable from its base.
+  // a child's parameters need not be recoverable from its super type.
   expect(typeToString(sub.meet(NonEmpty(Int), List(Bool)))).toBe("never");
   expect(typeToString(sub.meet(NonEmpty(Int), Bag(Int)))).toBe("never");
 });
 
-Deno.test("a base is read from the table and not from the node", () => {
+Deno.test("a super type is read from the table and not from the node", () => {
   const { sub } = fixture();
-  // Carrying one and being declared are different things: `#baseOf` looks the
+  // Carrying one and being declared are different things: `#superTypeOf` looks the
   // declaration up by name, so an entry the table never saw presents as
   // nothing however its own record reads.
   const loose = under(declare("Loose", 1), TData(LIST, [BVar(0)]));
@@ -1362,7 +1362,7 @@ Deno.test("the ordinal is stamped by the table, not by the entry", () => {
   const { context } = fixture();
   const ordinalOf = (name: string) =>
     context.declarations.datatypeOf(name)?.ordinal ?? -1;
-  // Every base was declared before the datatype presenting as it, which is
+  // Every super type was declared before the datatype presenting as it, which is
   // what a climb counts down on. Elaboration gets this from its own order;
   // here it is the order of `declared`.
   expect(ordinalOf(LIST.name)).toBeLessThan(ordinalOf(NONEMPTY.name));
