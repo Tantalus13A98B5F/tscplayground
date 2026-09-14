@@ -72,8 +72,9 @@ rather than `unknown name foo` -- and it is additive, so it can land whenever.
 
 ## 2. Constructors as types
 
-Each constructor of a datatype becomes a type of its own, below the datatype:
-`Cons[A] <: List[A]`, `Nil <: List[A]`. Derived, not declared -- there is no new
+Each constructor becomes a type of its own, below the datatype:
+`Cons[A] <:
+List[A]`, `Nil <: List[A]`. Derived, not declared -- there is no new
 syntax and nothing to write -- depth exactly one, and the coercion is the
 identity, since a `Cons` value already _is_ the `List` value. One new leaf in
 `#relateData`, and no new runtime representation.
@@ -85,40 +86,40 @@ the case that design was really for -- a subgrammar that embeds into a full one,
 the cost, and it populates Fsub's bounds, which is the other thing that file
 wanted and the reason `FUEL` and the three-valued `Verdict` exist at all.
 
-Four things it needs, in order.
+Four things it needs, in order. **The first three have landed**, and together
+they introduce the types without anything to put in them: a constructor type can
+be written and nothing inhabits it, so the checker's answers are unchanged.
 
-**Constructor names become globally unique.** They are type names now, so they
-share a namespace with datatypes and with each other; two datatypes may no
-longer both declare a `Same`. The alternative -- qualified names, `List.Cons` --
-was tried on the closed branch and is what forced a `match ... as` there. A flat
-rule is cheaper and is what the evaluator already half-assumes.
+**Constructor names become globally unique.** _Landed._ They are type names now,
+so they share a namespace with datatypes and with each other. The alternative --
+qualified names, `List.Cons` -- was tried on the closed branch and is what
+forced a `match ... as` there. A flat rule is cheaper and is what the evaluator
+already half-assumes. The suite had exactly one program relying on the old rule,
+and it was the test asserting it.
 
-**Elaboration's first phase admits constructor names.** `Declarations` already
-seeds every datatype name before any signature is elaborated, which is what lets
-`List` and `Tree` name each other; constructor names now join that seeding, so a
-field may mention `Cons[A]` in the same declaration run.
+**Elaboration's first phase admits constructor names.** _Landed._ `Declarations`
+already seeds every datatype name before any signature is elaborated, which is
+what lets `List` and `Tree` name each other; constructor names join that
+seeding, so a field may mention `Cons[A]` in the same declaration run. A
+constructor of its datatype's own name claims nothing where it is the only one,
+which is what keeps the `Box`/`Box` wrapper ordinary.
 
-**The scrutinee's type supplies the case set.** Landed ahead of the rest, since
-nothing about the suite changes: `#checkMatch` seeds `#remaining` from
-`Declarations.casesOf(scrutinee)`, which reads the type rather than the
-declaration its name reaches. The same set while a `TData`'s identity is its
-name, and the whole feature the moment it is not -- `match xs with | Cons(h, t)
-->` on an `xs : Cons[Bool]` is exhaustive with one arm, and `casesOf` is the one
-place that has to learn it.
-
-It does surface one diagnostic decision. A pattern name can then fail two ways
--- not a constructor of the datatype at all, or a constructor the _scrutinee's
-type_ excludes -- and the second is unreachability rather than a name error. It
-wants its own wording and must not double-blame.
+**The scrutinee's type supplies the case set.** _Landed._ `#checkMatch` seeds
+`#remaining` from `Declarations.casesOf(scrutinee)`, which reads the type rather
+than the declaration its name reaches. The same set while a `TData`'s identity
+is its name, and the whole feature the moment it is not --
+`match xs
+with | Cons(h, t) ->` on an `xs : Cons[Bool]` is exhaustive with one
+arm, and `casesOf` is the one place that has to learn it.
 
 **Inference returns the principal type.** `Cons(True, Nil())` infers
 `Cons[Bool]` rather than `List[Bool]`, which is what makes the feature reachable
 without annotations everywhere. Two consequences are already known. Arm joins
 now rise two constructor heads to their datatype, so `#latticeData` is on the
-critical path from day one. And an arm excluded by the scrutinee's type must be
-a _warning_ rather than the error `#report` files today -- an ordinary `match`
-with a `Nil` arm over a known `Cons` is not a mistake worth refusing a program
-for, whereas an arm shadowed by the arms above it still is.
+critical path from day one. And an arm excluded by the _scrutinee's type_ must
+be a warning rather than an error -- an ordinary `match` with a `Nil` arm over a
+known `Cons` is not a mistake worth refusing a program for, whereas an arm
+shadowed by the arms above it still is.
 
 The known cost is the usual one for inference under subtyping: `ref!(Cons(...))`
 infers `Ref[Cons[Bool]]`, a cell nothing can `set!` a `Nil` into, and the fix is

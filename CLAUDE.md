@@ -82,6 +82,27 @@ the domain as _absent_ rather than empty for a bare name, and `isValue` is what
 every later reading asks. See `CtorDecl`, and `constructorType` for why the
 value form is refused on a parameterised datatype.
 
+A constructor's name is also a _type_. Claimed in the phase that claims datatype
+names, so a field may mention `Cons[A]` in the same run it may mention
+`List[A]`, and its entry is a datatype in every respect but declaring one: the
+owner's _own_ parameter array, so arity and variance are the family's and
+nothing is kept in step, and one case, filled when the constructors are. So
+constructor names share the type namespace -- two datatypes may no longer each
+declare a `Nil`, and a duplicate within one declaration is refused by that same
+rule. The exception is a constructor of its datatype's own name, which claims
+nothing where it is the only one: `datatype Box where | Box(Bool)` has one
+family and one case either way, so the two names are the same type. Beside a
+sibling it would be a strict subtype of the datatype above it, and one name
+would mean two types, so it is refused.
+
+Every head carries its _family_, the datatype whose constructors its values are
+among, and a datatype is its own -- reflexive rather than optional, so "the same
+family" is one comparison rather than a case for whether there is one. It is
+carried for the reason `params` is: a walk in `types.ts` can ask without knowing
+declarations exist. `datatypes()` answers the declared ones alone, the entries
+that are their own family, or variance would be inferred twice over the same
+fields and every constructor term seeded twice.
+
 A domain position -- an arrow's parameter, or a constructor's field -- may carry
 a name: `(x: A, B) -> C`, `| MkBox(flag: Bool, Bool)`. One syntax, so one rule,
 and the rule is that the name is documentation: dropped at elaboration, scoping
