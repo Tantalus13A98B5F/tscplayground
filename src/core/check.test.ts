@@ -337,6 +337,31 @@ Deno.test("never in an invariant argument is neither a choice nor a mismatch", (
   expect(type).toBe("never -> Bool");
 });
 
+Deno.test("an expected type reaches an inner call's type argument", () => {
+  // Why `widestMatching` fills a pattern by variance where `#cast` hands the
+  // extreme back whole: the two read patterns of different provenance. An
+  // argument's pattern is this call's own parameter type with a hole at each
+  // type argument, so its written parts are the very types the EVars are
+  // compared against a moment later and can say nothing new. The pattern
+  // `widestMatching` reads came from one level up and is matched against a
+  // *different* type -- the callee's result -- so its written parts are news,
+  // and the shape is the only road to them.
+  //
+  // `Pair`'s first argument is invariant, which is what makes the difference
+  // observable: without `Pair[Bool, unknown]` reaching `NoPair`'s own batch,
+  // its first type argument stays unconstrained and the call fails.
+  const [type, ...messages] = run(
+    "datatype Pair[A, B] where",
+    "  | MkPair((A) -> A, B)",
+    "  | NoPair()",
+    ...BOOL,
+    "let outer = fn [B](p: Pair[Bool, B]) -> p;",
+    "outer(NoPair())",
+  );
+  expect(messages).toEqual([]);
+  expect(type).toBe("Pair[Bool, never]");
+});
+
 Deno.test("a bad argument's shape is what reaches the type argument", () => {
   // The same rule from the other side of `#cast`: a bad *head* answers every
   // demand, but dropping the shape with it would leave `?A` unconstrained and

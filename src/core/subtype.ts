@@ -871,10 +871,20 @@ export class Subtyper {
    * round: `unknown` going down is under nothing it could be asked about, so
    * it is returned whole before the pattern is read at all, and downcasting
    * top is the identity for *every* pattern rather than partial at an
-   * invariant one. The two walks want opposite things from a hole -- a cast
-   * has a type to read one off, where this has only the pattern, so filling
-   * from the position's variance is the whole job here and no longer any of
-   * the cast's.
+   * invariant one.
+   *
+   * Which leaves why this one still fills a shape where `#cast` may drop it,
+   * and the answer is that the two read patterns of different *provenance*.
+   * An argument's pattern is the call's own parameter type with a hole where
+   * each type argument stands, and it is related against that same parameter
+   * type opened with EVars -- so its written parts are compared with
+   * themselves and can say nothing, and its holes are the EVar positions,
+   * where an extreme is what an unconstrained EVar reaches anyway. The
+   * pattern here came from one level up and is related against something
+   * else, the callee's *result*: its written parts are news to this call's
+   * variables, and the filled positions are the only road to them. Drop the
+   * shape and `outer(NoPair())` against `[B](Pair[Bool, B]) -> ...` stops
+   * checking, `NoPair`'s own first type argument never hearing `Bool`.
    *
    * Avoidance with the bar above everything, so no variable is ever out of
    * scope and a missing part is the only thing left that cannot be kept. The
