@@ -102,17 +102,20 @@ class FuelExhausted extends Error {
 const FUEL = 2000;
 
 /**
- * Whether a `from` may be answered as a `to`, moving `dir`: the one question
- * two datatype heads raise, asked by the relation and by the cast alike.
+ * Whether a `from` conforms to a `to` at a position of `dir` -- may be answered
+ * where the `to` is demanded. The one question two datatype heads raise, asked
+ * by the relation and by the cast alike, and directional: at `-1` it is the
+ * `to` that has to reach the `from`, the position having turned the demand
+ * around.
  *
- * Nominal, so a head agrees with itself and with nothing else -- bar one
- * derived leaf, a constructor being below its family, `Cons[A] <: List[A]`.
- * That leaf is a hierarchy, and a hierarchy is where a relation and a join can
- * come to disagree, so this is not a second reading of it: `to` may answer for
- * `from` exactly where the head `headsLattice` names between them *is* `to`.
- * Nothing at `0` follows from there rather than being written twice.
+ * Nominal, so a head conforms to itself and to nothing else -- bar one derived
+ * leaf, a constructor being below its family, `Cons[A] <: List[A]`. That leaf
+ * is a hierarchy, and a hierarchy is where a relation and a join can come to
+ * disagree, so this is not a second reading of it: the `from` conforms exactly
+ * where the head `headsLattice` names between the two *is* the `to`. Nothing at
+ * `0` follows from there rather than being written twice.
  */
-function headsAgree(from: DataHead, to: DataHead, dir: Variance): boolean {
+function headConforms(from: DataHead, to: DataHead, dir: Variance): boolean {
   return headsLattice(from, to, dir)?.name === to.name;
 }
 
@@ -482,7 +485,7 @@ export class Subtyper {
 
       case "TData": {
         if (
-          head.kind !== "TData" || !headsAgree(head, pattern, dir) ||
+          head.kind !== "TData" || !headConforms(head, pattern, dir) ||
           head.args.length !== pattern.args.length
         ) {
           return this.#castFailed(type, pattern);
@@ -720,15 +723,15 @@ export class Subtyper {
    * each taken at its own parameter's variance composed with wherever the pair
    * itself stands.
    *
-   * `headsAgree` is where the heads agree, so the cast and the relation cross a
-   * family on the same terms. The coercion is the identity: a `Cons` value
+   * `headConforms` is where the heads are compared, so the cast and the
+   * relation cross a family on the same terms. The coercion is the identity: a `Cons` value
    * already *is* the `List` value, so nothing is built here that was not
    * already there, and arity and variance are the family's throughout -- the
    * parameters being shared by reference, the argument walk is the one it
    * always was.
    *
    * Which is why equivalence needs no case of its own: `0` absorbs, so asking
-   * two datatypes to be the same asks it of every argument, and `headsAgree`
+   * two datatypes to be the same asks it of every argument, and `headConforms`
    * has already refused to cross a family there.
    */
   #relateData(
@@ -736,7 +739,7 @@ export class Subtyper {
     t: Extract<Type, { kind: "TData" }>,
     variance: Variance,
   ): boolean {
-    return headsAgree(s, t, variance) && allPairs(
+    return headConforms(s, t, variance) && allPairs(
       s.args,
       t.args,
       (a, b, i) =>

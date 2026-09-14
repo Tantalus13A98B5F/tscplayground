@@ -112,11 +112,10 @@ family is a name and not a chain, so this is a comparison and never a search.
 or below them. Upward, one family's constructors rise to it; downward there is
 nothing to build, the constructors partitioning the family's values, so all that
 can be answered is the one already below the other. `#latticeData` asks it, and
-so does `headsAgree`, which is the same question with its answer pinned: a
-`from` may be answered as a `to` exactly where the head between them _is_ the
-`to`. The relation and the cast both go through `headsAgree` -- two homes for
-that question is how a coercion the relation allows becomes one the cast
-refuses.
+so does `headConforms`, which is the same question with its answer pinned: a
+`from` conforms to a `to` exactly where the head between them _is_ the `to`. The
+relation and the cast both go through `headConforms` -- two homes for that
+question is how a coercion the relation allows becomes one the cast refuses.
 
 Nothing rises at an invariant position. `Cell[Cons[A]]` is not `Cell[List[A]]`,
 or a `Ref[List[A]]` could be `set!` a value the read side was promised could not

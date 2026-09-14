@@ -151,13 +151,13 @@ is its name, and the whole feature the moment it is not --
 with | Cons(h, t) ->` on an `xs : Cons[Bool]` is exhaustive with one
 arm, and `casesOf` is the one place that has to learn it.
 
-**A constructor type is below its family.** _Landed._ `headsAgree` is the one
-home for when two datatype heads agree, asked by `#relateData` and by `#cast`
-alike -- the cast had a name test of its own, so changing the relation by itself
-let `Cons[Bool] <: List[Bool]` hold while a call passing one still failed to
-check. Nothing rises at variance `0`. The diagnostic split this surfaced is in:
-a name the family does not have is a name error, a name the scrutinee's type
-excludes is unreachability, and neither blames the other.
+**A constructor type is below its family.** _Landed._ `headConforms` is the one
+home for when one datatype head conforms to another, asked by `#relateData` and
+by `#cast` alike -- the cast had a name test of its own, so changing the
+relation by itself let `Cons[Bool] <: List[Bool]` hold while a call passing one
+still failed to check. Nothing rises at variance `0`. The diagnostic split this
+surfaced is in: a name the family does not have is a name error, a name the
+scrutinee's type excludes is unreachability, and neither blames the other.
 
 **Inference returns the principal type.** _Landed._ `Cons(True, Nil())` infers
 `Cons[Bool]`, which is what makes the feature reachable without annotating every
