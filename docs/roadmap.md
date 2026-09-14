@@ -166,13 +166,19 @@ new arm to include them -- and one was in fact written without, during this
 change, and caught by a test rather than by the compiler.
 
 What is _not_ swept with it is the shape a declined cast answers with, and the
-reason is the same property read the other way. A bare `<bad>` is vacuous in the
-relation, so it records nothing: an EVar compared against one picks up no bound
-and falls back to its own extreme, and `use(True)` against
-`[A](List[A]) -> List[A]` comes out `List[never]` -- an ordinary type, for a
-program already blamed. Standing aside wants that vacuity because there is
-nothing to carry; a failure needs the opposite, so `#castFailed` still plants
-`<bad>` at the pattern's parts, where whatever reads them will meet it.
+reason is the one `widestMatching` already had. A cast's answer is related
+against a type naming EVars in exactly one place -- `#applyCall`'s argument loop
+-- and a relation reads parts. An argument's pattern is the parameter type with
+a missing part where each type argument stands, so its holes are the EVar
+positions exactly, and the concrete structure around them is the road the
+relation takes to reach one. Answer a bare `<bad>` and it is below everything,
+so nothing is recorded and `use(True)` against `[A](List[A]) -> List[A]` comes
+out `List[never]`, the variable having fallen back to its own extreme.
+
+Which makes `#castFailed` and `#avoid` two fillings of the same holes: one puts
+`<bad>`, so the EVar solves bad rather than being blamed twice; the other puts
+the extreme its position asks for. A head standing whole in `#cast` is neither
+-- it is not standing in for a shape, it is the real answer.
 
 An assertion that the lattice operations never see a live EVar was written and
 then removed. `#lattice` at an invariant position does reach `#eqtype`, which
