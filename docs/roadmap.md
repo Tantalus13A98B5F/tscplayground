@@ -110,7 +110,7 @@ is its name, and the whole feature the moment it is not --
 with | Cons(h, t) ->` on an `xs : Cons[Bool]` is exhaustive with one
 arm, and `casesOf` is the one place that has to learn it.
 
-**A constructor type is below its family.** _Landed._ `headsMeet` is the one
+**A constructor type is below its family.** _Landed._ `headsAgree` is the one
 home for when two datatype heads agree, asked by `#relateData` and by `#cast`
 alike -- the cast had a name test of its own, so changing the relation by itself
 let `Cons[Bool] <: List[Bool]` hold while a call passing one still failed to
