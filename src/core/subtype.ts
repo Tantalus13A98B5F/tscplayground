@@ -1077,7 +1077,10 @@ export class Subtyper {
 
   /**
    * Least upper bound. Falls back to `unknown` rather than inventing a union:
-   * there is no union type, so an inexact answer has to be the sound one.
+   * there is no union type, so an inexact answer has to be the sound one. That
+   * is a decision and not a gap -- `docs/clti.md` costs the union and declines
+   * it, the short of it being that a union pays for itself in its eliminator
+   * and our one eliminator is nominal and one level.
    *
    * Exhaustion takes that same fallback and says nothing: top is above
    * everything, so the answer stays sound, but a match whose arms ran too deep

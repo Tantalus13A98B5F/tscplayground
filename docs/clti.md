@@ -396,9 +396,10 @@ occur. The one difference worth naming is that it picks silently where we warn.
 Unsurprising ancestry: colored local type inference is Odersky, Zenger and
 Zenger, and dotty is its descendant.
 
-What follows is the three places we refuse something they do. Each refusal is a
-property of the *type language*, not of the solver, and it is the same property
-every time -- recorded at the end.
+What follows is the places we refuse something they do. Each refusal is a
+property of the _type language_, not of the solver, and it is the same property
+every time -- recorded below. Then one difference that runs the other way: a
+feature they have whose whole cost lands on the solver instead.
 
 ### A bound that names another variable
 
@@ -428,7 +429,7 @@ variable, the variables known to be below and above it, closed transitively on
 insert, while `boundsMap` holds the concrete part. Joins and meets are applied
 to concrete bounds and never to variables. An edge discharges when its source is
 instantiated -- substitute, and `?y <: ?x` becomes an ordinary join against a
-ground type. Equality is not primitive but a *cycle*: two variables ordered both
+ground type. Equality is not primitive but a _cycle_: two variables ordered both
 ways are merged, keeping the outer one.
 
 Two reasons we do not.
@@ -450,7 +451,7 @@ the batch.
 
 TypeScript skips context-sensitive arguments -- lambdas with unannotated
 parameters -- in a first pass, fixes what the other arguments determine, then
-contextually types the skipped ones. It skips them *wherever they sit*; the
+contextually types the skipped ones. It skips them _wherever they sit_; the
 left-to-right restriction applies only between two context-sensitive arguments.
 So it recovers one of the two regressions step 0 measured and not the other:
 
@@ -462,7 +463,7 @@ So it recovers one of the two regressions step 0 measured and not the other:
 The price is not the ordering, which is cheap. It is that a deferred argument is
 checked while the call's batch is live, so batches overlap again and "a
 constraint mentioning an EVar can only mean a sibling" goes with them. The form
-that keeps the invariant is to solve the batch *before* any context-sensitive
+that keeps the invariant is to solve the batch _before_ any context-sensitive
 argument is checked, and check those against what came out -- best effort, no
 second solve, no live batch during an argument.
 
@@ -509,6 +510,44 @@ state a variable's bounds in, no lattice for a fixpoint to converge in, and no
 principal answer for two arms of different instantiations. Unions are therefore
 the single change that would move all of them at once, and the only one worth
 costing; anything narrower is approximating what the type language cannot say.
+
+**Costed, and declined.** What pays for a union is _elimination_ -- TypeScript's
+unions are worth their weight because narrowing takes them apart again, by
+discriminant, by `typeof`, by control flow. We have one eliminator, `match`, and
+it is one level and nominal: a scrutinee whose type named several datatypes
+could not be matched at all, since `#checkMatch` reads a single `TData` head and
+`#remaining` is a set of _one_ declaration's constructors. So the join would be
+formed everywhere and taken apart nowhere.
+
+Restricting unions to constructor sets of one datatype -- the narrow form that
+would fit `#remaining` -- does not rescue it, because a union over cases is
+still a union over their _arguments_:
+
+    datatype Foo[A] where | Pos(A) | Neg((A) -> Unit)
+
+`A` is bivariant here and neither occurrence can be widened independently of the
+other, so joining a `Pos` at one `A` with a `Neg` at another is not a set
+operation on cases; it is constraint solving, and the answer depends on a
+variance the case set does not carry.
+
+And `#joinMany` is a _left fold_ over pairwise `#join`. At an invariant slot a
+pairwise join has no answer and must choose arbitrarily -- but a later candidate
+in the same list may have made one choice the right one, which the fold has
+already thrown away. So the result depends on arm order, which is exactly what
+"no arm is privileged by position" was supposed to rule out. A full-fidelity
+answer needs a _primitive n-ary_ `joinMany` that sees every candidate before
+committing an invariant slot. That is the thing to build if this is ever
+reopened, and it is worth noting that it is useful without unions: it is the
+same machinery `match` wants for rising several constructor heads at once.
+
+Not now, and probably not soon. The baseline stands: `join` falls back to
+`unknown`.
+
+### Implicits
+
+Split out to `docs/implicits.md`: what resolution-by-search would cost, why it
+forces speculation, and why a matching-based fragment fits `withEVars` unchanged
+where Scala's cannot.
 
 ## Open
 
