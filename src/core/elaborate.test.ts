@@ -333,7 +333,7 @@ Deno.test("a redeclared datatype does not take the first one's constructors", ()
   expect(fixture.messages()).toEqual(["type Flag is already declared"]);
   expect(fixture.declarations.ctorOf("Flag", "On")).toBeDefined();
   // The losing declaration is elaborated, so errors inside it are still
-  // reported, but `initCtors` refuses to hand its constructors to the name.
+  // reported, but `fillCtors` refuses to hand its constructors to the name.
   expect(fixture.declarations.ctorOf("Flag", "Off")).toBeUndefined();
 });
 

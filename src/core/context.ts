@@ -129,11 +129,11 @@ export type DatatypeInfo = {
    */
   ctors: readonly DataCtorInfo[];
   /**
-   * Whether `initCtors` has run. Not the same question as `ctors` being empty:
-   * the two passes leave a signature standing with no constructors yet, and
-   * this is what tells that apart from a datatype that turned out to have none.
+   * Not the same question as `ctors` being empty: the two passes leave a
+   * signature standing with no constructors yet, and this is what tells that
+   * apart from a datatype that turned out to have none.
    */
-  initialized: boolean;
+  ctorsFilled: boolean;
   /**
    * Whether elaborating those constructors reported anything, so a report
    * already stands against this declaration. Recorded where it is known rather
@@ -212,29 +212,33 @@ export class Declarations {
    * Fill in a datatype's constructors, once. A second attempt is a second
    * declaration of the same name, whose signature was refused above; its
    * constructors are refused here for the same reason, so the datatype that
-   * owns the name owns the constructors that came with it.
+   * owns the name owns the constructors that came with it -- which is why the
+   * refusal is silent here and answers nothing to the caller.
+   *
+   * The family's entry and its constructors' own entries are one act and not
+   * two: they share the constructors filled in, so a caller that could do one
+   * without the other could leave a constructor type standing with no case.
    */
-  initCtors(
+  fillCtors(
     name: string,
     ctors: readonly DataCtorInfo[],
     reported: boolean,
-  ): boolean {
+  ): void {
     const info = this.#datatypes.get(name);
-    if (info === undefined || info.initialized) return false;
+    if (info === undefined || info.ctorsFilled) return;
     info.ctors = ctors;
     info.ctorsReported = reported;
-    info.initialized = true;
+    info.ctorsFilled = true;
     // The same fill for each constructor's own entry, whose one case is that
     // constructor. Guarded by the family, since a constructor whose name went
     // to another declaration has an entry that is not ours to write.
     for (const ctor of ctors) {
       const one = this.#datatypes.get(ctor.name);
-      if (one === undefined || one.family !== name || one.initialized) continue;
+      if (one === undefined || one.family !== name || one.ctorsFilled) continue;
       one.ctors = [ctor];
       one.ctorsReported = reported;
-      one.initialized = true;
+      one.ctorsFilled = true;
     }
-    return true;
   }
 
   /**

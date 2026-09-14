@@ -53,7 +53,7 @@ function declare(
     })),
     ctors: [],
     ctorsReported: false,
-    initialized: true,
+    ctorsFilled: true,
     at: somewhere,
   };
 }

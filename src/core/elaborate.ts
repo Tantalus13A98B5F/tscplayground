@@ -262,7 +262,7 @@ export class Elaborator {
    *
    * The second elaborates constructor fields against the complete signature
    * table, so a field may name its own datatype or one declared below. No
-   * shortlist of winners is needed: `initCtors` refuses a name the first pass
+   * shortlist of winners is needed: `fillCtors` refuses a name the first pass
    * gave away. A loser is still elaborated -- bad types inside it are reported
    * -- but has nowhere to land.
    *
@@ -297,7 +297,7 @@ export class Elaborator {
       // it -- see `DatatypeInfo.ctorsReported`.
       const before = this.diagnostics.length;
       const ctors = this.#elaborateCtors(decl);
-      this.declarations.initCtors(
+      this.declarations.fillCtors(
         decl.name.text,
         ctors,
         reported || this.diagnostics.length > before,
@@ -352,7 +352,7 @@ export class Elaborator {
         params: info.params,
         ctors: [],
         ctorsReported: false,
-        initialized: false,
+        ctorsFilled: false,
         at: ctor.at,
       });
       this.#reportRedeclaration(ctor.name, previous);
@@ -381,7 +381,7 @@ export class Elaborator {
       params: decl.typeParams.map(mkDataParamInfo),
       ctors: [],
       ctorsReported: false,
-      initialized: false,
+      ctorsFilled: false,
       at: decl.at,
     };
   }
