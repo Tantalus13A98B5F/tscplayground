@@ -190,13 +190,17 @@ That was wrong, and the reason is what a one-constructor datatype is _for_: it
 is how a nominal subtype of one thing gets written, and collapsing the
 constructor leaves nothing that inhabits `MkPair` at all.
 
-A type argument solved from below is taken at its family, where the upper bound
-still allows it. A batch is solved before the arguments after it are checked, so
-`foldr(xs)(Z)(op)` would otherwise fix `B` at the first argument's constructor
-and then refuse what the operator answers with -- the staging idiom failing on a
-type the author never wrote. The family is a solution and not an approximation:
-it is above every lower constraint, and asking the upper bound keeps it below
-every other one, so a declared `[A <: S]` still gets `S`.
+A type argument is **not** widened when it is solved from below, and that was
+the closest call of the three. A batch closes at the end of the list its
+variable stands in, so `foldr(xs)(Z)(op)` fixes `B` at `Z` and then refuses the
+`S` the operator answers with. Taking the solution at its family fixes that
+exactly, and was implemented and measured at three ascriptions saved across the
+corpus -- but it would also make `id(Cons(x, xs))` answer `List`, so the
+principal type would survive a `let` and not a call, which is most of what this
+step is for. Scala widens singletons and unions at instantiation and leaves
+nominal precision alone for the same reason, and pays the same price: this is
+`foldLeft(Nil)`, which has always wanted `List.empty[Int]`. `docs/clti.md` has
+the argument, including why the pressure belongs on item 3 instead.
 
 The known cost is the usual one for inference under subtyping: `ref!(Cons(...))`
 infers `Ref[Cons[Bool]]`, a cell nothing can `set!` a `Nil` into, and the fix is

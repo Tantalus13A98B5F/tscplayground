@@ -65,18 +65,32 @@ Deno.test("a constructor application answers with its own type", () => {
   )).toBe("Bool -> List[Bool]");
 });
 
-Deno.test("a type argument solved from below takes the family", () => {
-  // A batch is solved before the arguments after it are checked, so a type
-  // argument fixed at `S` would refuse the `Z` the operator answers with --
-  // the staging idiom failing on a type the author never wrote.
+Deno.test("a staged argument fixes a type argument at what it says", () => {
+  // The cost of answering with the constructor, and the one place it bites: a
+  // batch is solved at the end of the list its variable stands in, so `A` is
+  // fixed at `S` before the operator is looked at, and the `Z` it answers with
+  // no longer fits. Taking the family instead was tried and dropped -- it is a
+  // guess that unmakes the precision this whole item is for, and it would have
+  // had to be made everywhere to be worth making here.
+  expect(
+    run(
+      ...NAT,
+      "let stage = fn [A](z: A)(f: (A) -> A) -> f(z);",
+      "stage(S(Z))(fn (n) -> Z)",
+    )[1],
+  ).toBe("expected S, found Nat");
+
+  // Saying which type is meant is the fix, and there is one place to say it.
+  // This is `foldLeft(Nil)` in Scala, and it has the same answer there.
   expect(typeOf(
     ...NAT,
     "let stage = fn [A](z: A)(f: (A) -> A) -> f(z);",
-    "stage(S(Z))(fn (n) -> Z)",
+    "let start : Nat = S(Z);",
+    "stage(start)(fn (n) -> Z)",
   )).toBe("Nat");
 
-  // Widened only where the upper bound still allows it: a declared bound that
-  // demands the constructor keeps it.
+  // A declared bound is a constraint like any other, so it answers the same
+  // way an annotation does -- and keeps the constructor where it demands one.
   expect(typeOf(
     ...NAT,
     "let narrow = fn [A <: S](x: A) -> x;",

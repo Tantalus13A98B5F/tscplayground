@@ -1344,33 +1344,11 @@ export class Subtyper {
     });
   }
 
-  /**
-   * A lower bound at its family, where the upper bound still allows it.
-   *
-   * A constructor head is the narrowest thing an argument can say, and a batch
-   * is solved before the arguments after it are checked -- so `foldr(xs)(Z)(op)`
-   * would fix `B` at `Z` and then refuse the `S` the operator answers with,
-   * which is the staging idiom failing on the one type the author never wrote.
-   * The family is what they would have written, and it is a *solution* and not
-   * an approximation: it is above every lower constraint, and asking the upper
-   * bound keeps it below every other one. Where a constraint really does demand
-   * the constructor, the widened head fails that ask and the narrow one stands.
-   *
-   * The head alone, never inside the arguments: what stands at an invariant
-   * argument is not this EVar's to widen, and the only general rule there is
-   * the relation's own, which says nothing rises.
-   */
-  #atFamily(lower: Type, upper: Type): Type {
-    if (lower.kind !== "TData" || lower.name === lower.family) return lower;
-    const risen = TData(familyHead(lower), lower.args);
-    return this.#subtype(risen, upper) ? risen : lower;
-  }
-
   /** `solveEVar` inside its tank, so every relation below spends the one. */
   #solveEVar(entry: EVarEntry): Type {
     const { covariantly, contravariantly } = entry;
+    const lower = this.#joinMany(entry.lower);
     const upper = this.#meetMany(entry.upper);
-    const lower = this.#atFamily(this.#joinMany(entry.lower), upper);
 
     if (!this.#subtype(lower, upper)) {
       return badUnder(this.#file(

@@ -12,15 +12,18 @@
 #require "ref/list.ga"
 
 // An empty tail has to say what it is empty of. Written `ref!(MNil())` the
-// argument settles at `MList[never]` before anything demands otherwise, and
-// then there is no `A` left to have:
+// argument settles at `MNil[never]` before anything demands otherwise, and a
+// cell holding that is a cell holding nothing else:
 //
-//     error: cannot infer the type argument A: it is bounded below by Nat
-//            and above by never, and no type is both
+//     error: expected MList[?], found MNil[never]
 //
 // The covariant `Cons(Z, Nil())` two lines down needs none of this. This is
 // exactly how `List` behaved before its variance was inferred.
-let ms = MCons(Z, ref!(MNil[Nat]()))
+// -- and now both ends have to be told: `ref!` is invariant in what it holds,
+// so a `Ref[MNil[Nat]]` is a cell no tail could ever be written into, and the
+// list itself is put at `MList` so the cell below it can hold either case.
+let empty : MList[Nat] = MNil[Nat]()
+let ms : MList[Nat] = MCons(Z, ref!(empty))
 let plain = Cons(Z, Nil())
 
 // The join of two `MList`s at different arguments is `unknown`, invariance

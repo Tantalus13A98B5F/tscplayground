@@ -172,13 +172,12 @@ Deno.test("stdlib: a Ref makes its datatype invariant, and that costs", () => {
   expect(check("uses-ref.ga")).toEqual(["MkPair[Nat, List[Nat]]"]);
 
   // The two refusals `uses-ref.ga` documents, which are the same fact twice.
-  // A `never` tail cannot widen, so the argument list has no solution --
+  // A `never` tail cannot widen, so the argument list has no solution -- and
+  // now it is the cell that says so, `ref!` being invariant in what it holds
+  // and `MNil[never]` being what it was handed.
   const inMList = '#require "ref/list.ga"\n';
   expect(check("m.ga", { "m.ga": inMList + "MCons(Z, ref!(MNil()))\n" })[1])
-    .toBe(
-      "m.ga:2:6: error: cannot infer the type argument A: it is bounded " +
-        "below by Nat and above by never, and no type is both",
-    );
+    .toBe("m.ga:2:14: error: expected MList[?], found MNil[never]");
 
   // -- and an expected type does not rescue it, because joining two `MList`s
   // that disagree gives `unknown`: invariance leaves nothing between them.

@@ -132,9 +132,10 @@ members or singletons. A _sole_ constructor is not an exception either, and
 answers with itself like any other: its type admits exactly what its family
 does, but collapsing the two would leave nothing inhabiting `MkPair`, and a
 one-constructor datatype is how a nominal subtype of one thing gets written. A
-type argument solved from below is widened the same way where its upper bound
-allows -- see `#atFamily`, and `docs/clti.md` for why a batch's timing makes it
-necessary.
+type argument solved from below is _not_ widened to match: a solution that
+survived a `let` and not a call would be most of the precision gone, and the
+ascription a staged argument then wants is `foldLeft(Nil)`'s. `docs/clti.md` has
+that argument.
 
 A pattern name therefore fails two ways, and they are different reports.
 `#checkMatch` keeps what the scrutinee's type _admits_ beside what the arms have
