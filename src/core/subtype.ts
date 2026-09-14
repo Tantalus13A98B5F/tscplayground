@@ -373,29 +373,10 @@ export class Subtyper {
   #cast(type: Type, pattern: TypePattern, dir: Variance): Type {
     this.#spend();
 
-    // Promotion first, and only upward, which is the whole of what a variable
-    // can offer here. Exposed whole rather than a step at a time: what reads
-    // this wants the head it arrives at, and nothing between an `FVar` and its
-    // bound has anything to say.
-    const head = dir > 0 ? this.expose(type) : type;
-
-    // An extreme standing the way the cast moves answers every demand at once.
-    // `never` is under every type there is, so nothing a pattern could ask of
-    // it is in question -- the same vacuous case `#subtype` answers on its
-    // first line, which is why the two agree here rather than by coincidence.
-    // It stands whole, and no shape is invented around it: an invented shape
-    // would have to choose at every invariant part, and nothing downstream can
-    // tell a `never` from a `List[never]` it is about to be compared against.
-    //
-    // An invariant ask has no direction to move in, so it has no extreme
-    // either, and every head is read as a shape below.
-    if (dir !== 0 && head.kind === (dir > 0 ? "TNever" : "TUnknown")) {
-      return head;
-    }
-
-    // Three kinds of demand, and the pattern is what says which. Nothing more
-    // is read off `type` until the demand is known, which is what keeps a rule
-    // meant for one kind from running in front of another.
+    // Three kinds of demand, and the pattern is what says which. Nothing is
+    // read off `type` until the demand is known, which is what keeps a rule
+    // meant for one kind from running in front of another -- and in
+    // particular keeps promotion out of the two cases that must not move.
     switch (pattern.kind) {
       // Nothing demanded, so nothing moves -- whatever stands there is the
       // answer. Also the only case that reads content out of `type`, which is
@@ -406,7 +387,7 @@ export class Subtyper {
       // A shape is demanded, and `#castHead` is the one place that says what
       // a head with none of its own offers instead.
       case "TFun": {
-        const from = this.#castHead(head, pattern);
+        const from = this.#castHead(type, dir);
         // Quantifying a different number of variables leaves nothing to walk
         // into: the two parameter lists stand under different binders, so
         // their positions do not correspond. A different number of
@@ -417,18 +398,18 @@ export class Subtyper {
           from.kind !== "TFun" ||
           from.typeParams.length !== pattern.typeParams.length
         ) {
-          return this.#castFailed(type, pattern);
+          return this.#castStandsAside(from, type, pattern, dir);
         }
         return this.#castFun(from, pattern, dir);
       }
 
       case "TData": {
-        const from = this.#castHead(head, pattern);
+        const from = this.#castHead(type, dir);
         if (
           from.kind !== "TData" || from.name !== pattern.name ||
           from.args.length !== pattern.args.length
         ) {
-          return this.#castFailed(type, pattern);
+          return this.#castStandsAside(from, type, pattern, dir);
         }
         // An argument stands where its parameter's variance says, composed
         // with wherever this node itself stands -- the same rule `openWith`
@@ -448,9 +429,9 @@ export class Subtyper {
       }
 
       case "TRef": {
-        const from = this.#castHead(head, pattern);
+        const from = this.#castHead(type, dir);
         if (from.kind !== "TRef") {
-          return this.#castFailed(type, pattern);
+          return this.#castStandsAside(from, type, pattern, dir);
         }
         // A cell's argument moves neither way, however this node was reached.
         return TRef(this.#cast(from.arg, pattern.arg, 0));
@@ -477,24 +458,61 @@ export class Subtyper {
   }
 
   /**
-   * What a head offers when a shape is wanted, as a type the shape cases can
-   * take apart -- so every way of getting there ends in the same structural
-   * walk, and there is no second traversal to keep in step with this one.
+   * What `type` offers where a shape is demanded, as a type the shape cases
+   * can take apart -- so every way of getting there ends in the same
+   * structural walk, and there is no second traversal to keep in step.
    *
-   * One case, the other two having been decided before the demand was known.
-   * A report already stands, so a bad type has whatever shape is demanded:
-   * standing aside the way promotion and the extreme do, but only where a
-   * shape is demanded, a demanded leaf going to the relation, which knows
-   * `<bad>` on its own. Asked of the head, since a declared bound may be bad
-   * in its own right -- and the shape is all it contributes, never a report,
-   * filling a missing part from something already bad inventing nothing.
+   * A variable has no shape of its own. Going up it stands aside for its
+   * bound, the same promotion `#join` makes, and whole rather than a step at
+   * a time, nothing between an `FVar` and its bound having anything to say
+   * here. Going down or standing still it may not move, so it is handed on
+   * unchanged and fails the shape test at the call.
+   *
+   * Only where a shape is demanded, and that is the point of it being here
+   * rather than at the top of `#cast`. A missing part answers with what stood
+   * in the position, so promoting first would answer with something the
+   * position never held; and a leaf goes to the relation whole, which
+   * promotes on its own and knows `X <: X`, both lost by moving `type` first.
    */
-  #castHead(
+  #castHead(type: Type, dir: Variance): Type {
+    return dir > 0 ? this.expose(type) : type;
+  }
+
+  /**
+   * A head that is no such shape. Two of those are answers rather than
+   * failures, and both for one reason: they sit under -- or over -- every
+   * type of every shape, so nothing the pattern asks of them is in question.
+   *
+   * `<bad>` is below and above everything, so it answers in every direction,
+   * the invariant one included, and a report already stands to license it. An
+   * extreme answers only the way the cast moves: `never` going up, `unknown`
+   * going down, which is the same vacuous case `#subtype` returns true for on
+   * its first line -- so the cast and the relation agree here by construction
+   * rather than by coincidence. An invariant ask has no direction and so no
+   * extreme of its own.
+   *
+   * Each stands *whole*, and this is what used to build the pattern's shape
+   * around it. There is nobody to build it for: a shape a cast returns is
+   * load-bearing on the failure path, where `#castFailed` puts `<bad>` in the
+   * parts it could not reach, and nothing downstream can tell a `never` from
+   * the `List[never]` it is about to be compared against, or a `<bad>` from a
+   * `List[<bad>]` that checking against succeeds either way. Building it cost
+   * a choice at every invariant part, and a report about the choice.
+   *
+   * Anything else reached the wrong head: said in place, and answered with
+   * the shape that was asked for, which is `#castFailed`.
+   */
+  #castStandsAside(
     head: Type,
-    pattern: Extract<TypePattern, { kind: "TFun" | "TData" | "TRef" }>,
+    type: Type,
+    pattern: TypePattern,
+    dir: Variance,
   ): Type {
-    if (head.kind === "TBad") return completePattern(pattern, () => head);
-    return head;
+    if (head.kind === "TBad") return head;
+    if (dir !== 0 && head.kind === (dir > 0 ? "TNever" : "TUnknown")) {
+      return head;
+    }
+    return this.#castFailed(type, pattern);
   }
 
   /**

@@ -867,12 +867,19 @@ Deno.test("an unbounded variable has no function above it either", () => {
     .toBe("<none>");
 });
 
-Deno.test("a bad type satisfies any demand", () => {
-  // A report already stands, so nothing here is failed a second time.
+Deno.test("a bad type satisfies any demand, and stands whole", () => {
+  // A report already stands, so nothing here is failed a second time -- and
+  // `<bad>` is below and above everything, so every demand is already met and
+  // there is no shape to build around it. Whatever reads this guards `<bad>`
+  // beside `never` for exactly that reason.
   const { sub } = fixture();
-  expect(castToString(sub, up(sub, TBad, CellP(TMissing)))).toBe("Cell[<bad>]");
+  expect(castToString(sub, up(sub, TBad, CellP(TMissing)))).toBe("<bad>");
   expect(castToString(sub, down(sub, TBad, fnP([Bool], TMissing))))
-    .toBe("Bool -> <bad>");
+    .toBe("<bad>");
+  // Invariantly too, which is where it differs from an extreme: `<bad>` has
+  // no direction to need.
+  expect(castToString(sub, exact(sub, TBad, CellP(TMissing)))).toBe("<bad>");
+  expect(saidBy(sub)).toEqual([]);
 });
 
 Deno.test("a parameter list of the wrong length costs its own positions", () => {
@@ -943,12 +950,6 @@ Deno.test("a declined cast answers with the shape that was asked for", () => {
   expect(saidBy(sub).length).toBe(3);
 });
 
-Deno.test("a bad type answers with the demanded shape too", () => {
-  const { sub } = fixture();
-  expect(castToString(sub, up(sub, TBad, CellP(TMissing))))
-    .toBe("Cell[<bad>]");
-});
-
 Deno.test("a cast given a position says which part it could not reach", () => {
   // The `<bad>` a failed cast plants stands for a report already made, so the
   // report is made here. The part is what is named: the whole arrow agrees
@@ -1009,6 +1010,22 @@ Deno.test("an extreme in the cast's own direction is the answer whole", () => {
     .toBe("unknown");
   expect(castToString(sub, up(sub, TNever, ListP(CellP(TMissing)))))
     .toBe("never");
+  expect(saidBy(sub)).toEqual([]);
+});
+
+Deno.test("standing aside is decided where a shape is read, and nowhere else", () => {
+  // A variable bounded by an extreme is the case that says where the rule may
+  // live. Where a shape is demanded it stands aside, having none of its own;
+  // where one is not, the variable is the better answer and promoting first
+  // would throw it away.
+  const { sub, context } = fixture();
+  const X = context.pushTypeVar(TNever, "X");
+  const x = FVar(X, "X");
+  expect(castToString(sub, up(sub, x, ListP(TMissing)))).toBe("never");
+  // A missing part answers with what stood in the position.
+  expect(castToString(sub, up(sub, x, TMissing))).toBe("X");
+  // A leaf goes to the relation whole, which knows `X <: X`.
+  expect(castToString(sub, up(sub, x, x))).toBe("X");
   expect(saidBy(sub)).toEqual([]);
 });
 

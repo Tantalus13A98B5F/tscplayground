@@ -35,17 +35,25 @@ got back, or hands on a bad type it already holds. `completePattern` takes the
 report lazily -- it is asked for only where a part was missing, and at most once
 however many were, which is the question callers used to ask as `already`.
 
-`never` is not a bad type and does not merge with one. `bad` is below and above
-everything, so filling a demanded shape from it invents nothing and it is filled
-in. `never` is only below and `unknown` only above, which is enough on its own:
-a cast moving that way is asking nothing that is not already true, so the
-extreme _is_ the answer and no shape is built around it.
-`upcast(never, Cell[?])` is `never`, not a `Cell` of something arbitrary. That
-is the same vacuous case `#subtype` answers on its first line, so the cast and
+`never` is not a bad type and does not merge with one, but where a _shape_ is
+demanded they stand aside the same way. `bad` is below and above everything, so
+it answers every demand in every direction; `never` is only below and `unknown`
+only above, so each answers the demands a cast moving that way makes, and an
+invariant ask has no direction and so no extreme. Either way the head _is_ the
+answer and no shape is built around it: `upcast(never, Cell[?])` is `never` and
+`upcast(bad, Cell[?])` is `<bad>`, neither a `Cell` of something arbitrary --
+which is why every reader of a shape guards the two together. The extreme case
+is the same vacuous one `#subtype` answers on its first line, so the cast and
 the relation agree by construction rather than by coincidence, and the invariant
 argument that used to have to be chosen -- and warned about -- is never reached.
 Where a rule needs a shape and there is none to read at all, `never` answers for
 the whole form.
+
+Standing aside is decided where a head is _read_, which is the three shape cases
+and nowhere else. A missing part answers with whatever stood in the position,
+and a leaf goes to the relation whole, which promotes on its own and knows
+`X <: X` -- so promoting in front of the demand would answer for a variable
+bounded by an extreme with the extreme, and throw the variable away.
 
 A shape is load-bearing on the _failure_ path alone: `#castFailed` answers with
 the shape that was asked for and `TBad` in the parts it could not reach, which
