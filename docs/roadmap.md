@@ -155,6 +155,16 @@ positions and the shape is how it reaches one. That makes `#castFailed` and
 `#avoid` two fillings of the same holes: `TBad`, so an EVar solves bad rather
 than being blamed twice, or the extreme the position asks for.
 
+The same question answers differently for `widestMatching`, and the reason is
+provenance. An argument's pattern is the call's own parameter type holed at each
+type argument, and it is related against that same parameter type opened with
+EVars -- so its written parts are compared with themselves and its holes are the
+EVar positions. The pattern `widestMatching` reads came from one level up and is
+related against something else, the callee's result, so its written parts are
+news. Made observable by an invariant argument: `outer(NoPair())` against
+`[B](Pair[Bool, B]) -> ...` stops checking if the shape is dropped, `NoPair`'s
+own first type argument never hearing `Bool`.
+
 An extreme may therefore be dropped and a `<bad>` may not. The `Cell[never]` a
 lift used to build planted at each position the very extreme an unconstrained
 EVar reaches by itself, so the constraint it recorded was redundant -- bought
