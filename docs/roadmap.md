@@ -153,11 +153,17 @@ over the demanded shape by `completePattern`, which is the same invention for
 the same nobody. `<bad>` is below and above everything, so it answers
 invariantly too, where an extreme needs a direction.
 
-Both live in `#castStandsAside`, reached from the three cases that read a head
-and from nowhere else. That placement is the whole of the rule: a missing part
-answers with what stood in the position and a leaf goes to the relation whole,
-so a promotion in front of the demand would answer for a variable bounded by an
-extreme with the extreme, and lose the variable.
+Both are decided between `#cast`'s two switches: the first settles the demands
+that may not move `type` -- a missing part answers with what stood in the
+position, a leaf goes to the relation whole -- and only then is the head read,
+once, for the three that do. Getting that order wrong loses the variable in
+`up(X, ?)` and `up(X, X)` for an `X` bounded by `never`, which is the shape the
+walk had briefly and the regression test it now carries.
+
+Two switches on one `kind` is the trade. The alternative repeated the promotion
+and the standing-aside in each of the three shape arms, where nothing forced a
+new arm to include them -- and one was in fact written without, during this
+change, and caught by a test rather than by the compiler.
 
 `#assertNoEVar` went in beside it: the lattice operations rely on `withEVars`'s
 closing sentence by not checking their operands, and `#lattice` at an invariant

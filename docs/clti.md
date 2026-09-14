@@ -205,10 +205,10 @@ part; it inherits whatever the join can do.
   held.
 
   What that costs: `FVar` no longer licenses promotion on sight. Exposure,
-  `#join`'s standing-aside, `#meet`'s dual, `#avoid`'s widening, and
-  `#castHead`'s covariant promotion all ask `#rigid` first, because an EVar has
-  constraints where a rigid variable has a declared bound. Six places, all
-  adjacent to a rule that already had to distinguish them.
+  `#join`'s standing-aside, `#meet`'s dual, `#avoid`'s widening, and `#cast`'s
+  covariant promotion all ask `#rigid` first, because an EVar has constraints
+  where a rigid variable has a declared bound. Six places, all adjacent to a
+  rule that already had to distinguish them.
 
   What carries the rest of the deletion is not the node but an invariant about
   the _entry_: **an EVar entry is short-lived, and inside its window only two

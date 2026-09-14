@@ -373,69 +373,16 @@ export class Subtyper {
   #cast(type: Type, pattern: TypePattern, dir: Variance): Type {
     this.#spend();
 
-    // Three kinds of demand, and the pattern is what says which. Nothing is
-    // read off `type` until the demand is known, which is what keeps a rule
-    // meant for one kind from running in front of another -- and in
-    // particular keeps promotion out of the two cases that must not move.
+    // Which demand, and the pattern is what says. Two of the three are
+    // answered here and go no further, because they are the two that may not
+    // move `type` -- so the walk that does move it cannot run in front of
+    // them.
     switch (pattern.kind) {
       // Nothing demanded, so nothing moves -- whatever stands there is the
       // answer. Also the only case that reads content out of `type`, which is
       // how an invariant position, unable to move at all, still answers.
       case "TMissing":
         return type;
-
-      // A shape is demanded, and `#castHead` is the one place that says what
-      // a head with none of its own offers instead.
-      case "TFun": {
-        const from = this.#castHead(type, dir);
-        // Quantifying a different number of variables leaves nothing to walk
-        // into: the two parameter lists stand under different binders, so
-        // their positions do not correspond. A different number of
-        // *parameters* is not like that -- those share binders, so the shared
-        // positions are cast and the mismatch costs only the rest, which is
-        // what `#castFun` does.
-        if (
-          from.kind !== "TFun" ||
-          from.typeParams.length !== pattern.typeParams.length
-        ) {
-          return this.#castStandsAside(from, type, pattern, dir);
-        }
-        return this.#castFun(from, pattern, dir);
-      }
-
-      case "TData": {
-        const from = this.#castHead(type, dir);
-        if (
-          from.kind !== "TData" || from.name !== pattern.name ||
-          from.args.length !== pattern.args.length
-        ) {
-          return this.#castStandsAside(from, type, pattern, dir);
-        }
-        // An argument stands where its parameter's variance says, composed
-        // with wherever this node itself stands -- the same rule `openWith`
-        // follows, so a position means the same thing to both.
-        //
-        // Every argument is walked even where the head already filled one:
-        // re-entering a filled argument is a no-op, `<bad>` being absorbing,
-        // where returning early would assume the head filled the list whole.
-        const args = pattern.args.map((want, i) =>
-          this.#cast(
-            from.args[i] ?? impossible("an argument per argument"),
-            want,
-            composeVariance(dir, argVarianceOf(pattern, i)),
-          )
-        );
-        return TData(from, args);
-      }
-
-      case "TRef": {
-        const from = this.#castHead(type, dir);
-        if (from.kind !== "TRef") {
-          return this.#castStandsAside(from, type, pattern, dir);
-        }
-        // A cell's argument moves neither way, however this node was reached.
-        return TRef(this.#cast(from.arg, pattern.arg, 0));
-      }
 
       // A leaf is written in full, so it matches only itself and the whole
       // question is whether `type` reaches it in this direction. Left to the
@@ -454,65 +401,95 @@ export class Subtyper {
           : this.#eqtype(type, leaf);
         return holds ? leaf : this.#castFailed(type, pattern);
       }
+
+      // A shape is demanded, which is the rest of this method.
+      case "TFun":
+      case "TData":
+      case "TRef":
+        break;
     }
-  }
 
-  /**
-   * What `type` offers where a shape is demanded, as a type the shape cases
-   * can take apart -- so every way of getting there ends in the same
-   * structural walk, and there is no second traversal to keep in step.
-   *
-   * A variable has no shape of its own. Going up it stands aside for its
-   * bound, the same promotion `#join` makes, and whole rather than a step at
-   * a time, nothing between an `FVar` and its bound having anything to say
-   * here. Going down or standing still it may not move, so it is handed on
-   * unchanged and fails the shape test at the call.
-   *
-   * Only where a shape is demanded, and that is the point of it being here
-   * rather than at the top of `#cast`. A missing part answers with what stood
-   * in the position, so promoting first would answer with something the
-   * position never held; and a leaf goes to the relation whole, which
-   * promotes on its own and knows `X <: X`, both lost by moving `type` first.
-   */
-  #castHead(type: Type, dir: Variance): Type {
-    return dir > 0 ? this.expose(type) : type;
-  }
+    // Promotion, and only upward, which is the whole of what a variable can
+    // offer a shape. Exposed whole rather than a step at a time: what reads it
+    // wants the head it arrives at, and nothing between an `FVar` and its
+    // bound has anything to say. Said once for the three cases below, which is
+    // also what stops one of them being written without it.
+    const head = dir > 0 ? this.expose(type) : type;
 
-  /**
-   * A head that is no such shape. Two of those are answers rather than
-   * failures, and both for one reason: they sit under -- or over -- every
-   * type of every shape, so nothing the pattern asks of them is in question.
-   *
-   * `<bad>` is below and above everything, so it answers in every direction,
-   * the invariant one included, and a report already stands to license it. An
-   * extreme answers only the way the cast moves: `never` going up, `unknown`
-   * going down, which is the same vacuous case `#subtype` returns true for on
-   * its first line -- so the cast and the relation agree here by construction
-   * rather than by coincidence. An invariant ask has no direction and so no
-   * extreme of its own.
-   *
-   * Each stands *whole*, and this is what used to build the pattern's shape
-   * around it. There is nobody to build it for: a shape a cast returns is
-   * load-bearing on the failure path, where `#castFailed` puts `<bad>` in the
-   * parts it could not reach, and nothing downstream can tell a `never` from
-   * the `List[never]` it is about to be compared against, or a `<bad>` from a
-   * `List[<bad>]` that checking against succeeds either way. Building it cost
-   * a choice at every invariant part, and a report about the choice.
-   *
-   * Anything else reached the wrong head: said in place, and answered with
-   * the shape that was asked for, which is `#castFailed`.
-   */
-  #castStandsAside(
-    head: Type,
-    type: Type,
-    pattern: TypePattern,
-    dir: Variance,
-  ): Type {
+    // Two heads have no shape of their own and need none, both for one
+    // reason: they sit under -- or over -- every type of every shape, so
+    // nothing a pattern asks of them is in question.
+    //
+    // `<bad>` is below and above everything, so it answers in every
+    // direction, the invariant one included, and a report already stands to
+    // license it. An extreme answers only the way the cast moves: `never`
+    // going up, `unknown` going down, which is the same vacuous case
+    // `#subtype` returns true for on its first line -- so the cast and the
+    // relation agree here by construction rather than by coincidence. An
+    // invariant ask has no direction and so no extreme of its own.
+    //
+    // Each stands *whole*, where both used to have the demanded shape built
+    // around them. There is nobody to build it for: the shape a cast returns
+    // is load-bearing on the failure path, where `#castFailed` puts `<bad>`
+    // in the parts it could not reach, and nothing downstream can tell a
+    // `never` from the `List[never]` it is about to be compared against, or a
+    // `<bad>` from a `List[<bad>]` that checking against succeeds either way.
+    // Building it cost a choice at every invariant part, and a report about
+    // the choice.
     if (head.kind === "TBad") return head;
     if (dir !== 0 && head.kind === (dir > 0 ? "TNever" : "TUnknown")) {
       return head;
     }
-    return this.#castFailed(type, pattern);
+
+    // The shape itself, and here a head that is not it reached the wrong one:
+    // said in place, and answered with the shape that was asked for.
+    switch (pattern.kind) {
+      case "TFun": {
+        // Quantifying a different number of variables leaves nothing to walk
+        // into: the two parameter lists stand under different binders, so
+        // their positions do not correspond. A different number of
+        // *parameters* is not like that -- those share binders, so the shared
+        // positions are cast and the mismatch costs only the rest, which is
+        // what `#castFun` does.
+        if (
+          head.kind !== "TFun" ||
+          head.typeParams.length !== pattern.typeParams.length
+        ) {
+          return this.#castFailed(type, pattern);
+        }
+        return this.#castFun(head, pattern, dir);
+      }
+
+      case "TData": {
+        if (
+          head.kind !== "TData" || head.name !== pattern.name ||
+          head.args.length !== pattern.args.length
+        ) {
+          return this.#castFailed(type, pattern);
+        }
+        // An argument stands where its parameter's variance says, composed
+        // with wherever this node itself stands -- the same rule `openWith`
+        // follows, so a position means the same thing to both.
+        //
+        // Every argument is walked even where the head already filled one:
+        // re-entering a filled argument is a no-op, `<bad>` being absorbing,
+        // where returning early would assume the head filled the list whole.
+        const args = pattern.args.map((want, i) =>
+          this.#cast(
+            head.args[i] ?? impossible("an argument per argument"),
+            want,
+            composeVariance(dir, argVarianceOf(pattern, i)),
+          )
+        );
+        return TData(head, args);
+      }
+
+      case "TRef": {
+        if (head.kind !== "TRef") return this.#castFailed(type, pattern);
+        // A cell's argument moves neither way, however this node was reached.
+        return TRef(this.#cast(head.arg, pattern.arg, 0));
+      }
+    }
   }
 
   /**
