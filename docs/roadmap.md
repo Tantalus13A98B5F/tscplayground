@@ -131,24 +131,32 @@ sole one -- `let Cons(hd, tl) = xs` is legal and partial, and the totality
 report is the one `#remaining` already produces, which under item 2 is silent
 exactly when the scrutinee's type says it is total.
 
-## 4. Drop the extreme lift
-
-`#liftExtreme` lifts a `never` going up, or an `unknown` coming down, one level
-into the pattern's shape -- so `upcast(never, Ref[?])` answers `Ref[never]` and
-warns about the arbitrary choice at an invariant argument. It should answer
-`never`. The shape a cast returns is load-bearing only on the _failure_ path,
-where the pattern-with-`TBad` mixture is the type-level form of "never fail
-checking a tree halfway"; a lift never fails, by construction, so it has no
-shape to owe anyone. It records no constraint either -- a hole returns without
-comparing, and a written invariant part is compared against a copy of itself --
-so the change is invisible to the solver, and it makes `#cast` agree with
-`#subtype`'s own first line.
-
-Worth doing with an assertion that the lattice operations never see a live EVar,
-since `#lattice(_, _, 0)` reaching `#eqtype` is the one path by which a join can
-record a constraint.
-
 ## Landed
+
+**The extreme lift, dropped.** `upcast(never, Ref[?])` was `Ref[never]`, lifted
+one level into the pattern's shape and warning about the argument it had to
+choose. It is `never` now, and says nothing: an extreme standing the way a cast
+moves is under -- or over -- every type of every shape, so the pattern asks
+nothing of it that is not already true, and building the shape around it would
+mean choosing at every invariant part for nobody's benefit.
+
+The shape a cast returns is load-bearing on the _failure_ path only, where the
+pattern-with-`TBad` mixture is the type-level form of "never fail checking a
+tree halfway". A lift never failed -- the head matched by construction -- so it
+had no shape to owe anyone. It recorded nothing either: a hole returns without
+comparing, and a written invariant part is compared against a copy of itself. So
+the change is invisible to the constraint store, and it makes `#cast` agree with
+`#subtype`'s own first line instead of merely not contradicting it.
+
+The question is now asked once, in `#cast`, before the pattern's kind is known
+-- which is what makes a written leaf and a written datatype answer the same
+way, where `#castHead` and the leaf arm used to reach it separately.
+
+`#assertNoEVar` went in beside it: the lattice operations rely on `withEVars`'s
+closing sentence by not checking their operands, and `#lattice` at an invariant
+position reaches `#eqtype`, which records before it tests. Nothing in the suite
+trips it, so it is a tripwire rather than a fix -- the case it is waiting for is
+a `match` in argument position.
 
 **Optional names in a domain.** `(x: A, B) -> C` and `| MkBox(flag: Bool, Bool)`
 parse, an arrow's parameters and a constructor's fields being one syntax and so

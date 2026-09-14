@@ -55,6 +55,7 @@ import {
   FVar,
   type FVarRef,
   impossible,
+  isClosed,
   mkTypeParamInfo,
   openMany,
   TData,
@@ -126,6 +127,21 @@ export class Subtyper {
    * written on the promise that one stands.
    */
   #at: Position | undefined;
+
+  /**
+   * Where the live batch begins, while one is live: the bar `isClosed` is
+   * asked against by `#assertNoEVar`, and undefined wherever no batch is open.
+   *
+   * It exists for the sentence `withEVars` ends on -- nothing outside that
+   * method holds a type naming an EVar -- which the lattice operations rely on
+   * by *not* checking their operands. A relied-on invariant that nothing tests
+   * is a promise; this is the test.
+   *
+   * Vacuous on today's suite -- nothing joins while a batch is open, a match
+   * in argument position being the way one would -- so it is a tripwire for
+   * later rather than a check that currently catches anything.
+   */
+  #liveBatch: number | undefined;
 
   /**
    * `diagnostics` is the checker's own array, shared rather than copied, the
@@ -357,8 +373,28 @@ export class Subtyper {
   #cast(type: Type, pattern: TypePattern, dir: Variance): Type {
     this.#spend();
 
-    // Three kinds of demand, and the pattern is what says which. Nothing is
-    // read off `type` until the demand is known, which is what keeps a rule
+    // Promotion first, and only upward, which is the whole of what a variable
+    // can offer here. Exposed whole rather than a step at a time: what reads
+    // this wants the head it arrives at, and nothing between an `FVar` and its
+    // bound has anything to say.
+    const head = dir > 0 ? this.expose(type) : type;
+
+    // An extreme standing the way the cast moves answers every demand at once.
+    // `never` is under every type there is, so nothing a pattern could ask of
+    // it is in question -- the same vacuous case `#subtype` answers on its
+    // first line, which is why the two agree here rather than by coincidence.
+    // It stands whole, and no shape is invented around it: an invented shape
+    // would have to choose at every invariant part, and nothing downstream can
+    // tell a `never` from a `List[never]` it is about to be compared against.
+    //
+    // An invariant ask has no direction to move in, so it has no extreme
+    // either, and every head is read as a shape below.
+    if (dir !== 0 && head.kind === (dir > 0 ? "TNever" : "TUnknown")) {
+      return head;
+    }
+
+    // Three kinds of demand, and the pattern is what says which. Nothing more
+    // is read off `type` until the demand is known, which is what keeps a rule
     // meant for one kind from running in front of another.
     switch (pattern.kind) {
       // Nothing demanded, so nothing moves -- whatever stands there is the
@@ -367,10 +403,10 @@ export class Subtyper {
       case "TMissing":
         return type;
 
-      // A shape is demanded. Only here may `type` be moved to produce one, and
-      // both ways of moving it live in `#castHead`.
+      // A shape is demanded, and `#castHead` is the one place that says what
+      // a head with none of its own offers instead.
       case "TFun": {
-        const from = this.#castHead(type, pattern, dir);
+        const from = this.#castHead(head, pattern);
         // Quantifying a different number of variables leaves nothing to walk
         // into: the two parameter lists stand under different binders, so
         // their positions do not correspond. A different number of
@@ -387,7 +423,7 @@ export class Subtyper {
       }
 
       case "TData": {
-        const from = this.#castHead(type, pattern, dir);
+        const from = this.#castHead(head, pattern);
         if (
           from.kind !== "TData" || from.name !== pattern.name ||
           from.args.length !== pattern.args.length
@@ -412,8 +448,10 @@ export class Subtyper {
       }
 
       case "TRef": {
-        const from = this.#castHead(type, pattern, dir);
-        if (from.kind !== "TRef") return this.#castFailed(type, pattern);
+        const from = this.#castHead(head, pattern);
+        if (from.kind !== "TRef") {
+          return this.#castFailed(type, pattern);
+        }
         // A cell's argument moves neither way, however this node was reached.
         return TRef(this.#cast(from.arg, pattern.arg, 0));
       }
@@ -439,138 +477,24 @@ export class Subtyper {
   }
 
   /**
-   * What `type` offers when a shape is wanted, as a type the shape cases can
+   * What a head offers when a shape is wanted, as a type the shape cases can
    * take apart -- so every way of getting there ends in the same structural
    * walk, and there is no second traversal to keep in step with this one.
    *
-   * A variable has no shape of its own. Going up it stands aside for its
-   * bound, the same promotion `#join` makes; going down or standing still it
-   * may not, so it is handed on unchanged and fails the shape test.
-   *
-   * Top going down and bottom going up have no head either, for the opposite
-   * reason: the left says nothing and the pattern alone decides. There the
-   * extreme is *lifted* into the shape asked for, one level deep, and the
-   * ordinary walk lifts again wherever it meets the extreme further in.
+   * One case, the other two having been decided before the demand was known.
+   * A report already stands, so a bad type has whatever shape is demanded:
+   * standing aside the way promotion and the extreme do, but only where a
+   * shape is demanded, a demanded leaf going to the relation, which knows
+   * `<bad>` on its own. Asked of the head, since a declared bound may be bad
+   * in its own right -- and the shape is all it contributes, never a report,
+   * filling a missing part from something already bad inventing nothing.
    */
   #castHead(
-    type: Type,
+    head: Type,
     pattern: Extract<TypePattern, { kind: "TFun" | "TData" | "TRef" }>,
-    dir: Variance,
   ): Type {
-    // Promotion first, and only upward, which is the whole of what a variable
-    // can offer here. Exposed whole rather than a step at a time: the tests
-    // below read the head this arrives at, and a variable is neither an
-    // extreme nor bad, so nothing between has anything to say to them.
-    const head = dir > 0 ? this.expose(type) : type;
-
-    // A report already stands, so a bad type has whatever shape is demanded:
-    // a third way of standing aside, beside promotion and lifting an extreme.
-    // Only needed where a shape is demanded, a demanded leaf going to the
-    // relation, which knows `<bad>` on its own. Asked of the head, since a
-    // declared bound may be bad in its own right.
-    //
-    // The shape but never a report: filling a missing part from something
-    // already bad invents nothing, where lifting an extreme is a choice.
     if (head.kind === "TBad") return completePattern(pattern, () => head);
-
-    // An invariant ask has no direction to be moved in, and in either
-    // direction only the extreme *that* way has no head of its own. Two
-    // questions and not one, so what reaches `#liftExtreme` is a `Direction`
-    // rather than a promise about one.
-    if (dir === 0) return head;
-    if (head.kind !== (dir > 0 ? "TNever" : "TUnknown")) return head;
-
-    return this.#liftExtreme(type, pattern, dir);
-  }
-
-  /**
-   * The extreme `head` lifted into the shape `pattern` asks for: the pattern
-   * read back as a type, with each part standing for the extreme *that*
-   * position demands.
-   *
-   * One place and not a rule per shape, because the question is the same
-   * everywhere: the least type of a given shape takes the least thing at each
-   * position that grows with it and the greatest at each position that
-   * shrinks. The greatest arrow takes the smallest parameters and the largest
-   * result; the least `List[+A]` is a `List` of the least thing, and the least
-   * `Foo[-A]` a `Foo` of the greatest.
-   *
-   * **One level, and only one.** `#cast` walks what comes back against the
-   * pattern again and re-enters here wherever it meets an extreme further in,
-   * so a deeper lift would compute what the ordinary walk is about to compute
-   * anyway. Which is also why a written part is not kept: whatever stands in
-   * its position is cast against it a moment later.
-   *
-   * An **invariant** part is the exception, and the same exception twice. It
-   * is the one position with no extreme of its own, so it is the one place
-   * this *warns*; and it is the one position `#castHead` will not come back
-   * to, having no direction to be moved in, so it is also the one place the
-   * fill has to go all the way down instead of one level.
-   *
-   * That warning is not the program's mistake: an extreme sits under (or over)
-   * every type there is, so a cast in this direction can always be made, and
-   * reporting the checker's inability to name one answer as an error would
-   * blame the author for it -- there is no `TBad` to hand back either,
-   * `badUnder` taking errors alone. Whatever a later check trips over in that
-   * argument is explained by this line. Said once per lift however many parts
-   * were invariant; a nested lift says it again about the shape *it* was
-   * asked for, which is the shape it can name.
-   */
-  #liftExtreme(
-    type: Type,
-    pattern: Extract<TypePattern, { kind: "TFun" | "TData" | "TRef" }>,
-    dir: Direction,
-  ): Type {
-    // A direction read as a type: what a part standing that way takes, and
-    // equally the head `#castHead` arrived with -- bottom going up, top going
-    // down -- so nothing has to be passed alongside a `dir` it agrees with.
-    const extreme = (d: Direction): Type => d > 0 ? TNever : TUnknown;
-    const head = extreme(dir);
-
-    let warned = false;
-    const invariant = (want: TypePattern, blame: string): Type =>
-      // The report is `completePattern`'s to ask for, which is what keeps it
-      // to the parts this had to invent: an invariant argument written in full
-      // leaves nothing to choose, so nothing is said about it.
-      completePattern(want, () => {
-        if (!warned) {
-          warned = true;
-          this.#file(
-            "warning",
-            `no ${dir > 0 ? "least" : "greatest"} ${typeToString(pattern)} ` +
-              `to cast ${typeToString(type)} to: ${blame} is invariant, so ` +
-              `it was taken to be ${typeToString(head)}`,
-          );
-        }
-        return head;
-      });
-
-    switch (pattern.kind) {
-      case "TFun": {
-        // Bounds and parameters are contravariant and the result alone is not,
-        // so no part of an arrow can be invariant and an arrow never warns.
-        const inner = flip(dir);
-        return TFun(
-          pattern.typeParams.map((b) =>
-            mkTypeParamInfo(b.hint, extreme(inner))
-          ),
-          pattern.params.map(() => extreme(inner)),
-          extreme(dir),
-        );
-      }
-      case "TData":
-        return TData(
-          pattern,
-          pattern.args.map((want, i) => {
-            const at = composeVariance(dir, argVarianceOf(pattern, i));
-            return at === 0
-              ? invariant(want, this.#argName(pattern, i))
-              : extreme(at);
-          }),
-        );
-      case "TRef":
-        return TRef(invariant(pattern.arg, "a Ref's argument"));
-    }
+    return head;
   }
 
   /**
@@ -928,14 +852,15 @@ export class Subtyper {
    * so only the written parts constrain. A complete pattern gives itself back.
    *
    * The CLTI paper reads a result pattern by downcasting top to it. Invariance
-   * is why we do not: an invariant part has no extreme of its own, so a cast
-   * there is partial, and both ways out are bad for a bound. Planting `<bad>`
-   * -- an earlier version here -- blames the author for a mistake nobody made;
-   * picking a side, which `#liftExtreme` does today and warns about, keeps the
-   * shape and loses principality. So the two walks trade opposite things: a
-   * cast is faithful to the pattern and may not be principal, avoidance is
-   * principal up to its approximation and may give the shape up. A bound wants
-   * the second.
+   * is why we do not: an invariant part has no extreme of its own, so there is
+   * nothing for a downcast of `unknown` to put there, and the answers that
+   * were tried are both wrong for a bound. Planting `<bad>` -- an earlier
+   * version here -- blames the author for a mistake nobody made; picking a
+   * side keeps the shape and loses principality. `#cast` now declines to do
+   * either, handing the extreme back whole, which is the principal answer but
+   * not one carrying the shape a *hole in the middle* of a pattern still has
+   * to be filled with. So this walk stays separate, and reads the pattern
+   * part by part rather than asking the relation to walk into it.
    *
    * Avoidance with the bar above everything, so no variable is ever out of
    * scope and a missing part is the only thing left that cannot be kept. The
@@ -1086,7 +1011,32 @@ export class Subtyper {
    * everything, so the answer stays sound, but a match whose arms ran too deep
    * joins to `unknown` and the coercion after it blames the program.
    */
+  /**
+   * A lattice operation may not be handed a type naming an EVar of the live
+   * batch. `#lattice` at an invariant position asks `#eqtype`, which records
+   * against an EVar on either side before it tests anything else -- so an
+   * operand naming one would turn a join into a constraint, which is a thing
+   * no caller of `join` is asking for and nothing would notice.
+   *
+   * Solving is not a case: `solveEVar` folds bounds that `addConstraint`
+   * already held to the same bar, and it runs with the batch popped.
+   *
+   * A failure is a checker bug rather than a program error, so it throws.
+   */
+  #assertNoEVar(what: string, types: readonly Type[]): void {
+    const floor = this.#liveBatch;
+    if (floor === undefined) return;
+    for (const type of types) {
+      if (isClosed(type, floor)) continue;
+      throw new Error(
+        `${what}: an operand names an EVar of the batch beginning at level ` +
+          `${floor}`,
+      );
+    }
+  }
+
   join(left: Type, right: Type): Type {
+    this.#assertNoEVar("join", [left, right]);
     return this.#query(
       undefined,
       () => this.#join(left, right),
@@ -1096,6 +1046,7 @@ export class Subtyper {
 
   /** Greatest lower bound. Falls back to `never`, dual to `join`. */
   meet(left: Type, right: Type): Type {
+    this.#assertNoEVar("meet", [left, right]);
     return this.#query(undefined, () => this.#meet(left, right), () => TNever);
   }
 
@@ -1121,6 +1072,7 @@ export class Subtyper {
    * explained by this line.
    */
   joinMany(types: readonly Type[], at?: Position): Type {
+    this.#assertNoEVar("joinMany", types);
     return this.#query(at, () => this.#joinMany(types), () => {
       this.#file(
         "warning",
@@ -1134,6 +1086,7 @@ export class Subtyper {
   /** The meet of every type in `types`, or `unknown` if there are none. Dual
    * to `joinMany`. */
   meetMany(types: readonly Type[]): Type {
+    this.#assertNoEVar("meetMany", types);
     return this.#query(undefined, () => this.#meetMany(types), () => TNever);
   }
 
@@ -1531,9 +1484,19 @@ export class Subtyper {
       // promise. What the entries still carry is their own bounds, which are
       // ordinary objects and outlive the levels that held them.
       const batch = this.context.inScope(() => {
-        const entries = this.context.pushEVarBatch(hints);
-        body(entries.map((entry) => entry.ref));
-        return entries;
+        // Read before the push, which is where `EVarEntry` reads its own
+        // `batch` from, so the two agree by construction. Restored rather than
+        // cleared: batches never nest, and a `finally` that assumed so would
+        // be the one place saying it twice.
+        const outerBatch = this.#liveBatch;
+        this.#liveBatch = this.context.size;
+        try {
+          const entries = this.context.pushEVarBatch(hints);
+          body(entries.map((entry) => entry.ref));
+          return entries;
+        } finally {
+          this.#liveBatch = outerBatch;
+        }
       });
 
       // A variable given up on answers `TBad`, and needs nothing special to:
