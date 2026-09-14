@@ -70,70 +70,7 @@ not one. That phase is still worth having on its own -- it turns a forward
 reference into "`foo` is declared below; its signature is not available here"
 rather than `unknown name foo` -- and it is additive, so it can land whenever.
 
-## 2. Constructors as types
-
-Each constructor becomes a type of its own, below the datatype:
-`Cons[A] <:
-List[A]`, `Nil <: List[A]`. Derived, not declared -- there is no new
-syntax and nothing to write -- depth exactly one, and the coercion is the
-identity, since a `Cons` value already _is_ the `List` value. One new leaf in
-`#relateData`, and no new runtime representation.
-
-This is the successor to `docs/subtyping.md`, which designed a declared
-hierarchy with super constructors, implemented most of it, and lost. It delivers
-the case that design was really for -- a subgrammar that embeds into a full one,
-`NonEmpty[A]` out of `List[A]`, `Type` out of `TypePattern` -- at a fraction of
-the cost, and it populates Fsub's bounds, which is the other thing that file
-wanted and the reason `FUEL` and the three-valued `Verdict` exist at all.
-
-Four things it needs, in order, of which **all but the last have landed**.
-
-**Constructor names become globally unique.** _Landed._ They are type names now,
-so they share a namespace with datatypes and with each other. The alternative --
-qualified names, `List.Cons` -- was tried on the closed branch and is what
-forced a `match ... as` there. A flat rule is cheaper and is what the evaluator
-already half-assumes. The suite had exactly one program relying on the old rule,
-and it was the test asserting it.
-
-**Elaboration's first phase admits constructor names.** _Landed._ `Declarations`
-already seeds every datatype name before any signature is elaborated, which is
-what lets `List` and `Tree` name each other; constructor names join that
-seeding, so a field may mention `Cons[A]` in the same declaration run. A
-constructor of its datatype's own name claims nothing where it is the only one,
-which is what keeps the `Box`/`Box` wrapper ordinary.
-
-**The scrutinee's type supplies the case set.** _Landed._ `#checkMatch` seeds
-`#remaining` from `Declarations.casesOf(scrutinee)`, which reads the type rather
-than the declaration its name reaches. The same set while a `TData`'s identity
-is its name, and the whole feature the moment it is not --
-`match xs
-with | Cons(h, t) ->` on an `xs : Cons[Bool]` is exhaustive with one
-arm, and `casesOf` is the one place that has to learn it.
-
-**A constructor type is below its family.** _Landed._ `headsAgree` is the one
-home for when two datatype heads agree, asked by `#relateData` and by `#cast`
-alike -- the cast had a name test of its own, so changing the relation by itself
-let `Cons[Bool] <: List[Bool]` hold while a call passing one still failed to
-check. Nothing rises at variance `0`. The diagnostic split this surfaced is in:
-a name the family does not have is a name error, a name the scrutinee's type
-excludes is unreachability, and neither blames the other.
-
-**Inference returns the principal type.** `Cons(True, Nil())` infers
-`Cons[Bool]` rather than `List[Bool]`, which is what makes the feature reachable
-without annotations everywhere. Two consequences are already known. Arm joins
-now rise two constructor heads to their datatype, so `#latticeData` is on the
-critical path from day one -- today it never sees two, because nothing infers
-one. And an arm excluded by the _scrutinee's type_ must be a warning rather than
-the error it is now -- an ordinary `match` with a `Nil` arm over a known `Cons`
-is not a mistake worth refusing a program for, whereas an arm shadowed by the
-arms above it still is. The two are already separate reports, so this is a
-severity and not a rewrite.
-
-The known cost is the usual one for inference under subtyping: `ref!(Cons(...))`
-infers `Ref[Cons[Bool]]`, a cell nothing can `set!` a `Nil` into, and the fix is
-an annotation.
-
-## 3. Sugar for single-case datatypes
+## 2. Sugar for single-case datatypes
 
 `let Pair(x, y) = e` as a one-arm match, which is one token of lookahead in
 `letBinding` handing off to `matchPat`. It works for any constructor, not only a
@@ -141,7 +78,7 @@ sole one -- `let Cons(hd, tl) = xs` is legal and partial, and the totality
 report is the one `#remaining` already produces, which under item 2 is silent
 exactly when the scrutinee's type says it is total.
 
-## 4. Batching one parameter list
+## 3. Batching one parameter list
 
 Today a parameter list is one batch, and the staging that a bare lambda needs is
 the author's to write: `foldLeft(z)(op)`, a second list so that `z` is solved
@@ -173,6 +110,93 @@ written list is still the only way to stage what no argument determines. This
 would make the common case stop needing it.
 
 ## Landed
+
+### Constructors as types
+
+Each constructor is a type of its own, below the datatype: `Cons[A] <:
+List[A]`,
+`Nil <: List[A]`. Derived, not declared -- there is no new syntax and nothing to
+write -- depth exactly one, and the coercion is the identity, since a `Cons`
+value already _is_ the `List` value. One new leaf in `#relateData`, and no new
+runtime representation.
+
+This is the successor to `docs/subtyping.md`, which designed a declared
+hierarchy with super constructors, implemented most of it, and lost. It delivers
+the case that design was really for -- a subgrammar that embeds into a full one,
+`NonEmpty[A]` out of `List[A]`, `Type` out of `TypePattern` -- at a fraction of
+the cost, and it populates Fsub's bounds, which is the other thing that file
+wanted and the reason `FUEL` and the three-valued `Verdict` exist at all.
+
+Four things it needed, in order, and all four are in.
+
+**Constructor names become globally unique.** _Landed._ They are type names now,
+so they share a namespace with datatypes and with each other. The alternative --
+qualified names, `List.Cons` -- was tried on the closed branch and is what
+forced a `match ... as` there. A flat rule is cheaper and is what the evaluator
+already half-assumes. The suite had exactly one program relying on the old rule,
+and it was the test asserting it.
+
+**Elaboration's first phase admits constructor names.** _Landed._ `Declarations`
+already seeds every datatype name before any signature is elaborated, which is
+what lets `List` and `Tree` name each other; constructor names join that
+seeding, so a field may mention `Cons[A]` in the same declaration run. A
+constructor of its datatype's own name claims nothing where it is the only one,
+which is what keeps the `Box`/`Box` wrapper ordinary.
+
+**The scrutinee's type supplies the case set.** _Landed._ `#checkMatch` seeds
+`#remaining` from `Declarations.casesOf(scrutinee)`, which reads the type rather
+than the declaration its name reaches. The same set while a `TData`'s identity
+is its name, and the whole feature the moment it is not --
+`match xs
+with | Cons(h, t) ->` on an `xs : Cons[Bool]` is exhaustive with one
+arm, and `casesOf` is the one place that has to learn it.
+
+**A constructor type is below its family.** _Landed._ `headsAgree` is the one
+home for when two datatype heads agree, asked by `#relateData` and by `#cast`
+alike -- the cast had a name test of its own, so changing the relation by itself
+let `Cons[Bool] <: List[Bool]` hold while a call passing one still failed to
+check. Nothing rises at variance `0`. The diagnostic split this surfaced is in:
+a name the family does not have is a name error, a name the scrutinee's type
+excludes is unreachability, and neither blames the other.
+
+**Inference returns the principal type.** _Landed._ `Cons(True, Nil())` infers
+`Cons[Bool]`, which is what makes the feature reachable without annotating every
+binding. Both anticipated consequences arrived. `#latticeData` is on the
+critical path, and now asks `headsLattice` which head stands between two --
+upward, one family's constructors rise to it; downward there is nothing to
+build, the constructors partitioning the family's values, so all that can be
+answered is the one already below the other. And an arm the _scrutinee's type_
+excludes is now a warning, where an arm covered by the arms above it stays an
+error: the first is a fact about a type the checker chose, the second a mistake
+in a list its author wrote.
+
+Two rules were not anticipated, and both are about which types are worth
+minting.
+
+A constructor _application_ answers with its own type, so a constructor declared
+as a **value** is outside the rule rather than excepted from it: `|
+True`
+declares a member of `Bool` and builds nothing, where `| Nil()` is a function
+whose result is what it built. Taking `True` to be a singleton type was tried
+first and is coherent -- it is what full uniformity gives -- but it makes every
+boolean in the language read `True`, a `fn (a, b) -> True` answer
+`(Bool, Bool) -> Bool` no longer, and every `match` on a literal call its other
+arms unreachable. A **sole** constructor answers with its family for the reason
+a constructor of its datatype's own name claims nothing: one case either way, so
+the narrower type says nothing the family does not, and this is what keeps the
+single-case wrappers of item 2 reading as themselves.
+
+A type argument solved from below is taken at its family, where the upper bound
+still allows it. A batch is solved before the arguments after it are checked, so
+`foldr(xs)(Z)(op)` would otherwise fix `B` at the first argument's constructor
+and then refuse what the operator answers with -- the staging idiom failing on a
+type the author never wrote. The family is a solution and not an approximation:
+it is above every lower constraint, and asking the upper bound keeps it below
+every other one, so a declared `[A <: S]` still gets `S`.
+
+The known cost is the usual one for inference under subtyping: `ref!(Cons(...))`
+infers `Ref[Cons[Bool]]`, a cell nothing can `set!` a `Nil` into, and the fix is
+an annotation.
 
 **The extreme lift, dropped.** `upcast(never, Ref[?])` was `Ref[never]`, lifted
 one level into the pattern's shape and warning about the argument it had to

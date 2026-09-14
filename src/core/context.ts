@@ -242,6 +242,31 @@ export class Declarations {
   }
 
   /**
+   * The entry a constructor's *own* name reaches, which is the type its
+   * applications answer with: `Cons(h, t)` is a `Cons`, and rises to the
+   * family only where something asks it to.
+   *
+   * An *application*, so a constructor declared as a value is outside the rule
+   * rather than excepted from it: `| True` declares a member of `Bool` and
+   * builds nothing, where `| Nil()` is a function whose result is what it
+   * built. It is also the reading that keeps the common types readable -- a
+   * `fn (a, b) -> True` answers `(Bool, Bool) -> Bool`, and a `match` on a
+   * literal does not call its other arms unreachable.
+   *
+   * The family where the constructor is the only one, for the reason a
+   * constructor of its datatype's own name claims nothing: one case either
+   * way, so the narrower type says nothing the family does not, and a
+   * `MkPair(a, b)` reads as the `Pair` its author wrote. The family also where
+   * that name went to another declaration and was refused -- a report already
+   * stands, and the family is the type the constructor would have had.
+   */
+  resultEntryOf(family: DatatypeInfo, ctor: DataCtorInfo): DatatypeInfo {
+    if (ctor.isValue || family.ctors.length === 1) return family;
+    const own = this.#datatypes.get(ctor.name);
+    return own?.family === family.name ? own : family;
+  }
+
+  /**
    * What a value of this type could have been built by. Asked of the *type*
    * and not of a name, because that is the question: a name reaches one
    * declaration, and what a scrutinee could still be is a property of the type

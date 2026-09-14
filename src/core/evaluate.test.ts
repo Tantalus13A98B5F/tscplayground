@@ -205,13 +205,15 @@ Deno.test("the forms a type declaration leaves at runtime", () => {
   expect(valueOf(...FLAG, "Off()")).toBe("Off()");
   expect(valueOf(...FLAG, "Off")).toBe("<function Off>");
   // Neither form is a distinction a pattern can see, both having no fields.
-  expect(valueOf(...FLAG, "match Off() with", "| On -> On", "| Off -> On"))
-    .toBe("On");
+  // The `On` arm is dead, `Off()` answering an `Off`, and that is a warning
+  // about a type the checker chose rather than an error against the program.
+  expect(run(...FLAG, "match Off() with", "| On -> On", "| Off -> On"))
+    .toEqual(["On", "this arm is unreachable: no Off is a On"]);
 });
 
 Deno.test("a wildcard pattern matches, and a nearer binding shadows", () => {
-  expect(valueOf(...NAT, "match S(Z) with", "| Z -> Z", "| _ -> S(S(Z))"))
-    .toBe("S(S(Z))");
+  expect(run(...NAT, "match S(Z) with", "| Z -> Z", "| _ -> S(S(Z))"))
+    .toEqual(["S(S(Z))", "this arm is unreachable: no S is a Z"]);
   // `_` binds a scope like any other name, and nothing can look one up.
   expect(valueOf(...BOOL, "let f = fn (_: Bool) -> True;", "f(False)"))
     .toBe("True");

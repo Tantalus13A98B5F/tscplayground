@@ -105,21 +105,43 @@ fields and every constructor term seeded twice.
 
 A constructor type is _below_ its family: `Cons[A] <: List[A]`, derived rather
 than declared, with no new runtime representation and the identity for a
-coercion, a `Cons` value already being the `List` value. `headsAgree` is where
-two heads agree, and the relation and the cast both ask it -- two homes for that
-question is how a coercion the relation allows becomes one the cast refuses.
-Depth is exactly one: a family is a name and not a chain, so this is a
-comparison and never a search.
+coercion, a `Cons` value already being the `List` value. Depth is exactly one: a
+family is a name and not a chain, so this is a comparison and never a search.
+
+`headsLattice` is the one home for that hierarchy -- the head above two heads,
+or below them. Upward, one family's constructors rise to it; downward there is
+nothing to build, the constructors partitioning the family's values, so all that
+can be answered is the one already below the other. `#latticeData` asks it, and
+so does `headsAgree`, which is the same question with its answer pinned: a
+`from` may be answered as a `to` exactly where the head between them _is_ the
+`to`. The relation and the cast both go through `headsAgree` -- two homes for
+that question is how a coercion the relation allows becomes one the cast
+refuses.
 
 Nothing rises at an invariant position. `Cell[Cons[A]]` is not `Cell[List[A]]`,
 or a `Ref[List[A]]` could be `set!` a value the read side was promised could not
-arrive -- which is the whole of why `headsAgree` answers nothing at `0`.
+arrive -- which is the whole of why `headsLattice` answers nothing at `0`.
+
+A constructor _application_ answers with the constructor's own type, which is
+what `resultEntryOf` decides, so `Cons(h, t)` is a `Cons` and rises only where
+something asks it to. Two constructors answer with their family instead, and
+neither is an exception to that rule: a constructor declared as a _value_ builds
+nothing, `| True` being a member of `Bool` where `| Nil()` is a function whose
+result is what it built; and a _sole_ constructor is its family already, one
+case either way, which is the same reason one may take its datatype's name. A
+type argument solved from below is widened the same way where its upper bound
+allows -- see `#atFamily`, and `docs/clti.md` for why a batch's timing makes it
+necessary.
 
 A pattern name therefore fails two ways, and they are different reports.
 `#checkMatch` keeps what the scrutinee's type _admits_ beside what the arms have
 _left_: a name the family does not have is a name error, said against the
 family, and a name the type excludes is unreachability, said about the type
-rather than blamed on the name.
+rather than blamed on the name. The first two are errors and the last a
+_warning_ -- an arm the arms above it cover is a mistake in a list its author
+wrote, where an arm the scrutinee's type excludes is a fact about a type
+inference chose, and refusing the program for it would charge the author for the
+checker's precision.
 
 A domain position -- an arrow's parameter, or a constructor's field -- may carry
 a name: `(x: A, B) -> C`, `| MkBox(flag: Bool, Bool)`. One syntax, so one rule,

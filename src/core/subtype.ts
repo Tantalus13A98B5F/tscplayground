@@ -106,23 +106,56 @@ const FUEL = 2000;
  * two datatype heads raise, asked by the relation and by the cast alike.
  *
  * Nominal, so a head agrees with itself and with nothing else -- bar one
- * derived leaf. A constructor is below its family, `Cons[A] <: List[A]`, so a
- * head agrees with the family above it where the move is upward, and a family
- * with a constructor below it where the move is downward. Depth exactly one: a
- * family is a name, not a chain, so there is no hierarchy to walk and this is a
- * comparison rather than a search.
- *
- * Agreement and not a meet, though the direction may suggest one: this answers
- * yes or no about two heads a relation already holds, where `#meet` names a
- * third type that may be neither of them.
- *
- * Nothing at `0`. An invariant position asks for the type itself, and letting
- * a constructor answer there is what would let a `Ref[List[A]]` be `set!` a
- * value the read side was promised could not arrive.
+ * derived leaf, a constructor being below its family, `Cons[A] <: List[A]`.
+ * That leaf is a hierarchy, and a hierarchy is where a relation and a join can
+ * come to disagree, so this is not a second reading of it: `to` may answer for
+ * `from` exactly where the head `headsLattice` names between them *is* `to`.
+ * Nothing at `0` follows from there rather than being written twice.
  */
 function headsAgree(from: DataHead, to: DataHead, dir: Variance): boolean {
-  if (from.name === to.name) return true;
-  return dir > 0 ? from.family === to.name : dir < 0 && to.family === from.name;
+  return headsLattice(from, to, dir)?.name === to.name;
+}
+
+/**
+ * The head above two heads, or below them, moving `dir` -- `undefined` where
+ * the family leaves nothing to say and the caller's own extreme answers.
+ *
+ * Agreement is this with the answer pinned: `from` may be answered as `to`
+ * exactly where the head between them *is* `to`, which is what keeps the
+ * relation's leaf and the join from being two opinions about one hierarchy.
+ *
+ * Upward, two constructors of one family rise to that family, and a
+ * constructor beside its own family rises to it -- both are `familyHead`,
+ * since a family's own family is itself. Downward there is no such meet to
+ * build: the family's constructors partition its values, so two of them have
+ * nothing but `never` below, and all that can be answered is the one that is
+ * already below the other.
+ */
+function headsLattice(
+  s: DataHead,
+  t: DataHead,
+  dir: Variance,
+): DataHead | undefined {
+  if (s.name === t.name) return s;
+  if (dir > 0) return s.family === t.family ? familyHead(s) : undefined;
+  if (dir < 0) {
+    if (t.family === s.name) return t;
+    return s.family === t.name ? s : undefined;
+  }
+  // Nothing at `0`. An invariant position asks for the type itself, and
+  // letting a constructor answer there is what would let a `Ref[List[A]]` be
+  // `set!` a value the read side was promised could not arrive.
+  return undefined;
+}
+
+/**
+ * The head of a head's family, built rather than looked up: a constructor's
+ * entry shares its family's parameter array, so the two differ in name alone
+ * and no declaration table has to be reached from here.
+ */
+function familyHead(head: DataHead): DataHead {
+  if (head.name === head.family) return head;
+  return { name: head.family, family: head.family, params: head.params };
 }
 
 export class Subtyper {
@@ -1158,7 +1191,8 @@ export class Subtyper {
     t: Extract<Type, { kind: "TData" }>,
     dir: Direction,
   ): Type | undefined {
-    if (s.name !== t.name || s.args.length !== t.args.length) return undefined;
+    const head = headsLattice(s, t, dir);
+    if (head === undefined || s.args.length !== t.args.length) return undefined;
     const args = [];
     for (const [i, mine] of s.args.entries()) {
       const other = t.args[i] ?? impossible("arities agree above");
@@ -1170,7 +1204,7 @@ export class Subtyper {
       if (arg === undefined) return undefined;
       args.push(arg);
     }
-    return TData(s, args);
+    return TData(head, args);
   }
 
   /**
@@ -1310,11 +1344,33 @@ export class Subtyper {
     });
   }
 
+  /**
+   * A lower bound at its family, where the upper bound still allows it.
+   *
+   * A constructor head is the narrowest thing an argument can say, and a batch
+   * is solved before the arguments after it are checked -- so `foldr(xs)(Z)(op)`
+   * would fix `B` at `Z` and then refuse the `S` the operator answers with,
+   * which is the staging idiom failing on the one type the author never wrote.
+   * The family is what they would have written, and it is a *solution* and not
+   * an approximation: it is above every lower constraint, and asking the upper
+   * bound keeps it below every other one. Where a constraint really does demand
+   * the constructor, the widened head fails that ask and the narrow one stands.
+   *
+   * The head alone, never inside the arguments: what stands at an invariant
+   * argument is not this EVar's to widen, and the only general rule there is
+   * the relation's own, which says nothing rises.
+   */
+  #atFamily(lower: Type, upper: Type): Type {
+    if (lower.kind !== "TData" || lower.name === lower.family) return lower;
+    const risen = TData(familyHead(lower), lower.args);
+    return this.#subtype(risen, upper) ? risen : lower;
+  }
+
   /** `solveEVar` inside its tank, so every relation below spends the one. */
   #solveEVar(entry: EVarEntry): Type {
     const { covariantly, contravariantly } = entry;
-    const lower = this.#joinMany(entry.lower);
     const upper = this.#meetMany(entry.upper);
+    const lower = this.#atFamily(this.#joinMany(entry.lower), upper);
 
     if (!this.#subtype(lower, upper)) {
       return badUnder(this.#file(

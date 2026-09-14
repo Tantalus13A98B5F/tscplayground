@@ -515,6 +515,23 @@ Deno.test("two datatypes meet argumentwise where an argument can move", () => {
   expect(typeToString(sub.join(List(Bool), Sink(Bool)))).toBe("unknown");
 });
 
+Deno.test("one family's constructors join at the family", () => {
+  const { sub } = fixture();
+  // The relation's leaf, read as a lattice: two constructors rise to what they
+  // are constructors of, and a constructor beside its family rises to it.
+  expect(typeToString(sub.join(Cons(Bool), Nil(Bool)))).toBe("List[Bool]");
+  expect(typeToString(sub.join(Cons(Bool), List(Bool)))).toBe("List[Bool]");
+  // Downward there is nothing to build: the family's constructors partition
+  // its values, so all that can be answered is one already below the other.
+  expect(typeToString(sub.meet(Cons(Bool), List(Bool)))).toBe("Cons[Bool]");
+  expect(typeToString(sub.meet(Cons(Bool), Nil(Bool)))).toBe("never");
+  // The arguments still have to move, the family being no excuse for them.
+  expect(typeToString(sub.join(Cons(Bool), Nil(Int)))).toBe("List[unknown]");
+  // And nothing rises inside an invariant one.
+  expect(typeToString(sub.join(Cell(Cons(Bool)), Cell(Nil(Bool)))))
+    .toBe("unknown");
+});
+
 Deno.test("top and bottom meet an EVar without constraining it", () => {
   // Both are decided by shape, before the relation is consulted. Asking the
   // relation would answer with a *constraint* -- `unknown <: ?a` recorded as a

@@ -191,10 +191,11 @@ Deno.test("stdlib: a Ref makes its datatype invariant, and that costs", () => {
       "below by unknown and above by MList[Nat], and no type is both",
   );
 
-  // The covariant list, written the same way, needs neither.
+  // The covariant list, written the same way, needs neither -- and answers
+  // with the constructor it was built by, which is the principal type.
   expect(check("l.ga", {
     "l.ga": '#require "data/list.ga"\n' + "Cons(Z, Nil())\n",
-  })).toEqual(["List[Nat]"]);
+  })).toEqual(["Cons[Nat]"]);
 });
 
 Deno.test("stdlib: fusing a Church nil's two binders does not work", () => {

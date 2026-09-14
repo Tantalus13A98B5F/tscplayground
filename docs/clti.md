@@ -302,6 +302,26 @@ batch was instantiated from, so it opens _that_ with the solutions: one ordinary
 substitution, and `Context.apply` -- a second mechanism that walked a type to do
 the same job -- deletes.
 
+### The head a lower bound is taken at
+
+A solution from below is taken at its _family_, where the upper bound still
+allows it: `#atFamily` on the joined lower bound, and nothing else in the solver
+knows constructor types exist.
+
+This is what a batch's timing costs, once constructors have types of their own.
+`foldr(xs)(Z)(op)` solves `B` at the end of the list `Z` stands in, before `op`
+is checked at all -- so `B` fixed at the constructor `Z` refuses the `S` the
+operator answers with, and the staging idiom fails on a type its author never
+wrote. Deferring the solve is the other fix and is item 3 of the roadmap; it is
+a change to when batches close, where this is a change to what a batch answers.
+
+The family is a _solution_ and not an approximation, which is why it needs no
+warning: it sits above every lower constraint, and asking the upper bound keeps
+it below every other one, so where a constraint really demands the constructor
+-- a declared `[A <: S]`, an invariant occurrence -- the widened head fails that
+ask and the narrow one stands. The head alone, never inside the arguments: what
+stands at an invariant argument is not this EVar's to widen.
+
 ## Who says what went wrong
 
 `Subtyper` shares the checker's `diagnostics` array, the way `Elaborator` does,
@@ -467,7 +487,7 @@ that keeps the invariant is to solve the batch _before_ any context-sensitive
 argument is checked, and check those against what came out -- best effort, no
 second solve, no live batch during an argument. Which is a cut in the list
 rather than a deferral within it: one list, several batches, `withEVars` still
-owning each alone. `docs/roadmap.md` item 4 is what that would take, and where
+owning each alone. `docs/roadmap.md` item 3 is what that would take, and where
 the cut would fall.
 
 ### Recursion, and a rule that was rejected

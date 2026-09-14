@@ -19,6 +19,7 @@ import {
   type Diagnostic,
   type Position,
   reportError,
+  reportWarning,
 } from "../diagnostics/diagnostic.ts";
 import {
   bindingHint,
@@ -79,6 +80,10 @@ export class Checker {
     const diagnostic = reportError(message, at, width);
     this.diagnostics.push(diagnostic);
     return diagnostic;
+  }
+
+  #warn(message: string, at: Position, width = 1): void {
+    this.diagnostics.push(reportWarning(message, at, width));
   }
 
   /**
@@ -637,10 +642,18 @@ export class Checker {
     for (const arm of term.arms) {
       // Taken and removed at once: what an arm matches is exactly what is
       // left after it, and an arm with nothing left is one nothing reaches.
-      let dead: string | undefined;
+      // What killed the arm as well as why, because the two answer to
+      // different authors. An arm the arms above it cover is a mistake in this
+      // list, which its author wrote and can fix by deleting it. An arm the
+      // scrutinee's *type* excludes is a fact about a type inference chose --
+      // `Cons(h, t)` answers `Cons[A]` now -- so refusing the program for it
+      // would charge the author for the checker's precision.
+      let dead: { why: string; blame: "arms" | "type" } | undefined;
       let binderTypes: readonly Type[] = [];
       if (arm.pattern.kind === "PWild") {
-        if (remaining.size === 0) dead = "every value is matched above";
+        if (remaining.size === 0) {
+          dead = { why: "every value is matched above", blame: "arms" };
+        }
         remaining.clear();
       } else {
         const name = arm.pattern.name.text;
@@ -655,13 +668,18 @@ export class Checker {
         // would blame the author twice for one thing.
         if (ctor !== undefined && !remaining.delete(name)) {
           dead = admits.has(name)
-            ? `${name} is matched above`
-            : `no ${typeToString(scrutinee)} is a ${name}`;
+            ? { why: `${name} is matched above`, blame: "arms" }
+            : {
+              why: `no ${typeToString(scrutinee)} is a ${name}`,
+              blame: "type",
+            };
         }
         binderTypes = this.#armBinderTypes(arm.pattern, ctor, scrutinee);
       }
       if (dead !== undefined) {
-        this.#report(`this arm is unreachable: ${dead}`, arm.pattern.at);
+        const said = `this arm is unreachable: ${dead.why}`;
+        if (dead.blame === "arms") this.#report(said, arm.pattern.at);
+        else this.#warn(said, arm.pattern.at);
       }
 
       // Checked whether or not it can be reached: what is written in a dead

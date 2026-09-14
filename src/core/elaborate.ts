@@ -481,7 +481,13 @@ export class Elaborator {
   seedConstructors(): void {
     for (const datatype of this.declarations.datatypes()) {
       for (const ctor of datatype.ctors) {
-        this.context.pushTermVar(constructorType(datatype, ctor), ctor.name);
+        this.context.pushTermVar(
+          constructorType(
+            this.declarations.resultEntryOf(datatype, ctor),
+            ctor,
+          ),
+          ctor.name,
+        );
       }
     }
   }
