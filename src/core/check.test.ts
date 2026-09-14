@@ -337,6 +337,22 @@ Deno.test("never in an invariant argument is neither a choice nor a mismatch", (
   expect(type).toBe("never -> Bool");
 });
 
+Deno.test("a failed argument cast leaves its badness where a bound is read", () => {
+  // What the shape a declined cast answers with is *for*. A bare `<bad>` is
+  // vacuous in the relation, so it would record nothing against `?A` and the
+  // variable would fall back to its own extreme -- `List[never]`, an ordinary
+  // type, for a program already blamed. `List[<bad>]` puts the badness where
+  // the bound is read from.
+  const [type, ...messages] = run(
+    ...LIST,
+    ...BOOL,
+    "let use = fn [A](xs: List[A]) -> xs;",
+    "use(True)",
+  );
+  expect(messages).toEqual(["expected List[?], found Bool"]);
+  expect(type).toBe("List[<bad>]");
+});
+
 Deno.test("a covariant argument has an extreme, so nothing is chosen", () => {
   // The same call against a `List`, where `List[never]` *is* the least one:
   // there is nothing arbitrary left to report.

@@ -55,7 +55,6 @@ import {
   FVar,
   type FVarRef,
   impossible,
-  isClosed,
   mkTypeParamInfo,
   openMany,
   TData,
@@ -127,21 +126,6 @@ export class Subtyper {
    * written on the promise that one stands.
    */
   #at: Position | undefined;
-
-  /**
-   * Where the live batch begins, while one is live: the bar `isClosed` is
-   * asked against by `#assertNoEVar`, and undefined wherever no batch is open.
-   *
-   * It exists for the sentence `withEVars` ends on -- nothing outside that
-   * method holds a type naming an EVar -- which the lattice operations rely on
-   * by *not* checking their operands. A relied-on invariant that nothing tests
-   * is a promise; this is the test.
-   *
-   * Vacuous on today's suite -- nothing joins while a batch is open, a match
-   * in argument position being the way one would -- so it is a tripwire for
-   * later rather than a check that currently catches anything.
-   */
-  #liveBatch: number | undefined;
 
   /**
    * `diagnostics` is the checker's own array, shared rather than copied, the
@@ -275,11 +259,21 @@ export class Subtyper {
 
   /**
    * A part of a cast that could not be reached: said in place, and answered
-   * with the shape that was asked for.
+   * with the shape that was asked for, its missing parts filled with `TBad`.
+   * `TBad` is the checker's word for *a report already stands*, so planting
+   * one is a recording like any other, and this is where the report it
+   * promises gets made.
    *
-   * The missing parts are filled with `TBad`, and `TBad` is the checker's word
-   * for *a report already stands* -- so planting one is a recording like any
-   * other, and this is where the report it promises gets made.
+   * The shape is not decoration, and this is the one place it is load-bearing.
+   * A bare `<bad>` is *vacuous* in the relation -- below and above everything,
+   * so it is answered on `#subtype`'s first line and records nothing. That
+   * vacuity is exactly why a head with no shape of its own may stand whole in
+   * `#cast`: there is nothing to carry. Here there is. An EVar compared
+   * against a bare `<bad>` picks up no bound and falls back to its own
+   * extreme, so `use(True)` against `[A](List[A]) -> List[A]` would come out
+   * `List[never]` -- an ordinary type, for a program already blamed. Planting
+   * the `<bad>` at the pattern's *parts* is what puts it where whatever reads
+   * those parts will meet it.
    */
   #castFailed(type: Type, pattern: TypePattern, message?: string): Type {
     const witness = this.#sayCastFailed(type, pattern, message);
@@ -1011,32 +1005,7 @@ export class Subtyper {
    * everything, so the answer stays sound, but a match whose arms ran too deep
    * joins to `unknown` and the coercion after it blames the program.
    */
-  /**
-   * A lattice operation may not be handed a type naming an EVar of the live
-   * batch. `#lattice` at an invariant position asks `#eqtype`, which records
-   * against an EVar on either side before it tests anything else -- so an
-   * operand naming one would turn a join into a constraint, which is a thing
-   * no caller of `join` is asking for and nothing would notice.
-   *
-   * Solving is not a case: `solveEVar` folds bounds that `addConstraint`
-   * already held to the same bar, and it runs with the batch popped.
-   *
-   * A failure is a checker bug rather than a program error, so it throws.
-   */
-  #assertNoEVar(what: string, types: readonly Type[]): void {
-    const floor = this.#liveBatch;
-    if (floor === undefined) return;
-    for (const type of types) {
-      if (isClosed(type, floor)) continue;
-      throw new Error(
-        `${what}: an operand names an EVar of the batch beginning at level ` +
-          `${floor}`,
-      );
-    }
-  }
-
   join(left: Type, right: Type): Type {
-    this.#assertNoEVar("join", [left, right]);
     return this.#query(
       undefined,
       () => this.#join(left, right),
@@ -1046,7 +1015,6 @@ export class Subtyper {
 
   /** Greatest lower bound. Falls back to `never`, dual to `join`. */
   meet(left: Type, right: Type): Type {
-    this.#assertNoEVar("meet", [left, right]);
     return this.#query(undefined, () => this.#meet(left, right), () => TNever);
   }
 
@@ -1072,7 +1040,6 @@ export class Subtyper {
    * explained by this line.
    */
   joinMany(types: readonly Type[], at?: Position): Type {
-    this.#assertNoEVar("joinMany", types);
     return this.#query(at, () => this.#joinMany(types), () => {
       this.#file(
         "warning",
@@ -1086,7 +1053,6 @@ export class Subtyper {
   /** The meet of every type in `types`, or `unknown` if there are none. Dual
    * to `joinMany`. */
   meetMany(types: readonly Type[]): Type {
-    this.#assertNoEVar("meetMany", types);
     return this.#query(undefined, () => this.#meetMany(types), () => TNever);
   }
 
@@ -1484,19 +1450,9 @@ export class Subtyper {
       // promise. What the entries still carry is their own bounds, which are
       // ordinary objects and outlive the levels that held them.
       const batch = this.context.inScope(() => {
-        // Read before the push, which is where `EVarEntry` reads its own
-        // `batch` from, so the two agree by construction. Restored rather than
-        // cleared: batches never nest, and a `finally` that assumed so would
-        // be the one place saying it twice.
-        const outerBatch = this.#liveBatch;
-        this.#liveBatch = this.context.size;
-        try {
-          const entries = this.context.pushEVarBatch(hints);
-          body(entries.map((entry) => entry.ref));
-          return entries;
-        } finally {
-          this.#liveBatch = outerBatch;
-        }
+        const entries = this.context.pushEVarBatch(hints);
+        body(entries.map((entry) => entry.ref));
+        return entries;
       });
 
       // A variable given up on answers `TBad`, and needs nothing special to:

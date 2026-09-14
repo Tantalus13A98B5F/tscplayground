@@ -165,11 +165,21 @@ and the standing-aside in each of the three shape arms, where nothing forced a
 new arm to include them -- and one was in fact written without, during this
 change, and caught by a test rather than by the compiler.
 
-`#assertNoEVar` went in beside it: the lattice operations rely on `withEVars`'s
-closing sentence by not checking their operands, and `#lattice` at an invariant
-position reaches `#eqtype`, which records before it tests. Nothing in the suite
-trips it, so it is a tripwire rather than a fix -- the case it is waiting for is
-a `match` in argument position.
+What is _not_ swept with it is the shape a declined cast answers with, and the
+reason is the same property read the other way. A bare `<bad>` is vacuous in the
+relation, so it records nothing: an EVar compared against one picks up no bound
+and falls back to its own extreme, and `use(True)` against
+`[A](List[A]) -> List[A]` comes out `List[never]` -- an ordinary type, for a
+program already blamed. Standing aside wants that vacuity because there is
+nothing to carry; a failure needs the opposite, so `#castFailed` still plants
+`<bad>` at the pattern's parts, where whatever reads them will meet it.
+
+An assertion that the lattice operations never see a live EVar was written and
+then removed. `#lattice` at an invariant position does reach `#eqtype`, which
+records before it tests -- but `#applyCall` checks every argument before a
+single EVar exists, and nothing inside a batch's body calls a lattice operation,
+so the case is unreachable by construction rather than by luck. The invariant is
+`withEVars`'s to state and `#applyCall`'s to keep.
 
 **Optional names in a domain.** `(x: A, B) -> C` and `| MkBox(flag: Bool, Bool)`
 parse, an arrow's parameters and a constructor's fields being one syntax and so
