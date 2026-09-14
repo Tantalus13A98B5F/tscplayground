@@ -852,15 +852,20 @@ export class Subtyper {
    * so only the written parts constrain. A complete pattern gives itself back.
    *
    * The CLTI paper reads a result pattern by downcasting top to it. Invariance
-   * is why we do not: an invariant part has no extreme of its own, so there is
-   * nothing for a downcast of `unknown` to put there, and the answers that
-   * were tried are both wrong for a bound. Planting `<bad>` -- an earlier
-   * version here -- blames the author for a mistake nobody made; picking a
-   * side keeps the shape and loses principality. `#cast` now declines to do
-   * either, handing the extreme back whole, which is the principal answer but
-   * not one carrying the shape a *hole in the middle* of a pattern still has
-   * to be filled with. So this walk stays separate, and reads the pattern
-   * part by part rather than asking the relation to walk into it.
+   * is why we did not: an invariant part has no extreme of its own, so there
+   * was nothing for a downcast of `unknown` to put there, and both answers
+   * tried are wrong for a bound -- planting `<bad>` blames the author for a
+   * mistake nobody made, and picking a side keeps the shape and loses
+   * principality.
+   *
+   * `#cast` now declines to do either, and that settles it the other way
+   * round: `unknown` going down is under nothing it could be asked about, so
+   * it is returned whole before the pattern is read at all, and downcasting
+   * top is the identity for *every* pattern rather than partial at an
+   * invariant one. The two walks want opposite things from a hole -- a cast
+   * has a type to read one off, where this has only the pattern, so filling
+   * from the position's variance is the whole job here and no longer any of
+   * the cast's.
    *
    * Avoidance with the bar above everything, so no variable is ever out of
    * scope and a missing part is the only thing left that cannot be kept. The
