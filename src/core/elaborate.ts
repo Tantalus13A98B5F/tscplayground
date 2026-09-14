@@ -543,7 +543,11 @@ export class Elaborator {
 }
 
 /**
- * `MkPair : [A, B](A, B) -> Pair[A, B]`, and `True : Bool`.
+ * `Cons : [A](A, List[A]) -> Cons[A]`, and `True : Bool`.
+ *
+ * The result is built from the `datatype` it is handed, which is the caller's
+ * choice of what this constructor answers with -- `Declarations.resultEntryOf`
+ * makes it, and the parameters are the family's either way.
  *
  * Derived rather than stored, so a constructor's function type and the field
  * types its patterns take apart cannot drift. `fields` are already closed

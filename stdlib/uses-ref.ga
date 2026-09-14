@@ -37,4 +37,4 @@ let counted = mlength(mfromList(plain))
 let counter = ref!(Z)
 let _ = modify(counter)(fn (m) -> add(m)(counted))
 
-MkPair(get!(counter), mtoList(get!(cell)))
+Pair(get!(counter), mtoList(get!(cell)))

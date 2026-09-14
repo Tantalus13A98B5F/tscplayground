@@ -37,4 +37,4 @@ let toList = fn [A](xs: CList[A]) ->
   let empty : List[A] = Nil[A]();
   cfoldr(xs)(empty)(fn (h, t) -> Cons(h, t))
 
-MkPair(toNat(cadd(toCNat(S(Z)), toCNat(S(S(Z))))), length(toList(cnil())))
+Pair(toNat(cadd(toCNat(S(Z)), toCNat(S(S(Z))))), length(toList(cnil())))
