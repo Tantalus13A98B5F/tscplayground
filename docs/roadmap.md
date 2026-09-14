@@ -148,9 +148,16 @@ comparing, and a written invariant part is compared against a copy of itself. So
 the change is invisible to the constraint store, and it makes `#cast` agree with
 `#subtype`'s own first line instead of merely not contradicting it.
 
-The question is now asked once, in `#cast`, before the pattern's kind is known
--- which is what makes a written leaf and a written datatype answer the same
-way, where `#castHead` and the leaf arm used to reach it separately.
+A bad head goes the same way, and that is the tidier half: it was being spread
+over the demanded shape by `completePattern`, which is the same invention for
+the same nobody. `<bad>` is below and above everything, so it answers
+invariantly too, where an extreme needs a direction.
+
+Both live in `#castStandsAside`, reached from the three cases that read a head
+and from nowhere else. That placement is the whole of the rule: a missing part
+answers with what stood in the position and a leaf goes to the relation whole,
+so a promotion in front of the demand would answer for a variable bounded by an
+extreme with the extreme, and lose the variable.
 
 `#assertNoEVar` went in beside it: the lattice operations rely on `withEVars`'s
 closing sentence by not checking their operands, and `#lattice` at an invariant
