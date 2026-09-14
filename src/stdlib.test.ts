@@ -92,7 +92,7 @@ function evaluated(
 Deno.test("stdlib: the datatype encoding infers its type arguments", () => {
   // `map`'s A and B are written nowhere in `uses-data.ga` -- once found from
   // the function passed and once from the list.
-  expect(check("uses-data.ga")).toEqual(["Pair[Nat, Bool]"]);
+  expect(check("uses-data.ga")).toEqual(["MkPair[Nat, Bool]"]);
 });
 
 Deno.test("stdlib: the Church encoding needs no fixed point", () => {
@@ -106,7 +106,7 @@ Deno.test("stdlib: the Church encoding needs no fixed point", () => {
 Deno.test("stdlib: the two encodings convert into each other", () => {
   // Church to datatype is one application; datatype to Church takes `fix`, at
   // a `B` that is itself a quantified type.
-  expect(check("uses-both.ga")).toEqual(["Pair[Nat, Nat]"]);
+  expect(check("uses-both.ga")).toEqual(["MkPair[Nat, Nat]"]);
 });
 
 Deno.test("stdlib: a Church empty list is a function, as `Nil()` is", () => {
@@ -169,7 +169,7 @@ Deno.test("stdlib: a bare lambda needs its type argument fixed by an earlier lis
 });
 
 Deno.test("stdlib: a Ref makes its datatype invariant, and that costs", () => {
-  expect(check("uses-ref.ga")).toEqual(["Pair[Nat, List[Nat]]"]);
+  expect(check("uses-ref.ga")).toEqual(["MkPair[Nat, List[Nat]]"]);
 
   // The two refusals `uses-ref.ga` documents, which are the same fact twice.
   // A `never` tail cannot widen, so the argument list has no solution --
@@ -230,7 +230,7 @@ Deno.test("stdlib: mutual recursion, once as a feature and five times encoded", 
       "rec/mutual-ref.ga",
     ]
   ) {
-    expect([entry, ...check(entry)]).toEqual([entry, "Pair[List[Nat], Nat]"]);
+    expect([entry, ...check(entry)]).toEqual([entry, "MkPair[List[Nat], Nat]"]);
   }
 });
 

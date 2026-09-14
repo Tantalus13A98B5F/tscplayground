@@ -127,6 +127,8 @@ Deno.test("a constructor's function type quantifies over the datatype", () => {
   const pair = fixture.declarations.datatypeOf("Pair");
   const ctor = fixture.declarations.ctorOf("Pair", "MkPair");
   if (pair === undefined || ctor === undefined) throw new Error("no Pair");
+  // The entry it is given is the head it builds, which is `seedConstructors`'
+  // choice and not this function's -- here, the family.
   expect(typeToString(constructorType(pair, ctor)))
     .toBe("[A, B](A, B) -> Pair[A, B]");
 });
@@ -166,7 +168,10 @@ function ctorTypeOf(
   if (datatype === undefined || found === undefined) {
     throw new Error(`no ${data}.${ctor}`);
   }
-  return typeToString(constructorType(datatype, found));
+  return typeToString(constructorType(
+    fixture.declarations.resultEntryOf(datatype, found),
+    found,
+  ));
 }
 
 Deno.test("a bare constructor is a value, and a written `()` a function", () => {
@@ -175,8 +180,11 @@ Deno.test("a bare constructor is a value, and a written `()` a function", () => 
   // was meant.
   const fixture = elaborated("datatype Flag where\n  | On\n  | Off()" + END);
   expect(fixture.messages()).toEqual([]);
+  // And the form decides what a nullary constructor's term answers with: a
+  // value is a member of its family, where a function's result is what it
+  // built, so `| Off()` is how a monomorphic datatype gets a singleton.
   expect(ctorTypeOf(fixture, "Flag", "On")).toBe("Flag");
-  expect(ctorTypeOf(fixture, "Flag", "Off")).toBe("() -> Flag");
+  expect(ctorTypeOf(fixture, "Flag", "Off")).toBe("() -> Off");
 });
 
 Deno.test("a nullary constructor of a polymorphic datatype stays a function", () => {
@@ -186,7 +194,7 @@ Deno.test("a nullary constructor of a polymorphic datatype stays a function", ()
     "datatype List[A] where\n  | Nil()\n  | Cons(A, List[A])" + END,
   );
   expect(fixture.messages()).toEqual([]);
-  expect(ctorTypeOf(fixture, "List", "Nil")).toBe("[A]() -> List[A]");
+  expect(ctorTypeOf(fixture, "List", "Nil")).toBe("[A]() -> Nil[A]");
 });
 
 Deno.test("a value constructor of a polymorphic datatype is refused", () => {
@@ -202,7 +210,7 @@ Deno.test("a value constructor of a polymorphic datatype is refused", () => {
   ]);
   // Recovered as the function it would have been, so the report is the whole
   // of what goes wrong: nothing downstream sees a second thing about `Nil`.
-  expect(ctorTypeOf(fixture, "List", "Nil")).toBe("[A]() -> List[A]");
+  expect(ctorTypeOf(fixture, "List", "Nil")).toBe("[A]() -> Nil[A]");
 });
 
 Deno.test("seedConstructors binds every constructor as a term", () => {
@@ -213,7 +221,7 @@ Deno.test("seedConstructors binds every constructor as a term", () => {
   const bound = fixture.context.lookupTerm("MkPair");
   expect(bound).toBeDefined();
   expect(typeToString(bound?.entry.type ?? never())).toBe(
-    "[A, B](A, B) -> Pair[A, B]",
+    "[A, B](A, B) -> MkPair[A, B]",
   );
   expect(fixture.context.lookupTerm("MkTriple")).toBeUndefined();
 });

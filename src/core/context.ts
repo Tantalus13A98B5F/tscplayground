@@ -253,15 +253,15 @@ export class Declarations {
    * `fn (a, b) -> True` answers `(Bool, Bool) -> Bool`, and a `match` on a
    * literal does not call its other arms unreachable.
    *
-   * The family where the constructor is the only one, for the reason a
-   * constructor of its datatype's own name claims nothing: one case either
-   * way, so the narrower type says nothing the family does not, and a
-   * `MkPair(a, b)` reads as the `Pair` its author wrote. The family also where
-   * that name went to another declaration and was refused -- a report already
-   * stands, and the family is the type the constructor would have had.
+   * A sole constructor is *not* an exception, though its type admits exactly
+   * what its family does: collapsing it would leave nothing that inhabits
+   * `MkPair`, and a one-constructor datatype is how a nominal subtype of one
+   * thing gets written. The family only where the constructor's name went to
+   * another declaration and was refused -- a report already stands, and the
+   * family is the type the constructor would have had.
    */
   resultEntryOf(family: DatatypeInfo, ctor: DataCtorInfo): DatatypeInfo {
-    if (ctor.isValue || family.ctors.length === 1) return family;
+    if (ctor.isValue) return family;
     const own = this.#datatypes.get(ctor.name);
     return own?.family === family.name ? own : family;
   }

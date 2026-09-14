@@ -179,8 +179,8 @@ Deno.test("the term form follows the declaration form", () => {
   // And a declared `()` is a function, so the bare name is one -- which is a
   // type error only where something wanted the datatype.
   const WITH = ["datatype Flag where", "  | Off()"];
-  expect(typeOf(...WITH, "Off")).toBe("() -> Flag");
-  expect(typeOf(...WITH, "Off()")).toBe("Flag");
+  expect(typeOf(...WITH, "Off")).toBe("() -> Off");
+  expect(typeOf(...WITH, "Off()")).toBe("Off");
 });
 
 Deno.test("a pattern is spelled the same whichever form declared it", () => {
@@ -631,7 +631,7 @@ Deno.test("a name in a domain is documentation and reaches no type", () => {
       ...BOOL,
       "MkBox",
     ),
-  ).toBe("(Bool, Bool) -> Box");
+  ).toBe("(Bool, Bool) -> MkBox");
 
   // And it binds nothing: `x` scopes over nothing until a dependent arrow has
   // something to bind it to.

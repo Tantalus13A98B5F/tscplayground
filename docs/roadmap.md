@@ -170,21 +170,25 @@ excludes is now a warning, where an arm covered by the arms above it stays an
 error: the first is a fact about a type the checker chose, the second a mistake
 in a list its author wrote.
 
-Two rules were not anticipated, and both are about which types are worth
-minting.
+Two questions were not anticipated, and both are about which types are worth
+minting. Only the first turned into a rule.
 
 A constructor _application_ answers with its own type, so a constructor declared
-as a **value** is outside the rule rather than excepted from it: `|
-True`
+as a **value** is outside the rule rather than excepted from it: `| True`
 declares a member of `Bool` and builds nothing, where `| Nil()` is a function
 whose result is what it built. Taking `True` to be a singleton type was tried
 first and is coherent -- it is what full uniformity gives -- but it makes every
 boolean in the language read `True`, a `fn (a, b) -> True` answer
 `(Bool, Bool) -> Bool` no longer, and every `match` on a literal call its other
-arms unreachable. A **sole** constructor answers with its family for the reason
-a constructor of its datatype's own name claims nothing: one case either way, so
-the narrower type says nothing the family does not, and this is what keeps the
-single-case wrappers of item 2 reading as themselves.
+arms unreachable. The escape hatch is the declaration rather than a second
+spelling at the use site: `| True()` is the function form, and its applications
+answer `True`.
+
+A **sole** constructor was collapsed to its family for a while, on the grounds
+that the two admit the same values and `MkPair(a, b)` reads better as a `Pair`.
+That was wrong, and the reason is what a one-constructor datatype is _for_: it
+is how a nominal subtype of one thing gets written, and collapsing the
+constructor leaves nothing that inhabits `MkPair` at all.
 
 A type argument solved from below is taken at its family, where the upper bound
 still allows it. A batch is solved before the arguments after it are checked, so

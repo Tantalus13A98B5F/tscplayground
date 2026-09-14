@@ -124,11 +124,14 @@ arrive -- which is the whole of why `headsLattice` answers nothing at `0`.
 
 A constructor _application_ answers with the constructor's own type, which is
 what `resultEntryOf` decides, so `Cons(h, t)` is a `Cons` and rises only where
-something asks it to. Two constructors answer with their family instead, and
-neither is an exception to that rule: a constructor declared as a _value_ builds
-nothing, `| True` being a member of `Bool` where `| Nil()` is a function whose
-result is what it built; and a _sole_ constructor is its family already, one
-case either way, which is the same reason one may take its datatype's name. A
+something asks it to. A constructor declared as a _value_ is outside that rule
+rather than excepted from it: `| True` builds nothing and is a member of `Bool`,
+where `| Nil()` is a function whose result is what it built -- so the
+declaration is where a monomorphic datatype says whether its nullary cases are
+members or singletons. A _sole_ constructor is not an exception either, and
+answers with itself like any other: its type admits exactly what its family
+does, but collapsing the two would leave nothing inhabiting `MkPair`, and a
+one-constructor datatype is how a nominal subtype of one thing gets written. A
 type argument solved from below is widened the same way where its upper bound
 allows -- see `#atFamily`, and `docs/clti.md` for why a batch's timing makes it
 necessary.
