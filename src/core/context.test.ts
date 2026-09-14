@@ -11,7 +11,7 @@ import {
 } from "./types.ts";
 
 /** Nothing here reads a parameter back, so a nullary head is enough. */
-const Bool: DataHead = { name: "Bool", params: [] };
+const Bool: DataHead = { name: "Bool", family: "Bool", params: [] };
 
 /** Levels are positions, so a context has to be built to have any. */
 function withEVar(): { context: Context; a: EVarEntry } {
@@ -154,7 +154,7 @@ Deno.test("assertClosed allows the binders a stored type was closed into", () =>
   // legitimate `BVar`s. Checking it at depth zero would reject valid output.
   const context = new Context();
   const field = TData(
-    { name: "Pair", params: [] },
+    { name: "Pair", family: "Pair", params: [] },
     [BVar(0), BVar(1)],
   );
   expect(() => context.assertClosed("field", [field], 2)).not.toThrow();

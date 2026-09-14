@@ -313,6 +313,7 @@ export class Elaborator {
   ): DatatypeInfo {
     return {
       name: decl.name.text,
+      family: decl.name.text,
       params: decl.typeParams.map(mkDataParamInfo),
       ctors: [],
       ctorsReported: false,

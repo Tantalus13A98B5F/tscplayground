@@ -118,6 +118,8 @@ export type DataParamInfo = DatatypeParam & {
 
 export type DatatypeInfo = {
   readonly name: string;
+  /** See `DataHead`. A declared datatype is its own family. */
+  readonly family: string;
   /** Parameters, in order. Its length is the arity. */
   readonly params: readonly DataParamInfo[];
   /**

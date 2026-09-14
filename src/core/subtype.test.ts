@@ -44,6 +44,7 @@ function declare(
 ): DatatypeInfo {
   return {
     name: name,
+    family: name,
     params: variances.map((variance, j) => ({
       hint: String.fromCharCode(65 + j),
       named: true,
