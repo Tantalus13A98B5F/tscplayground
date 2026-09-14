@@ -166,9 +166,18 @@ export class Declarations {
     return this.#aliases.get(name);
   }
 
-  /** Every datatype, in declaration order. */
+  /**
+   * Every *declared* datatype, in declaration order -- the entries that are
+   * their own family. A constructor has an entry beside them, so that its name
+   * is a type and is claimed from the one namespace, but it declares nothing:
+   * it shares its family's parameters by reference and holds the one case, so
+   * a walk that visited it would infer the same variance twice and seed the
+   * same constructor term twice.
+   */
   datatypes(): readonly DatatypeInfo[] {
-    return [...this.#datatypes.values()];
+    return [...this.#datatypes.values()].filter(
+      (info) => info.family === info.name,
+    );
   }
 
   /**
@@ -215,6 +224,16 @@ export class Declarations {
     info.ctors = ctors;
     info.ctorsReported = reported;
     info.initialized = true;
+    // The same fill for each constructor's own entry, whose one case is that
+    // constructor. Guarded by the family, since a constructor whose name went
+    // to another declaration has an entry that is not ours to write.
+    for (const ctor of ctors) {
+      const one = this.#datatypes.get(ctor.name);
+      if (one === undefined || one.family !== name || one.initialized) continue;
+      one.ctors = [ctor];
+      one.ctorsReported = reported;
+      one.initialized = true;
+    }
     return true;
   }
 

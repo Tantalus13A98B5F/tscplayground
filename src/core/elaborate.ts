@@ -272,17 +272,27 @@ export class Elaborator {
    * before the next one's.
    */
   elaborateDeclarations(decls: readonly TypeDecl[]): void {
+    // What the first phase claimed, for the second to elaborate. The list and
+    // not `decls` again: a refused constructor name is a report against the
+    // declaration, filed a phase before the one that measures them.
+    const claimed: { decl: DatatypeDecl; reported: boolean }[] = [];
     for (const decl of decls) {
+      if (decl.kind !== "DatatypeDecl") {
+        this.#reportRedeclaration(
+          decl.name,
+          this.declarations.addAlias(this.#elaborateAlias(decl)),
+        );
+        continue;
+      }
+      const info = this.#elaborateSignature(decl);
       this.#reportRedeclaration(
         decl.name,
-        decl.kind === "DatatypeDecl"
-          ? this.declarations.addDatatype(this.#elaborateSignature(decl))
-          : this.declarations.addAlias(this.#elaborateAlias(decl)),
+        this.declarations.addDatatype(info),
       );
+      claimed.push({ decl, reported: this.#claimCtorNames(decl, info) });
     }
 
-    for (const decl of decls) {
-      if (decl.kind !== "DatatypeDecl") continue;
+    for (const { decl, reported } of claimed) {
       // Measured here because nothing read back off the field types answers
       // it -- see `DatatypeInfo.ctorsReported`.
       const before = this.diagnostics.length;
@@ -290,11 +300,47 @@ export class Elaborator {
       this.declarations.initCtors(
         decl.name.text,
         ctors,
-        this.diagnostics.length > before,
+        reported || this.diagnostics.length > before,
       );
     }
 
     inferDatatypeVariance(this.declarations.datatypes(), this.diagnostics);
+  }
+
+  /**
+   * Claim each constructor's name as a type of its own, in the phase that
+   * claims datatype names -- so a field written in this same run may mention
+   * `Cons[A]`, exactly as it may mention `List[A]`.
+   *
+   * The entry is a datatype in every respect but declaring one: its family is
+   * the datatype above it, and its parameters are that declaration's *own
+   * array*, so `Cons[A]` is saturated by the arity `List` was written with and
+   * moves the way variance inference decides `List`'s argument moves. Its
+   * single case is filled when the constructors are.
+   *
+   * This is where a constructor name stops being private to its datatype. Two
+   * datatypes may no longer each declare a `Nil`, and a duplicate within one
+   * declaration is refused by the same rule rather than by a check of its own
+   * -- which is why the answer is whether anything was refused: that is a
+   * report standing against the declaration, and the phase that measures them
+   * runs after this one.
+   */
+  #claimCtorNames(decl: DatatypeDecl, info: DatatypeInfo): boolean {
+    let reported = false;
+    for (const ctor of decl.ctors) {
+      const previous = this.declarations.addDatatype({
+        name: ctor.name.text,
+        family: info.name,
+        params: info.params,
+        ctors: [],
+        ctorsReported: false,
+        initialized: false,
+        at: ctor.at,
+      });
+      this.#reportRedeclaration(ctor.name, previous);
+      reported ||= previous !== undefined;
+    }
+    return reported;
   }
 
   /** Report `name` if the table refused it in favour of `previous`. */
@@ -329,20 +375,12 @@ export class Elaborator {
     const ctors = this.context.inScope((mark) => {
       this.#bindPlainParams(decl.typeParams);
 
-      // Uniqueness is *within* one datatype: `ctorOf` asks the scrutinee's own
-      // datatype for its `Nil`, so two may each have one. The duplicate drops
-      // out and the name stays, so a later `| Nil ->` is not a second error.
+      // The duplicate drops out and the name stays, so a later `| Nil ->` is
+      // not a second error. Dropped silently: names are claimed a phase
+      // earlier now, so a report already stands against this one.
       const seen = new Set<string>();
       return decl.ctors.flatMap((ctor): DataCtorInfo[] => {
-        if (seen.has(ctor.name.text)) {
-          this.#report(
-            `datatype ${decl.name.text} already has a constructor ` +
-              ctor.name.text,
-            ctor.name.at,
-            ctor.name.text.length,
-          );
-          return [];
-        }
+        if (seen.has(ctor.name.text)) return [];
         seen.add(ctor.name.text);
         return [{
           name: ctor.name.text,

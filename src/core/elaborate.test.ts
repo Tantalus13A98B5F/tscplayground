@@ -337,9 +337,9 @@ Deno.test("a redeclared datatype does not take the first one's constructors", ()
   expect(fixture.declarations.ctorOf("Flag", "Off")).toBeUndefined();
 });
 
-Deno.test("two datatypes may share a constructor name", () => {
-  // A pattern is resolved against the scrutinee's datatype, so each `On` is
-  // reachable and neither shadows the other.
+Deno.test("two datatypes may not share a constructor name", () => {
+  // A constructor name is a type name, so the two meet in the one namespace
+  // that no scope may shadow. The first declaration keeps it, as for any type.
   const fixture = elaborated(
     [
       "datatype Flag where",
@@ -348,19 +348,33 @@ Deno.test("two datatypes may share a constructor name", () => {
       "  | On",
     ].join("\n") + END,
   );
-  expect(fixture.messages()).toEqual([]);
+  expect(fixture.messages()).toEqual(["type On is already declared"]);
   expect(fixture.declarations.ctorOf("Flag", "On")).toBeDefined();
   expect(fixture.declarations.ctorOf("Switch", "On")).toBeDefined();
 });
 
 Deno.test("one datatype may not have two constructors of a name", () => {
+  // The same rule and not one of its own: the second `On` is refused where
+  // every other repeated type name is, which is why it reads that way.
   const fixture = elaborated(
     ["datatype Flag where", "  | On", "  | On"].join("\n") + END,
   );
-  expect(fixture.messages()).toEqual([
-    "datatype Flag already has a constructor On",
-  ]);
+  expect(fixture.messages()).toEqual(["type On is already declared"]);
   expect(fixture.declarations.datatypeOf("Flag")?.ctors.length).toBe(1);
+});
+
+Deno.test("a constructor's name is a type of its family's arity", () => {
+  const fixture = elaborated(
+    ["datatype List[A] where", "  | Nil()", "  | Cons(A, List[A])"].join("\n") +
+      END,
+  );
+  expect(fixture.messages()).toEqual([]);
+  // The family's parameters, by reference -- so the arity is `List`'s and
+  // nothing has to be kept in step.
+  const cons = fixture.declarations.datatypeOf("Cons");
+  expect(cons?.family).toBe("List");
+  expect(cons?.params).toBe(fixture.declarations.datatypeOf("List")?.params);
+  expect(cons?.ctors.map((ctor) => ctor.name)).toEqual(["Cons"]);
 });
 
 Deno.test("a type parameter used twice in one group is reported", () => {
@@ -599,5 +613,5 @@ Deno.test("a dropped duplicate takes its fields, so no phantom either", () => {
     "datatype Tag[A] where",
     "  | MkTag(Bool)",
     "  | MkTag(A)",
-  )).toEqual(["error: datatype Tag already has a constructor MkTag"]);
+  )).toEqual(["error: type MkTag is already declared"]);
 });
