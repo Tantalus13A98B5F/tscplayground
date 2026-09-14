@@ -419,27 +419,38 @@ export class Subtyper {
     // also what stops one of them being written without it.
     const head = dir > 0 ? this.expose(type) : type;
 
-    // Two heads have no shape of their own and need none, both for one
-    // reason: they sit under -- or over -- every type of every shape, so
-    // nothing a pattern asks of them is in question.
+    // Two heads have no shape of their own, and neither is a failure: each
+    // sits under -- or over -- every type of every shape, so nothing the
+    // pattern asks of it is in question. `<bad>` is below and above
+    // everything, so it answers in every direction, the invariant one
+    // included, and a report already stands to license it. An extreme answers
+    // only the way the cast moves, which is the same vacuous case `#subtype`
+    // returns true for on its first line -- so the cast and the relation
+    // agree here by construction rather than by coincidence, and an invariant
+    // ask has no direction and so no extreme of its own.
     //
-    // `<bad>` is below and above everything, so it answers in every
-    // direction, the invariant one included, and a report already stands to
-    // license it. An extreme answers only the way the cast moves: `never`
-    // going up, `unknown` going down, which is the same vacuous case
-    // `#subtype` returns true for on its first line -- so the cast and the
-    // relation agree here by construction rather than by coincidence. An
-    // invariant ask has no direction and so no extreme of its own.
+    // They part on whether the demanded shape is still built around them, and
+    // the question is not what the answer *means* but what a reader of it
+    // would otherwise supply. One consumer relates a cast's answer against a
+    // type naming EVars -- `#applyCall`'s argument loop -- and an argument's
+    // pattern carries a missing part exactly where a type argument stands, so
+    // the parts the relation would walk into are the EVar positions.
     //
-    // Each stands *whole*, where both used to have the demanded shape built
-    // around them. There is nobody to build it for: the shape a cast returns
-    // is load-bearing on the failure path, where `#castFailed` puts `<bad>`
-    // in the parts it could not reach, and nothing downstream can tell a
-    // `never` from the `List[never]` it is about to be compared against, or a
-    // `<bad>` from a `List[<bad>]` that checking against succeeds either way.
-    // Building it cost a choice at every invariant part, and a report about
-    // the choice.
-    if (head.kind === "TBad") return head;
+    // An extreme may be dropped because the value it would have planted at
+    // such a position is the one an unconstrained EVar reaches anyway: the
+    // lift wrote `extreme(dir composed with the argument's variance)`, and
+    // `solveEVar` picks by the same occurrence, so the constraint was always
+    // redundant. Measured, not assumed -- `never` against `List[?]`,
+    // `Sink[?]`, `Cell[?]` and `List[Cell[?]]` all answer as they did when
+    // the shape was built, minus the report about the invariant choice.
+    //
+    // `<bad>` is nobody's default, and nothing else in the solver produces
+    // one, so it has to be carried: dropped, `use(oops)` records nothing
+    // against `?A` and comes back `List[never]`, an ordinary type for a
+    // program already blamed. Filling invents nothing -- `<bad>` is below and
+    // above everything -- and files nothing, the report that licensed this
+    // one already standing.
+    if (head.kind === "TBad") return completePattern(pattern, () => head);
     if (dir !== 0 && head.kind === (dir > 0 ? "TNever" : "TUnknown")) {
       return head;
     }

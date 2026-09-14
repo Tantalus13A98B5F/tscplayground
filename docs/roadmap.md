@@ -135,50 +135,50 @@ exactly when the scrutinee's type says it is total.
 
 **The extreme lift, dropped.** `upcast(never, Ref[?])` was `Ref[never]`, lifted
 one level into the pattern's shape and warning about the argument it had to
-choose. It is `never` now, and says nothing: an extreme standing the way a cast
-moves is under -- or over -- every type of every shape, so the pattern asks
-nothing of it that is not already true, and building the shape around it would
-mean choosing at every invariant part for nobody's benefit.
+choose. It is `never` now, and says nothing.
 
-The shape a cast returns is load-bearing on the _failure_ path only, where the
-pattern-with-`TBad` mixture is the type-level form of "never fail checking a
-tree halfway". A lift never failed -- the head matched by construction -- so it
-had no shape to owe anyone. It recorded nothing either: a hole returns without
-comparing, and a written invariant part is compared against a copy of itself. So
-the change is invisible to the constraint store, and it makes `#cast` agree with
-`#subtype`'s own first line instead of merely not contradicting it.
-
-A bad head goes the same way, and that is the tidier half: it was being spread
-over the demanded shape by `completePattern`, which is the same invention for
-the same nobody. `<bad>` is below and above everything, so it answers
+Standing aside is the easy half: an extreme moving the way the cast moves is
+under -- or over -- every type of every shape, so the pattern asks nothing of it
+that is not already true. That is the same vacuous case `#subtype` answers on
+its first line, so the cast now agrees with the relation by construction instead
+of merely not contradicting it. A bad head stands aside for the stronger version
+of the same reason, `<bad>` being below and above everything and so answering
 invariantly too, where an extreme needs a direction.
 
-Both are decided between `#cast`'s two switches: the first settles the demands
-that may not move `type` -- a missing part answers with what stood in the
-position, a leaf goes to the relation whole -- and only then is the head read,
-once, for the three that do. Getting that order wrong loses the variable in
-`up(X, ?)` and `up(X, X)` for an `X` bounded by `never`, which is the shape the
-walk had briefly and the regression test it now carries.
+The harder half is whether the demanded shape is still _built_ around the head,
+and there the two part company. The answer is not what the head means but what a
+reader of the answer would otherwise supply. A cast's answer is related against
+a type naming EVars in exactly one place -- `#applyCall`'s argument loop -- and
+a relation reads parts; an argument's pattern carries a missing part exactly
+where a type argument stands, so the parts a relation walks into are the EVar
+positions and the shape is how it reaches one. That makes `#castFailed` and
+`#avoid` two fillings of the same holes: `TBad`, so an EVar solves bad rather
+than being blamed twice, or the extreme the position asks for.
+
+An extreme may therefore be dropped and a `<bad>` may not. The `Cell[never]` a
+lift used to build planted at each position the very extreme an unconstrained
+EVar reaches by itself, so the constraint it recorded was redundant -- bought
+with an arbitrary choice at every invariant argument and a report about the
+choice. Nothing else in the solver produces a `<bad>`, so dropping that one
+leaves the EVar unconstrained: `use(oops)` against `[A](List[A]) -> List[A]`
+comes back `List[never]`, an ordinary type for a program already blamed.
+
+Checked rather than argued. Six programs against the old behaviour -- `never`
+and `<bad>` each into a covariant `List`, a contravariant `Sink`, an invariant
+`Cell`, a nested `List[Cell[?]]`, and an arrow pattern -- agree everywhere
+except for the warning that is gone. Two of them are now tests.
+
+Both decisions are made between `#cast`'s two switches: the first settles the
+demands that may not move `type` -- a missing part answers with what stood in
+the position, a leaf goes to the relation whole -- and only then is the head
+read, once, for the three that do. Getting that order wrong loses the variable
+in `up(X, ?)` and `up(X, X)` for an `X` bounded by `never`, which is the shape
+the walk had briefly and the regression test it now carries.
 
 Two switches on one `kind` is the trade. The alternative repeated the promotion
 and the standing-aside in each of the three shape arms, where nothing forced a
 new arm to include them -- and one was in fact written without, during this
 change, and caught by a test rather than by the compiler.
-
-What is _not_ swept with it is the shape a declined cast answers with, and the
-reason is the one `widestMatching` already had. A cast's answer is related
-against a type naming EVars in exactly one place -- `#applyCall`'s argument loop
--- and a relation reads parts. An argument's pattern is the parameter type with
-a missing part where each type argument stands, so its holes are the EVar
-positions exactly, and the concrete structure around them is the road the
-relation takes to reach one. Answer a bare `<bad>` and it is below everything,
-so nothing is recorded and `use(True)` against `[A](List[A]) -> List[A]` comes
-out `List[never]`, the variable having fallen back to its own extreme.
-
-Which makes `#castFailed` and `#avoid` two fillings of the same holes: one puts
-`<bad>`, so the EVar solves bad rather than being blamed twice; the other puts
-the extreme its position asks for. A head standing whole in `#cast` is neither
--- it is not standing in for a shape, it is the real answer.
 
 An assertion that the lattice operations never see a live EVar was written and
 then removed. `#lattice` at an invariant position does reach `#eqtype`, which

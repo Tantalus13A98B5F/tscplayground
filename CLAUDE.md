@@ -39,15 +39,10 @@ however many were, which is the question callers used to ask as `already`.
 demanded they stand aside the same way. `bad` is below and above everything, so
 it answers every demand in every direction; `never` is only below and `unknown`
 only above, so each answers the demands a cast moving that way makes, and an
-invariant ask has no direction and so no extreme. Either way the head _is_ the
-answer and no shape is built around it: `upcast(never, Cell[?])` is `never` and
-`upcast(bad, Cell[?])` is `<bad>`, neither a `Cell` of something arbitrary --
-which is why every reader of a shape guards the two together. The extreme case
-is the same vacuous one `#subtype` answers on its first line, so the cast and
-the relation agree by construction rather than by coincidence, and the invariant
-argument that used to have to be chosen -- and warned about -- is never reached.
-Where a rule needs a shape and there is none to read at all, `never` answers for
-the whole form.
+invariant ask has no direction and so no extreme. The extreme case is the same
+vacuous one `#subtype` answers on its first line, so the cast and the relation
+agree by construction rather than by coincidence. Where a rule needs a shape and
+there is none to read at all, `never` answers for the whole form.
 
 Standing aside is decided where a head is _read_, which is after `#cast` has
 settled which demand it is answering and before it takes the shape apart. A
@@ -56,10 +51,23 @@ relation whole, which promotes on its own and knows `X <: X` -- so promoting in
 front of the demand would answer for a variable bounded by an extreme with the
 extreme, and throw the variable away.
 
-A shape is load-bearing on the _failure_ path alone: `#castFailed` answers with
-the shape that was asked for and `TBad` in the parts it could not reach, which
-is the type-level form of never failing a tree halfway. A cast that does not
-fail owes nobody a shape, so it gives the principal answer instead.
+Whether the demanded shape is still _built_ around the head that stood aside is
+a different question, and the answer is not what the head means but what a
+reader of the answer would otherwise supply. A cast's answer is related against
+a type naming EVars in one place, `#applyCall`'s argument loop, and an
+argument's pattern carries a missing part exactly where a type argument stands
+-- so the parts a relation walks into are the EVar positions, and a shape is how
+it reaches one. `#castFailed` and `#avoid` are two fillings of those same holes,
+`TBad` and the extreme the position asks for.
+
+So `upcast(bad, Cell[?])` is `Cell[<bad>]`: nothing else in the solver produces
+a `<bad>`, so dropping it leaves the EVar unconstrained and a program already
+blamed comes back with an ordinary type. `upcast(never, Cell[?])` is `never`,
+because the `Cell[never]` it used to build planted at each position the very
+extreme an unconstrained EVar reaches by itself -- a redundant constraint, paid
+for with an arbitrary choice at every invariant argument and a report about it.
+Checked rather than argued, across covariant, contravariant, invariant and
+nested-invariant arguments.
 
 `joinMany` still warns where it cannot name one answer principally: blaming the
 program for what the checker could not name would be wrong, and `badUnder` takes
