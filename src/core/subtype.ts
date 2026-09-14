@@ -264,16 +264,25 @@ export class Subtyper {
    * one is a recording like any other, and this is where the report it
    * promises gets made.
    *
-   * The shape is not decoration, and this is the one place it is load-bearing.
-   * A bare `<bad>` is *vacuous* in the relation -- below and above everything,
-   * so it is answered on `#subtype`'s first line and records nothing. That
-   * vacuity is exactly why a head with no shape of its own may stand whole in
-   * `#cast`: there is nothing to carry. Here there is. An EVar compared
-   * against a bare `<bad>` picks up no bound and falls back to its own
-   * extreme, so `use(True)` against `[A](List[A]) -> List[A]` would come out
-   * `List[never]` -- an ordinary type, for a program already blamed. Planting
-   * the `<bad>` at the pattern's *parts* is what puts it where whatever reads
-   * those parts will meet it.
+   * The shape is not decoration, and the reason is `#avoid`'s reason rather
+   * than anything about badness. One consumer of a cast relates its answer
+   * against a type naming EVars -- `#applyCall`'s argument loop -- and a
+   * relation reads *parts*. An argument's pattern is the parameter type with
+   * a missing part where each type argument stands, so the holes here are the
+   * EVar positions exactly, and the concrete structure around them is the
+   * road the relation takes to reach one. Answer a bare `<bad>` and it is
+   * below everything, so `#subtype` returns on its first line and no bound is
+   * recorded at all: `use(True)` against `[A](List[A]) -> List[A]` comes out
+   * `List[never]`, the variable having fallen back to its own extreme -- an
+   * ordinary type, for a program already blamed.
+   *
+   * So the two fillings of those same holes are the two walks: `#avoid` puts
+   * the extreme its position asks for, this one puts `<bad>`, which is what
+   * makes the EVar solve to `<bad>` instead of being blamed a second time.
+   *
+   * None of which contradicts a head standing whole in `#cast`. That answer
+   * is not a failure and is not standing in for a shape: it is the cast's
+   * real result, and nothing was lost by not dressing it up.
    */
   #castFailed(type: Type, pattern: TypePattern, message?: string): Type {
     const witness = this.#sayCastFailed(type, pattern, message);

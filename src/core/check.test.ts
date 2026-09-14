@@ -338,11 +338,13 @@ Deno.test("never in an invariant argument is neither a choice nor a mismatch", (
 });
 
 Deno.test("a failed argument cast leaves its badness where a bound is read", () => {
-  // What the shape a declined cast answers with is *for*. A bare `<bad>` is
-  // vacuous in the relation, so it would record nothing against `?A` and the
-  // variable would fall back to its own extreme -- `List[never]`, an ordinary
-  // type, for a program already blamed. `List[<bad>]` puts the badness where
-  // the bound is read from.
+  // What the shape a declined cast answers with is *for*, and the one place
+  // it is read: an argument's answer is related against the parameter type,
+  // which names EVars. The pattern's holes are the EVar positions, so the
+  // structure around them is how the relation reaches `?A` at all. A bare
+  // `<bad>` is below everything, so nothing would be recorded and `?A` would
+  // fall back to its own extreme -- `List[never]`, an ordinary type, for a
+  // program already blamed.
   const [type, ...messages] = run(
     ...LIST,
     ...BOOL,
