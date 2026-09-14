@@ -86,9 +86,7 @@ the case that design was really for -- a subgrammar that embeds into a full one,
 the cost, and it populates Fsub's bounds, which is the other thing that file
 wanted and the reason `FUEL` and the three-valued `Verdict` exist at all.
 
-Four things it needs, in order. **The first three have landed**, and together
-they introduce the types without anything to put in them: a constructor type can
-be written and nothing inhabits it, so the checker's answers are unchanged.
+Four things it needs, in order, of which **all but the last have landed**.
 
 **Constructor names become globally unique.** _Landed._ They are type names now,
 so they share a namespace with datatypes and with each other. The alternative --
@@ -112,14 +110,24 @@ is its name, and the whole feature the moment it is not --
 with | Cons(h, t) ->` on an `xs : Cons[Bool]` is exhaustive with one
 arm, and `casesOf` is the one place that has to learn it.
 
+**A constructor type is below its family.** _Landed._ `headsMeet` is the one
+home for when two datatype heads agree, asked by `#relateData` and by `#cast`
+alike -- the cast had a name test of its own, so changing the relation by itself
+let `Cons[Bool] <: List[Bool]` hold while a call passing one still failed to
+check. Nothing rises at variance `0`. The diagnostic split this surfaced is in:
+a name the family does not have is a name error, a name the scrutinee's type
+excludes is unreachability, and neither blames the other.
+
 **Inference returns the principal type.** `Cons(True, Nil())` infers
 `Cons[Bool]` rather than `List[Bool]`, which is what makes the feature reachable
 without annotations everywhere. Two consequences are already known. Arm joins
 now rise two constructor heads to their datatype, so `#latticeData` is on the
-critical path from day one. And an arm excluded by the _scrutinee's type_ must
-be a warning rather than an error -- an ordinary `match` with a `Nil` arm over a
-known `Cons` is not a mistake worth refusing a program for, whereas an arm
-shadowed by the arms above it still is.
+critical path from day one -- today it never sees two, because nothing infers
+one. And an arm excluded by the _scrutinee's type_ must be a warning rather than
+the error it is now -- an ordinary `match` with a `Nil` arm over a known `Cons`
+is not a mistake worth refusing a program for, whereas an arm shadowed by the
+arms above it still is. The two are already separate reports, so this is a
+severity and not a rewrite.
 
 The known cost is the usual one for inference under subtyping: `ref!(Cons(...))`
 infers `Ref[Cons[Bool]]`, a cell nothing can `set!` a `Nil` into, and the fix is

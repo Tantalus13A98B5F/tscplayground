@@ -103,6 +103,24 @@ declarations exist. `datatypes()` answers the declared ones alone, the entries
 that are their own family, or variance would be inferred twice over the same
 fields and every constructor term seeded twice.
 
+A constructor type is _below_ its family: `Cons[A] <: List[A]`, derived rather
+than declared, with no new runtime representation and the identity for a
+coercion, a `Cons` value already being the `List` value. `headsMeet` is where
+two heads agree, and the relation and the cast both ask it -- two homes for that
+question is how a coercion the relation allows becomes one the cast refuses.
+Depth is exactly one: a family is a name and not a chain, so this is a
+comparison and never a search.
+
+Nothing rises at an invariant position. `Cell[Cons[A]]` is not `Cell[List[A]]`,
+or a `Ref[List[A]]` could be `set!` a value the read side was promised could not
+arrive -- which is the whole of why `headsMeet` answers nothing at `0`.
+
+A pattern name therefore fails two ways, and they are different reports.
+`#checkMatch` keeps what the scrutinee's type _admits_ beside what the arms have
+_left_: a name the family does not have is a name error, said against the
+family, and a name the type excludes is unreachability, said about the type
+rather than blamed on the name.
+
 A domain position -- an arrow's parameter, or a constructor's field -- may carry
 a name: `(x: A, B) -> C`, `| MkBox(flag: Bool, Bool)`. One syntax, so one rule,
 and the rule is that the name is documentation: dropped at elaboration, scoping
