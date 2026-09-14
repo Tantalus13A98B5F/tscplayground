@@ -363,6 +363,29 @@ Deno.test("one datatype may not have two constructors of a name", () => {
   expect(fixture.declarations.datatypeOf("Flag")?.ctors.length).toBe(1);
 });
 
+Deno.test("a sole constructor may take its datatype's name", () => {
+  // The two are the same type -- one family, one case either way -- so there
+  // is no second type to claim and nothing collides. The wrapper idiom.
+  const fixture = elaborated(
+    ["datatype Unit where", "  | Unit()"].join("\n") + END,
+  );
+  expect(fixture.messages()).toEqual([]);
+  const unit = fixture.declarations.datatypeOf("Unit");
+  expect(unit?.family).toBe("Unit");
+  expect(unit?.ctors.map((ctor) => ctor.name)).toEqual(["Unit"]);
+});
+
+Deno.test("a constructor beside others may not take its datatype's name", () => {
+  // With a sibling it would be a strict subtype of the datatype above it, and
+  // one name would mean two types.
+  const fixture = elaborated(
+    ["datatype Box where", "  | Box()", "  | Empty()"].join("\n") + END,
+  );
+  expect(fixture.messages()).toEqual([
+    "constructor Box may take its datatype's name only where it is the only one",
+  ]);
+});
+
 Deno.test("a constructor's name is a type of its family's arity", () => {
   const fixture = elaborated(
     ["datatype List[A] where", "  | Nil()", "  | Cons(A, List[A])"].join("\n") +

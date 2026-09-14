@@ -318,6 +318,9 @@ export class Elaborator {
    * moves the way variance inference decides `List`'s argument moves. Its
    * single case is filled when the constructors are.
    *
+   * A constructor of its own datatype's name is the one name that claims
+   * nothing, and is refused where it would have to. See the loop.
+   *
    * This is where a constructor name stops being private to its datatype. Two
    * datatypes may no longer each declare a `Nil`, and a duplicate within one
    * declaration is refused by the same rule rather than by a check of its own
@@ -328,6 +331,21 @@ export class Elaborator {
   #claimCtorNames(decl: DatatypeDecl, info: DatatypeInfo): boolean {
     let reported = false;
     for (const ctor of decl.ctors) {
+      if (ctor.name.text === info.name) {
+        // A sole constructor of its datatype's name is not a second type: the
+        // two have the same family and the same one case, so they *are* the
+        // same type and there is nothing to claim. `datatype Box where
+        // | Box(Bool)` is the wrapper this makes ordinary.
+        if (decl.ctors.length === 1) continue;
+        this.#report(
+          `constructor ${ctor.name.text} may take its datatype's name only ` +
+            `where it is the only one`,
+          ctor.name.at,
+          ctor.name.text.length,
+        );
+        reported = true;
+        continue;
+      }
       const previous = this.declarations.addDatatype({
         name: ctor.name.text,
         family: info.name,
