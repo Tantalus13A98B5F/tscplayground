@@ -186,13 +186,13 @@ Deno.test("nothing sits between two cells of different types", () => {
   expect(typeToString(sub.join(TRef(Bool), Cell(Bool)))).toBe("unknown");
 });
 
-Deno.test("a cell has no extreme, so lifting one into it warns", () => {
+Deno.test("a cell has no extreme, and neither walk invents one", () => {
   const { sub } = fixture();
-  expect(typeToString(up(sub, TNever, RefP(TMissing)))).toBe("Ref[never]");
-  expect(saidBy(sub)).toEqual([
-    "warning: no least Ref[?] to cast never to: a Ref's argument is " +
-    "invariant, so it was taken to be never",
-  ]);
+  // Nothing is least among the types a cell can be of, so there is no
+  // `Ref[?]` to cast `never` to -- and `never` is already below every one of
+  // them, so it is the answer and there is nothing to report.
+  expect(typeToString(up(sub, TNever, RefP(TMissing)))).toBe("never");
+  expect(saidBy(sub)).toEqual([]);
   // Nor a widest, so a hole in one takes the cell with it.
   expect(typeToString(sub.widestMatching(RefP(TMissing)))).toBe("unknown");
 });
@@ -799,7 +799,9 @@ Deno.test("a written pattern matches only itself, and the direction decides", ()
   // `Bool <: unknown`, so `unknown` is reachable going up but not down.
   expect(castToString(sub, up(sub, Bool, TUnknown))).toBe("unknown");
   expect(castToString(sub, down(sub, Bool, TUnknown))).toBe("<none>");
-  expect(castToString(sub, down(sub, TUnknown, Bool))).toBe("Bool");
+  // `Bool` is a datatype, so this is a shape ask, and `unknown` going down
+  // answers it whole -- see the extreme rule below.
+  expect(castToString(sub, down(sub, TUnknown, Bool))).toBe("unknown");
   expect(castToString(sub, up(sub, Bool, Int))).toBe("<none>");
 });
 
@@ -808,13 +810,12 @@ Deno.test("a cast fills a function pointwise, flipping at the parameters", () =>
   const idish = fn([Bool], Bool);
   expect(castToString(sub, up(sub, idish, fnP([TMissing], TMissing))))
     .toBe("Bool -> Bool");
-  // Nothing on the left, so the pattern alone decides: least going up means
-  // the smallest result and -- parameters being contravariant -- the largest
-  // parameter.
+  // Nothing on the left, and nothing asked of it either: an arrow shape is
+  // one more thing `never` is already under, so it answers as itself.
   expect(castToString(sub, up(sub, TNever, fnP([TMissing], TMissing))))
-    .toBe("unknown -> never");
+    .toBe("never");
   expect(castToString(sub, down(sub, TUnknown, fnP([TMissing], TMissing))))
-    .toBe("never -> unknown");
+    .toBe("unknown");
 });
 
 Deno.test("an invariant cast is not either of the other two", () => {
@@ -832,31 +833,15 @@ Deno.test("an invariant cast is not either of the other two", () => {
     .toBe("<none>");
 });
 
-Deno.test("an invariant missing part costs a report, not the answer", () => {
-  // Nothing is greatest among the types a `Cell` can be of, so an extreme
-  // lifted into one has to choose the argument. The extreme it came from is
-  // the choice, and it is a real answer -- every `Cell` is above `never` --
-  // so what the invariance costs is a report about the choice, not the shape.
+Deno.test("a written argument is cast against, extreme or not", () => {
+  // The extreme rule is about a *hole*: with every argument written there is
+  // nothing to invent, so the ask is an ordinary one about the shape, and it
+  // is the relation that answers it.
   const { sub } = fixture();
-  expect(typeToString(up(sub, TNever, CellP(TMissing)))).toBe("Cell[never]");
-  expect(saidBy(sub)).toEqual([
-    "warning: no least Cell[?] to cast never to: Cell's argument A is " +
-    "invariant, so it was taken to be never",
-  ]);
-  sub.diagnostics.length = 0;
-
-  // Nested, the walk fills the rest of the shape rather than stopping at the
-  // first argument it had to choose.
-  expect(typeToString(up(sub, TNever, CellP(CellP(TMissing)))))
-    .toBe("Cell[Cell[never]]");
-  sub.diagnostics.length = 0;
-
-  // With every argument written there is nothing to choose, so the same lift
-  // is an answer with nothing to say about it.
-  expect(castToString(sub, down(sub, TUnknown, CellP(Bool)))).toBe(
-    "Cell[Bool]",
-  );
-  expect(castToString(sub, up(sub, TNever, CellP(Bool)))).toBe("Cell[Bool]");
+  expect(castToString(sub, down(sub, Cell(Bool), CellP(Bool))))
+    .toBe("Cell[Bool]");
+  expect(castToString(sub, up(sub, Cell(Bool), CellP(Int)))).toBe("<none>");
+  expect(saidBy(sub)).toEqual([]);
 });
 
 Deno.test("a variable stands aside for its bound going up, and not down", () => {
@@ -1006,51 +991,35 @@ Deno.test("no widest Cell, so a hole in one takes the datatype with it", () => {
   expect(saidBy(sub)).toEqual([]);
 });
 
-Deno.test("an extreme lifts into an argument that has an extreme", () => {
+Deno.test("an extreme in the cast's own direction is the answer whole", () => {
+  // `never` sits under every type there is, so a demanded shape asks nothing
+  // of it that is not already true, and it stands as it is rather than being
+  // lifted into that shape. The same vacuous case the relation answers on its
+  // first line, and answered the same way, so the two cannot disagree.
   const { sub } = fixture();
-  // The least `List` is a `List` of the least thing; the least `Sink` is a
-  // `Sink` of the greatest, the argument flipping what the lift is looking
-  // for. Neither invents anything, so neither says anything.
-  expect(castToString(sub, up(sub, TNever, ListP(TMissing))))
-    .toBe("List[never]");
-  expect(castToString(sub, up(sub, TNever, SinkP(TMissing))))
-    .toBe("Sink[unknown]");
-  expect(castToString(sub, down(sub, TUnknown, ListP(TMissing))))
-    .toBe("List[unknown]");
-  expect(castToString(sub, down(sub, TUnknown, SinkP(TMissing))))
-    .toBe("Sink[never]");
-  // And nested, where the two flips cancel. The head lifts one level only --
-  // the inner `Sink` is filled by `#cast` walking what came back against the
-  // pattern again, which is what makes a deeper lift here redundant.
+  expect(castToString(sub, up(sub, TNever, ListP(TMissing)))).toBe("never");
   expect(castToString(sub, up(sub, TNever, SinkP(SinkP(TMissing)))))
-    .toBe("Sink[Sink[never]]");
+    .toBe("never");
+  expect(castToString(sub, down(sub, TUnknown, ListP(TMissing))))
+    .toBe("unknown");
+  // Nothing was invented, so nothing is said -- including where an argument
+  // is invariant and a lift used to have to choose.
+  expect(castToString(sub, up(sub, TNever, CellP(TMissing)))).toBe("never");
+  expect(castToString(sub, down(sub, TUnknown, CellP(TMissing))))
+    .toBe("unknown");
+  expect(castToString(sub, up(sub, TNever, ListP(CellP(TMissing)))))
+    .toBe("never");
+  expect(saidBy(sub)).toEqual([]);
 });
 
-Deno.test("a lift one level down reports about the shape it was asked for", () => {
-  // `List`'s argument has a least solution, so the head says nothing filling
-  // it; it is the walk back over `Cell[?]` that has to choose, and the report
-  // names the shape *that* lift could not name rather than the whole ask.
+Deno.test("an extreme the other way is an ordinary mismatch", () => {
+  // The rule is about the direction, not about the type: `unknown` is not
+  // under a `List`, so a cast up to one fails and says so, and an invariant
+  // ask has no direction to have an extreme in at all.
   const { sub } = fixture();
-  expect(typeToString(up(sub, TNever, ListP(CellP(TMissing)))))
-    .toBe("List[Cell[never]]");
-  expect(saidBy(sub)).toEqual([
-    "warning: no least Cell[?] to cast never to: Cell's argument A is " +
-    "invariant, so it was taken to be never",
-  ]);
-});
-
-Deno.test("a cast out of an extreme warns rather than failing", () => {
-  // An extreme sits under -- or over -- every type there is, so a cast in its
-  // own direction can always be made and a failure here would report the
-  // checker's inability to name *one* answer as the program's mistake. Dual
-  // to the lift out of `never`, and reported the same way.
-  const { sub } = fixture();
-  expect(typeToString(down(sub, TUnknown, CellP(TMissing))))
-    .toBe("Cell[unknown]");
-  expect(saidBy(sub)).toEqual([
-    "warning: no greatest Cell[?] to cast unknown to: Cell's argument A is " +
-    "invariant, so it was taken to be unknown",
-  ]);
+  expect(castToString(sub, up(sub, TUnknown, ListP(TMissing)))).toBe("<none>");
+  expect(castToString(sub, down(sub, TNever, ListP(TMissing)))).toBe("<none>");
+  expect(castToString(sub, exact(sub, TNever, ListP(TMissing)))).toBe("<none>");
 });
 
 Deno.test("a cast out of fuel says so, rather than reporting a mismatch", () => {

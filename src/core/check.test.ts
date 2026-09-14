@@ -323,20 +323,17 @@ Deno.test("never is callable, at any arity and with type arguments", () => {
     .toBe("never -> never");
 });
 
-Deno.test("never in an invariant argument is a choice, not a mismatch", () => {
-  // `never` is a `Cell` of anything and nothing picks which. The call goes
-  // through on `Cell[never]` -- a type comes back at all, so this was no
-  // error -- and the report is what says a choice was made here.
+Deno.test("never in an invariant argument is neither a choice nor a mismatch", () => {
+  // `never` is under every `Cell` there is, so the argument is accepted as it
+  // stands: nothing has to be picked for `A`, which is what there used to be
+  // a report about, and nothing is picked, so there is nothing to say.
   const [type, ...messages] = run(
     ...CELL,
     ...BOOL,
     "let use = fn [A](c: Cell[A]) -> True;",
     "fn (loop: never) -> use(loop)",
   );
-  expect(messages).toEqual([
-    "no least Cell[?] to cast never to: Cell's argument A is invariant, so " +
-    "it was taken to be never",
-  ]);
+  expect(messages).toEqual([]);
   expect(type).toBe("never -> Bool");
 });
 

@@ -36,17 +36,25 @@ report lazily -- it is asked for only where a part was missing, and at most once
 however many were, which is the question callers used to ask as `already`.
 
 `never` is not a bad type and does not merge with one. `bad` is below and above
-everything, so filling from it invents nothing; `never` is only below, so it
-lifts into a shape whose holes have a variance and no further -- an invariant
-argument has no extreme of its own, and a demanded `Cell[?]` therefore has no
-least solution. Where a rule needs a shape and there is none to read at all,
-`never` answers for the whole form.
+everything, so filling a demanded shape from it invents nothing and it is filled
+in. `never` is only below and `unknown` only above, which is enough on its own:
+a cast moving that way is asking nothing that is not already true, so the
+extreme _is_ the answer and no shape is built around it.
+`upcast(never, Cell[?])` is `never`, not a `Cell` of something arbitrary. That
+is the same vacuous case `#subtype` answers on its first line, so the cast and
+the relation agree by construction rather than by coincidence, and the invariant
+argument that used to have to be chosen -- and warned about -- is never reached.
+Where a rule needs a shape and there is none to read at all, `never` answers for
+the whole form.
 
-Filling from an extreme in its own direction is always sound, so it never
-errors; choosing an invariant argument _warns_, the answer being arbitrary
-rather than wrong. A warning and not an error, here as in `joinMany`: blaming
-the program for what the checker could not name principally would be wrong, and
-`badUnder` takes errors alone, so there is no `TBad` to hand back anyway.
+A shape is load-bearing on the _failure_ path alone: `#castFailed` answers with
+the shape that was asked for and `TBad` in the parts it could not reach, which
+is the type-level form of never failing a tree halfway. A cast that does not
+fail owes nobody a shape, so it gives the principal answer instead.
+
+`joinMany` still warns where it cannot name one answer principally: blaming the
+program for what the checker could not name would be wrong, and `badUnder` takes
+errors alone, so there is no `TBad` to hand back anyway.
 
 A constructor is a function of its fields, so there is no constructor term form
 and saturation follows from arity. The exception is a _value_ constructor:

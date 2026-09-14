@@ -262,8 +262,9 @@ order is the whole of what keeps them honest, so it is worth a line in both.
 
 A parameter that ends **bivariant is observed by nothing, transitively** -- a
 phantom, and worth a warning at the declaration, which is the site that knows.
-Reported once there rather than at every use, which also keeps `#castHead`
-silent when it lifts an extreme into such an argument.
+Reported once there rather than at every use, which is where it belongs: a
+phantom argument is a property of the declaration, and every later reader of it
+-- a cast, a join -- would be blaming a use for it.
 
     nothing observes the type parameter A of Opaque, so it makes no
     difference to the type; write it `_` if that is meant
@@ -297,13 +298,12 @@ is not among the two fields a `DatatypeParam` carries into every type.
 
 ## 8. What reads it
 
-Six places, and each of them had a hard-coded invariance before:
+Five places, and each of them had a hard-coded invariance before:
 
 | site                   | what changed                                     |
 | ---------------------- | ------------------------------------------------ |
 | `#relateData`          | one walk for `#subtype` and `#eqtype`, composing |
 | `#cast`'s `TData` case | the argument's variance, not `0`                 |
-| `#liftExtreme`         | an extreme per position, and the warning         |
 | `#avoidPart`'s `TData` | a directed argument widens; invariant collapses  |
 | `#latticeData`         | join and meet go argumentwise                    |
 | `openWith`'s `TData`   | where an EVar occurs, so `solveEVar` can choose  |
