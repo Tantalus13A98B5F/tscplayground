@@ -332,13 +332,21 @@ on where the solution stands. Our own version of it is the value form: `|
 True`
 is a member of `Bool`, and that is decided at the declaration.
 
-The structural difference is the batch. Scala accumulates constraints from every
-argument list of an application and instantiates at the end of the whole thing,
-so its `B` hears from `z` _and_ from `op` before it is fixed. We close a batch
-per list, deliberately, because that is what gives a later list's bare lambda
-its parameter types. Widening the answer was a way of paying for early closing
-with imprecision everywhere; the cut described in the roadmap's item 3 is the
-way of not closing quite so early, and it is where this pressure should go.
+And `foldLeft(Nil)` fails there for our reason, not for a different one. Scala's
+constraint set does outlive a parameter list -- the variables are made once, at
+the polymorphic method, and every list records into the same set -- but
+instantiation is demand-driven, and typing a lambda is the demand: its parameter
+types come from the expected type, so a `B` still standing in `(B, A) => B` is
+forced to a value before the lambda's body is looked at, and what it is forced
+to is what `z` said. Constraints from the later list are not weighed, because
+the later list cannot be typed until the variable is gone.
+
+So a bare lambda is what closes a batch early in both designs. We close one per
+list, which is a coarser cut at the same place and for the same reason, and the
+list boundary is where an author can see it. Widening the answer was a way of
+paying for that cut with imprecision everywhere; the cut described in the
+roadmap's item 3 is the way of making it later and narrower, and it is where
+this pressure should go.
 
 ## Who says what went wrong
 
