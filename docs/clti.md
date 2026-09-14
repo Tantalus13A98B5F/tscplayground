@@ -465,7 +465,10 @@ checked while the call's batch is live, so batches overlap again and "a
 constraint mentioning an EVar can only mean a sibling" goes with them. The form
 that keeps the invariant is to solve the batch _before_ any context-sensitive
 argument is checked, and check those against what came out -- best effort, no
-second solve, no live batch during an argument.
+second solve, no live batch during an argument. Which is a cut in the list
+rather than a deferral within it: one list, several batches, `withEVars` still
+owning each alone. `docs/roadmap.md` item 4 is what that would take, and where
+the cut would fall.
 
 ### Recursion, and a rule that was rejected
 

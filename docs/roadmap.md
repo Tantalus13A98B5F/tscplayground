@@ -131,6 +131,37 @@ sole one -- `let Cons(hd, tl) = xs` is legal and partial, and the totality
 report is the one `#remaining` already produces, which under item 2 is silent
 exactly when the scrutinee's type says it is total.
 
+## 4. Batching one parameter list
+
+Today a parameter list is one batch, and the staging that a bare lambda needs is
+the author's to write: `foldLeft(z)(op)`, a second list so that `z` is solved
+before `op` is checked. TypeScript reaches the same effect without the syntax --
+it defers the context-sensitive arguments of a single list, fixes what the rest
+determines, and checks the deferred ones against that. So the benefit is
+available to a language that never asks the author to split the list, and the
+question is what it costs us.
+
+The cost is the one `docs/clti.md` names in "Context-sensitive arguments in
+rounds": TS checks a deferred argument while the call's batch is still live,
+which overlaps batches and takes "a constraint mentioning an EVar can only mean
+a sibling" with them. The form that keeps the invariant is to _cut_ the list
+rather than defer within it -- solve the batch at the cut, and check what is
+after it against the solutions, exactly as a second written list behaves. One
+list, several batches, and `withEVars` still owns each one alone.
+
+What is left to decide is where the cut falls. "Before the first
+context-sensitive argument" is one batch boundary and recovers
+`f(fn (x) -> id(x), True)` only if the lambda is not first, which is the
+left-to-right restriction TS lifts; a cut before _each_ context-sensitive
+argument recovers it wherever it sits, at one solve per lambda. Neither reaches
+`both(True, fn (y) -> y)`, where nothing in the list determines the parameter --
+that answer is an annotation here as it is in Scala, and TS only appears to have
+one because it has implicit `any`.
+
+Which is why this is an item and not a dependency: the syntax stays, since a
+written list is still the only way to stage what no argument determines. This
+would make the common case stop needing it.
+
 ## Landed
 
 **The extreme lift, dropped.** `upcast(never, Ref[?])` was `Ref[never]`, lifted
