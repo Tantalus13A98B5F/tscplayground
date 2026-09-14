@@ -49,11 +49,12 @@ argument that used to have to be chosen -- and warned about -- is never reached.
 Where a rule needs a shape and there is none to read at all, `never` answers for
 the whole form.
 
-Standing aside is decided where a head is _read_, which is the three shape cases
-and nowhere else. A missing part answers with whatever stood in the position,
-and a leaf goes to the relation whole, which promotes on its own and knows
-`X <: X` -- so promoting in front of the demand would answer for a variable
-bounded by an extreme with the extreme, and throw the variable away.
+Standing aside is decided where a head is _read_, which is after `#cast` has
+settled which demand it is answering and before it takes the shape apart. A
+missing part answers with whatever stood in the position, and a leaf goes to the
+relation whole, which promotes on its own and knows `X <: X` -- so promoting in
+front of the demand would answer for a variable bounded by an extreme with the
+extreme, and throw the variable away.
 
 A shape is load-bearing on the _failure_ path alone: `#castFailed` answers with
 the shape that was asked for and `TBad` in the parts it could not reach, which
