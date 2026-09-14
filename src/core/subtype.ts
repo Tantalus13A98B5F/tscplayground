@@ -101,6 +101,26 @@ class FuelExhausted extends Error {
  */
 const FUEL = 2000;
 
+/**
+ * Whether a `from` may be answered as a `to`, moving `dir`: the one question
+ * two datatype heads raise, asked by the relation and by the cast alike.
+ *
+ * Nominal, so the same type always meets itself and nothing else does -- bar
+ * one derived leaf. A constructor is below its family, `Cons[A] <: List[A]`,
+ * so a head meets the family above it where the move is upward, and a family
+ * meets a constructor below it where the move is downward. Depth exactly one:
+ * a family is a name, not a chain, so there is no hierarchy to walk and this
+ * is a comparison rather than a search.
+ *
+ * Nothing at `0`. An invariant position asks for the type itself, and letting
+ * a constructor answer there is what would let a `Ref[List[A]]` be `set!` a
+ * value the read side was promised could not arrive.
+ */
+function headsMeet(from: DataHead, to: DataHead, dir: Variance): boolean {
+  if (from.name === to.name) return true;
+  return dir > 0 ? from.family === to.name : dir < 0 && to.family === from.name;
+}
+
 export class Subtyper {
   #fuel: number;
 
@@ -425,7 +445,7 @@ export class Subtyper {
 
       case "TData": {
         if (
-          head.kind !== "TData" || head.name !== pattern.name ||
+          head.kind !== "TData" || !headsMeet(head, pattern, dir) ||
           head.args.length !== pattern.args.length
         ) {
           return this.#castFailed(type, pattern);
@@ -444,7 +464,11 @@ export class Subtyper {
             composeVariance(dir, argVarianceOf(pattern, i)),
           )
         );
-        return TData(head, args);
+        // Built on the *pattern's* head, which is the demanded type and so
+        // the answer: where the two are the same they carry the same name,
+        // family and parameters, and where a family was crossed the demand is
+        // what the cast moved to.
+        return TData(pattern, args);
       }
 
       case "TRef": {
@@ -654,21 +678,28 @@ export class Subtyper {
   }
 
   /**
-   * Two datatypes, related at a position of `variance`. Nominal, so the names
-   * have to agree and there is nothing to unfold; what is left is the
-   * arguments, each taken at its own parameter's variance composed with
-   * wherever the pair itself stands.
+   * Two datatypes, related at a position of `variance`. Nominal, so there is
+   * nothing to unfold; what has to agree is the head, and then the arguments,
+   * each taken at its own parameter's variance composed with wherever the pair
+   * itself stands.
+   *
+   * `headsMeet` is where the heads agree, so the cast and the relation cross a
+   * family on the same terms. The coercion is the identity: a `Cons` value
+   * already *is* the `List` value, so nothing is built here that was not
+   * already there, and arity and variance are the family's throughout -- the
+   * parameters being shared by reference, the argument walk is the one it
+   * always was.
    *
    * Which is why equivalence needs no case of its own: `0` absorbs, so asking
-   * two datatypes to be the same asks it of every argument. Arity is part of
-   * the type, so a `Foo[A]` and a `Foo[A, B]` reaching here do not relate.
+   * two datatypes to be the same asks it of every argument, and `headsMeet`
+   * has already refused to cross a family there.
    */
   #relateData(
     s: Extract<Type, { kind: "TData" }>,
     t: Extract<Type, { kind: "TData" }>,
     variance: Variance,
   ): boolean {
-    return s.name === t.name && allPairs(
+    return headsMeet(s, t, variance) && allPairs(
       s.args,
       t.args,
       (a, b, i) =>

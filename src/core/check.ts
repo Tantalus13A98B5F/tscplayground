@@ -624,7 +624,14 @@ export class Checker {
     if (scrutinee.kind !== "TData") {
       return this.#checkUnmatchable(term, scrutinee, expected);
     }
-    const remaining = new Set(this.declarations.casesOf(scrutinee));
+    // Two sets, because a pattern name can now fail two ways. `admits` is what
+    // the scrutinee's type allows at all and never shrinks; `remaining` is
+    // what is left after the arms above. A name in neither is no constructor,
+    // a name in the first but not the second is covered above, and a name the
+    // family has but the type excludes is unreachable for a third reason --
+    // which is a fact about the type and not a mistake about the name.
+    const admits = new Set(this.declarations.casesOf(scrutinee));
+    const remaining = new Set(admits);
 
     const types: Type[] = [];
     for (const arm of term.arms) {
@@ -637,14 +644,19 @@ export class Checker {
         remaining.clear();
       } else {
         const name = arm.pattern.name.text;
-        const ctor = this.declarations.ctorOf(scrutinee.name, name);
+        // Resolved against the *family*: what a name means is the datatype's
+        // business, and whether a value of this type could have it is the
+        // question below.
+        const ctor = this.declarations.ctorOf(scrutinee.family, name);
         // A name that is no constructor is a mistake of its own and answers
         // nothing about coverage: it was never in the set, so it cannot have
         // been taken out, and reporting it as matched above -- which
         // `#armBinderTypes` is about to report as no constructor at all --
         // would blame the author twice for one thing.
         if (ctor !== undefined && !remaining.delete(name)) {
-          dead = `${name} is matched above`;
+          dead = admits.has(name)
+            ? `${name} is matched above`
+            : `no ${typeToString(scrutinee)} is a ${name}`;
         }
         binderTypes = this.#armBinderTypes(arm.pattern, ctor, scrutinee);
       }
@@ -716,7 +728,9 @@ export class Checker {
   /**
    * One type per binder the pattern wrote, so the arm has nothing left to
    * reconcile: a wrong field count is padded here and said here, and so is a
-   * name that is no constructor of `matched`.
+   * name that is no constructor of `matched`'s family -- the family, since
+   * what a name means is the datatype's business and whether this type admits
+   * it is the caller's.
    *
    * Settled before the arm's scope opens, which nothing objects to: a field
    * type is the constructor's own, opened at the scrutinee's type arguments,
@@ -729,7 +743,7 @@ export class Checker {
   ): readonly Type[] {
     if (ctor === undefined) {
       const bad = badUnder(this.#report(
-        `${pattern.name.text} is not a constructor of ${matched.name}`,
+        `${pattern.name.text} is not a constructor of ${matched.family}`,
         pattern.name.at,
         pattern.name.text.length,
       ));

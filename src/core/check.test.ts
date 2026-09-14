@@ -26,6 +26,77 @@ const CELL = ["datatype Cell[A] where", "  | MkCell((A) -> A)"];
 /** Contravariant, and the only shape that gets there. */
 const SINK = ["datatype Sink[A] where", "  | MkSink((A) -> Bool)"];
 
+Deno.test("a constructor's name is a type below its family", () => {
+  // Derived, not declared: nothing here says so, and the coercion is the
+  // identity -- a `Cons` value already *is* the `List` value.
+  expect(typeOf(
+    ...BOOL,
+    ...LIST,
+    "def len(xs: List[Bool]): Bool = True",
+    "fn (c: Cons[Bool]) -> len(c)",
+  )).toBe("Cons[Bool] -> Bool");
+});
+
+Deno.test("the scrutinee's type says which arms it needs", () => {
+  // The whole of what the case set bought: one arm is exhaustive, because
+  // `remaining` is seeded from the type and not from the name's declaration.
+  expect(typeOf(
+    ...BOOL,
+    ...LIST,
+    "fn (c: Cons[Bool]) -> match c with",
+    "  | Cons(h, t) -> h",
+  )).toBe("Cons[Bool] -> Bool");
+  // And the family still needs them all.
+  expect(
+    run(
+      ...BOOL,
+      ...LIST,
+      "fn (xs: List[Bool]) -> match xs with",
+      "  | Cons(h, t) -> h",
+    )[1],
+  ).toBe("match is not exhaustive: Nil not covered");
+});
+
+Deno.test("an arm the scrutinee's type excludes is unreachable, not unknown", () => {
+  // Two ways for a pattern name to fail, and this is not the name's. `Nil` is
+  // a constructor of the family; what rules it out is the type in front of
+  // the match, so that is what the report names -- once.
+  expect(
+    run(
+      ...BOOL,
+      ...LIST,
+      "fn (c: Cons[Bool]) -> match c with",
+      "  | Cons(h, t) -> h",
+      "  | Nil() -> True",
+    ).slice(1),
+  ).toEqual(["this arm is unreachable: no Cons[Bool] is a Nil"]);
+  // Still a name error where the family has no such constructor at all.
+  expect(
+    run(
+      ...BOOL,
+      ...LIST,
+      "fn (c: Cons[Bool]) -> match c with",
+      "  | Cons(h, t) -> h",
+      "  | Nope() -> True",
+    ).slice(1),
+  ).toEqual(["Nope is not a constructor of List"]);
+});
+
+Deno.test("a constructor may not rise at an invariant argument", () => {
+  // What the rise costs if it were allowed anywhere: a `Cell[List[Bool]]` is
+  // read at `List[Bool]`, which is not what a `Cell[Cons[Bool]]` holds.
+  expect(
+    run(
+      ...BOOL,
+      ...LIST,
+      ...CELL,
+      "def take(c: Cell[List[Bool]]): Bool = True",
+      "fn (c: Cell[Cons[Bool]]) -> take(c)",
+      // Reported at the argument that could not move, which is where it could not.
+    )[1],
+  ).toBe("expected List[Bool], found Cons[Bool]");
+});
+
 Deno.test("a constructor is a function of its fields", () => {
   expect(typeOf(...BOOL, "True")).toBe("Bool");
   expect(typeOf(...LIST, ...BOOL, "Cons(True, Nil[Bool]())"))
