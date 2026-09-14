@@ -49,9 +49,11 @@
 
 import type { Position } from "../diagnostics/diagnostic.ts";
 import {
+  type DataHead,
   type DatatypeParam,
   FVar,
   type FVarRef,
+  impossible,
   isClosed,
   type Level,
   mkLevel,
@@ -212,6 +214,23 @@ export class Declarations {
     info.ctorsReported = reported;
     info.initialized = true;
     return true;
+  }
+
+  /**
+   * What a value of this type could have been built by. Asked of the *type*
+   * and not of a name, because that is the question: a name reaches one
+   * declaration, and what a scrutinee could still be is a property of the type
+   * standing in front of the `match`. The two coincide for every type that can
+   * be written today, which is why this reads the declaration the head names.
+   *
+   * Total, unlike the lookups above: a `DataHead` was resolved by elaboration,
+   * so a head naming no declaration is a checker bug rather than a program
+   * that mentions an undeclared type.
+   */
+  casesOf(head: DataHead): readonly string[] {
+    const info = this.#datatypes.get(head.name) ??
+      impossible("a data head whose name no declaration table holds");
+    return info.ctors.map((ctor) => ctor.name);
   }
 
   /** The constructor `name` of datatype `owner`, or `undefined`. */
