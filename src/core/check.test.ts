@@ -337,6 +337,29 @@ Deno.test("never in an invariant argument is neither a choice nor a mismatch", (
   expect(type).toBe("never -> Bool");
 });
 
+Deno.test("a bad argument's shape is what reaches the type argument", () => {
+  // The same rule from the other side of `#cast`: a bad *head* answers every
+  // demand, but dropping the shape with it would leave `?A` unconstrained and
+  // solved from its own extreme, so a program already blamed would come back
+  // with an ordinary type.
+  const [list, ...listSaid] = run(
+    ...LIST,
+    ...BOOL,
+    "let use = fn [A](xs: List[A]) -> xs;",
+    "use(oops)",
+  );
+  expect(listSaid).toEqual(["unknown name oops"]);
+  expect(list).toBe("List[<bad>]");
+
+  // An arrow pattern too, where the whole answer is the type argument.
+  const [fun, ..._] = run(
+    ...BOOL,
+    "let apply = fn [A, B](f: (A) -> B, x: A) -> f(x);",
+    "apply(oops, True)",
+  );
+  expect(fun).toBe("<bad>");
+});
+
 Deno.test("a failed argument cast leaves its badness where a bound is read", () => {
   // What the shape a declined cast answers with is *for*, and the one place
   // it is read: an argument's answer is related against the parameter type,

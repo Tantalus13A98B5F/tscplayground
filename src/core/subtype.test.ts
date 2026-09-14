@@ -867,19 +867,30 @@ Deno.test("an unbounded variable has no function above it either", () => {
     .toBe("<none>");
 });
 
-Deno.test("a bad type satisfies any demand, and stands whole", () => {
-  // A report already stands, so nothing here is failed a second time -- and
-  // `<bad>` is below and above everything, so every demand is already met and
-  // there is no shape to build around it. Whatever reads this guards `<bad>`
-  // beside `never` for exactly that reason.
+Deno.test("a bad type satisfies any demand, and keeps the shape", () => {
+  // A report already stands, so nothing here is failed a second time, and
+  // filling from `<bad>` invents nothing, it being below and above
+  // everything.
   const { sub } = fixture();
-  expect(castToString(sub, up(sub, TBad, CellP(TMissing)))).toBe("<bad>");
+  expect(castToString(sub, up(sub, TBad, CellP(TMissing)))).toBe("Cell[<bad>]");
   expect(castToString(sub, down(sub, TBad, fnP([Bool], TMissing))))
-    .toBe("<bad>");
+    .toBe("Bool -> <bad>");
   // Invariantly too, which is where it differs from an extreme: `<bad>` has
   // no direction to need.
-  expect(castToString(sub, exact(sub, TBad, CellP(TMissing)))).toBe("<bad>");
+  expect(castToString(sub, exact(sub, TBad, CellP(TMissing))))
+    .toBe("Cell[<bad>]");
   expect(saidBy(sub)).toEqual([]);
+});
+
+Deno.test("an extreme drops the shape where a bad type may not", () => {
+  // The asymmetry, said in one place. Both answer every demand, but only the
+  // extreme's answer is the one a reader would have reached without it: a
+  // lift planted `extreme(dir composed with the argument's variance)`, which
+  // is what an unconstrained EVar comes to anyway. Nothing else produces a
+  // `<bad>`, so that one has to be carried.
+  const { sub } = fixture();
+  expect(castToString(sub, up(sub, TNever, CellP(TMissing)))).toBe("never");
+  expect(castToString(sub, up(sub, TBad, CellP(TMissing)))).toBe("Cell[<bad>]");
 });
 
 Deno.test("a parameter list of the wrong length costs its own positions", () => {
