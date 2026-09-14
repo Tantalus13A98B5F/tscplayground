@@ -98,12 +98,13 @@ seeds every datatype name before any signature is elaborated, which is what lets
 `List` and `Tree` name each other; constructor names now join that seeding, so a
 field may mention `Cons[A]` in the same declaration run.
 
-**The scrutinee's type supplies the case set.** `#checkMatch` seeds `#remaining`
-from `datatypeOf(scrutinee.name)` today. It should seed from the scrutinee's
-type, which is behaviour-preserving while a `TData`'s identity is its name and
-becomes the whole feature the moment it is not: `match xs with | Cons(h, t) ->`
-on an `xs : Cons[Bool]` is exhaustive with one arm. That refactor is worth
-landing on its own, precisely because nothing about the suite changes.
+**The scrutinee's type supplies the case set.** Landed ahead of the rest, since
+nothing about the suite changes: `#checkMatch` seeds `#remaining` from
+`Declarations.casesOf(scrutinee)`, which reads the type rather than the
+declaration its name reaches. The same set while a `TData`'s identity is its
+name, and the whole feature the moment it is not -- `match xs with | Cons(h, t)
+->` on an `xs : Cons[Bool]` is exhaustive with one arm, and `casesOf` is the one
+place that has to learn it.
 
 It does surface one diagnostic decision. A pattern name can then fail two ways
 -- not a constructor of the datatype at all, or a constructor the _scrutinee's
