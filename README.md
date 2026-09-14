@@ -1,6 +1,6 @@
 # tscground
 
-The type checker for **GaML**, a small experimental language shaped as bare
+The type checker for **GaLa**, a small experimental language shaped as bare
 System F-sub. Source files are `.ga`. Written in TypeScript so the same code can
 drive a browser-based playground later.
 

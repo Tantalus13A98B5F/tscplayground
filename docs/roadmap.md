@@ -1,8 +1,8 @@
 # Before the first release
 
-GaML runs end to end today -- lex, lay out, parse, elaborate, check, evaluate,
+GaLa runs end to end today -- lex, lay out, parse, elaborate, check, evaluate,
 print a value and its type. What follows is the work between here and a version
-anyone else should use. One item left, with the reason it is on the list rather
+anyone else should use. What is left, with the reason each is on the list rather
 than merely desirable -- then what has landed, and then the things deliberately
 left off, which are limitations the design chose rather than corners left
 unfinished.
@@ -69,6 +69,84 @@ any signature (what `Declarations` already does for datatypes, which is why
 not one. That phase is still worth having on its own -- it turns a forward
 reference into "`foo` is declared below; its signature is not available here"
 rather than `unknown name foo` -- and it is additive, so it can land whenever.
+
+## 2. Constructors as types
+
+Each constructor of a datatype becomes a type of its own, below the datatype:
+`Cons[A] <: List[A]`, `Nil <: List[A]`. Derived, not declared -- there is no new
+syntax and nothing to write -- depth exactly one, and the coercion is the
+identity, since a `Cons` value already _is_ the `List` value. One new leaf in
+`#relateData`, and no new runtime representation.
+
+This is the successor to `docs/subtyping.md`, which designed a declared
+hierarchy with super constructors, implemented most of it, and lost. It delivers
+the case that design was really for -- a subgrammar that embeds into a full one,
+`NonEmpty[A]` out of `List[A]`, `Type` out of `TypePattern` -- at a fraction of
+the cost, and it populates Fsub's bounds, which is the other thing that file
+wanted and the reason `FUEL` and the three-valued `Verdict` exist at all.
+
+Four things it needs, in order.
+
+**Constructor names become globally unique.** They are type names now, so they
+share a namespace with datatypes and with each other; two datatypes may no
+longer both declare a `Same`. The alternative -- qualified names, `List.Cons` --
+was tried on the closed branch and is what forced a `match ... as` there. A flat
+rule is cheaper and is what the evaluator already half-assumes.
+
+**Elaboration's first phase admits constructor names.** `Declarations` already
+seeds every datatype name before any signature is elaborated, which is what lets
+`List` and `Tree` name each other; constructor names now join that seeding, so a
+field may mention `Cons[A]` in the same declaration run.
+
+**The scrutinee's type supplies the case set.** `#checkMatch` seeds `#remaining`
+from `datatypeOf(scrutinee.name)` today. It should seed from the scrutinee's
+type, which is behaviour-preserving while a `TData`'s identity is its name and
+becomes the whole feature the moment it is not: `match xs with | Cons(h, t) ->`
+on an `xs : Cons[Bool]` is exhaustive with one arm. That refactor is worth
+landing on its own, precisely because nothing about the suite changes.
+
+It does surface one diagnostic decision. A pattern name can then fail two ways
+-- not a constructor of the datatype at all, or a constructor the _scrutinee's
+type_ excludes -- and the second is unreachability rather than a name error. It
+wants its own wording and must not double-blame.
+
+**Inference returns the principal type.** `Cons(True, Nil())` infers
+`Cons[Bool]` rather than `List[Bool]`, which is what makes the feature reachable
+without annotations everywhere. Two consequences are already known. Arm joins
+now rise two constructor heads to their datatype, so `#latticeData` is on the
+critical path from day one. And an arm excluded by the scrutinee's type must be
+a _warning_ rather than the error `#report` files today -- an ordinary `match`
+with a `Nil` arm over a known `Cons` is not a mistake worth refusing a program
+for, whereas an arm shadowed by the arms above it still is.
+
+The known cost is the usual one for inference under subtyping: `ref!(Cons(...))`
+infers `Ref[Cons[Bool]]`, a cell nothing can `set!` a `Nil` into, and the fix is
+an annotation.
+
+## 3. Sugar for single-case datatypes
+
+`let Pair(x, y) = e` as a one-arm match, which is one token of lookahead in
+`letBinding` handing off to `matchPat`. It works for any constructor, not only a
+sole one -- `let Cons(hd, tl) = xs` is legal and partial, and the totality
+report is the one `#remaining` already produces, which under item 2 is silent
+exactly when the scrutinee's type says it is total.
+
+## 4. Drop the extreme lift
+
+`#liftExtreme` lifts a `never` going up, or an `unknown` coming down, one level
+into the pattern's shape -- so `upcast(never, Ref[?])` answers `Ref[never]` and
+warns about the arbitrary choice at an invariant argument. It should answer
+`never`. The shape a cast returns is load-bearing only on the _failure_ path,
+where the pattern-with-`TBad` mixture is the type-level form of "never fail
+checking a tree halfway"; a lift never fails, by construction, so it has no
+shape to owe anyone. It records no constraint either -- a hole returns without
+comparing, and a written invariant part is compared against a copy of itself --
+so the change is invisible to the solver, and it makes `#cast` agree with
+`#subtype`'s own first line.
+
+Worth doing with an assertion that the lattice operations never see a live EVar,
+since `#lattice(_, _, 0)` reaching `#eqtype` is the one path by which a join can
+record a constraint.
 
 ## Landed
 
@@ -242,3 +320,12 @@ Each is a limitation the design chose, not a corner left unfinished.
 - **Subtyping runs on fuel** and can answer "gave up" as well as yes or no. Full
   Fsub subtyping is undecidable, so some such limit is not optional; the size of
   it is a tuning question.
+- **No union or intersection types.** Costed in `docs/clti.md` and declined. A
+  union pays for itself in its eliminator, and ours is nominal and one level, so
+  the join would be formed everywhere and taken apart nowhere; restricting
+  unions to constructor sets does not help, because a union over cases is a
+  union over their arguments. A full-fidelity answer also needs a primitive
+  n-ary `joinMany` -- pairwise folding is order-dependent at an invariant slot
+  -- and that is the piece worth building first if this is ever reopened.
+- **No declared subtyping between datatypes.** `docs/subtyping.md` is the design
+  and the epitaph. Constructors-as-types above is what replaces it.
