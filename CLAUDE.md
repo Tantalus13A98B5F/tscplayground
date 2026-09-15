@@ -90,47 +90,25 @@ the domain as _absent_ rather than empty for a bare name, and `isValue` is what
 every later reading asks. See `CtorDecl`, and `constructorType` for why the
 value form is refused on a parameterised datatype.
 
-A constructor's name is also a _type_. Claimed in the phase that claims datatype
+A constructor's name is also a _type_, claimed in the phase that claims datatype
 names, so a field may mention `Cons[A]` in the same run it may mention
-`List[A]`, and its entry is a datatype in every respect but declaring one: the
+`List[A]`. Its entry is a datatype in every respect but declaring one: the
 owner's _own_ parameter array, so arity and variance are the family's and
-nothing is kept in step, and one case, filled when the constructors are. So
-constructor names share the type namespace -- two datatypes may no longer each
-declare a `Nil`, and a duplicate within one declaration is refused by that same
-rule. First come, first served at both scopes -- within a declaration and across
-the program -- and the case goes with the name, since a case under a name
-somebody else holds would be the one constructor whose name means another
-family's type. `#settleCtorNames` decides it and answers the constructor
-_declarations_ it did not keep, so the first `| On` stays where the second goes,
-and `constructor X is dropped: ...` is what every one of them says -- a report
-naming only the collision would leave the author to find out about the case.
+nothing is kept in step, and one case. So constructor names share the type
+namespace, and two datatypes may no longer each declare a `Nil`.
 
-A loser's fields are never read, and a whole _declaration_ that lost its name is
-not elaborated either: there is nowhere for any of it to land, and its fields
-would be read against the names the winners hold -- a `Foo` inside the second
-`datatype Foo` naming the first one's. It is an error case, and one report at
-the name is the whole of what can be said without inventing a reading. A `match`
-on a dropped case then says that name is no constructor of its datatype, which
-is a second report for one mistake and the right one -- that datatype really has
-no such case. A declaration that lost its _own_ name claims none of them, for
-the same reason one step up: its constructors would be types of a family the
-table does not have, writable because a type name is all it takes to write one,
-and inhabited by nothing because the cases behind them are refused. Two claim
-nothing and lose nothing by it. A constructor of its datatype's own name, where
-it is the only one: `datatype Box where | Box(Bool)` has one family and one case
-either way, so the two names are the same type. Beside a sibling it would be a
-strict subtype of the datatype above it, and one name would mean two types -- so
-the datatype keeps the name, and the case goes the way every held name's case
-goes. And a _bare_ name, which declares a value and so builds nothing -- there
-is no term that could have the type, and an uninhabitable type is worth no
-namespace entry.
+First come, first served, and the case goes with the name: a constructor whose
+name is held elsewhere is dropped, and so is a declaration that lost its own.
+Nothing of a loser is elaborated, its fields having no names of its own to be
+read against. `#settleCtorNames` decides all of it and has the reasons.
 
-Which is why a declaration may not repeat a name is its own rule and not a
-consequence of that one: half a declaration's names reach the type table and
-half do not, so `| On` beside `| On()` would collide nowhere. It is asked of
-every form, before anything is claimed, and the first of the two is what the
-declaration keeps -- `evaluate.ts` keeps the same one, a later _declaration_
-still shadowing as it always did.
+Two claim no type and lose nothing by it. A constructor of its datatype's own
+name, where it is the only one: `datatype Box where | Box(Bool)` has one family
+and one case either way, so the two names are the same type. And a _bare_ name,
+which declares a value and so builds nothing, leaving no term that could have
+the type. Which is why a declaration may not repeat a name is its own rule and
+not a consequence of the namespace: half a declaration's names reach the type
+table and half do not, so `| On` beside `| On()` would collide nowhere.
 
 Every head carries its _family_, the datatype whose constructors its values are
 among, and a datatype is its own -- reflexive rather than optional, so "the same
@@ -149,37 +127,33 @@ family is a name and not a chain, so this is a comparison and never a search.
 or below them. Upward, one family's constructors rise to it; downward there is
 nothing to build, the constructors partitioning the family's values, so all that
 can be answered is the one already below the other. `#latticeData` asks it, and
-so does `headConforms`, which is the same question with its answer pinned: a
-`from` conforms to a `to` exactly where the head between them _is_ the `to`. The
-relation and the cast both go through `headConforms` -- two homes for that
-question is how a coercion the relation allows becomes one the cast refuses.
+so does `headConforms`, the same question with its answer pinned. The relation
+and the cast both go through `headConforms` -- two homes for that question is
+how a coercion the relation allows becomes one the cast refuses.
 
 Nothing rises at an invariant position. `Cell[Cons[A]]` is not `Cell[List[A]]`,
 or a `Ref[List[A]]` could be `set!` a value the read side was promised could not
 arrive -- which is the whole of why `headsLattice` answers nothing at `0`.
 
-A constructor _application_ answers with the constructor's own type, which is
-what `typeClaimedBy` answers, so `Cons(h, t)` is a `Cons` and rises only where
-something asks it to. A constructor declared as a _value_ is outside that rule
-rather than excepted from it: `| True` builds nothing and is a member of `Bool`,
-where `| Nil()` is a function whose result is what it built -- so the
-declaration is where a monomorphic datatype says whether its nullary cases are
-members or singletons. A _sole_ constructor is not an exception either, and
-answers with itself like any other: its type admits exactly what its family
-does, but collapsing the two would leave nothing inhabiting the constructor, and
-a one-constructor datatype is how a nominal subtype of one thing gets written --
-so the library writes `| Pair(A, B)` where it means them to be one type, rather
-than minting a `MkPair` for the checker to hand back. A type argument solved
-from below is _not_ widened to match: a solution that survived a `let` and not a
-call would be most of the precision gone, and the ascription a staged argument
-then wants is `foldLeft(Nil)`'s. `docs/clti.md` has that argument.
+A constructor _application_ answers with the constructor's own type, so
+`Cons(h, t)` is a `Cons` and rises only where something asks it to. A
+constructor declared as a _value_ is outside that rule rather than excepted from
+it: `| True` builds nothing and is a member of `Bool`, where `| Nil()` is a
+function whose result is what it built -- so the declaration is where a
+monomorphic datatype says whether its nullary cases are members or singletons. A
+_sole_ constructor is no exception and answers with itself like any other:
+collapsing it into its family would leave nothing inhabiting it, and a
+one-constructor datatype is how a nominal subtype of one thing gets written. A
+type argument solved from below is _not_ widened to match: a solution that
+survived a `let` and not a call would be most of the precision gone, and the
+ascription a staged argument then wants is `foldLeft(Nil)`'s. `docs/clti.md` has
+that argument.
 
 A pattern name therefore fails two ways, and they are different reports.
 `#checkMatch` keeps what the scrutinee's type _admits_ beside what the arms have
 _left_: a name the family does not have is a name error, said against the
 family, and a name the type excludes is unreachability, said about the type
-rather than blamed on the name. Both are errors: a warning for the second was
-tried and dropped, for the reason below.
+rather than blamed on the name. Both are errors.
 
 A domain position -- an arrow's parameter, or a constructor's field -- may carry
 a name: `(x: A, B) -> C`, `| Box(flag: Bool, Bool)`. One syntax, so one rule,
