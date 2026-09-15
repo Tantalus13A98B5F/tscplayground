@@ -378,22 +378,24 @@ Deno.test("two datatypes may not share a constructor name", () => {
 });
 
 Deno.test("one datatype may not have two constructors of a name", () => {
-  // The same rule and not one of its own: the second `On` is refused where
-  // every other repeated type name is, which is why it reads that way.
+  // Its own rule, and it has to be: a constructor name reaches the type
+  // namespace only where it claims a type, and half of them no longer do.
   const fixture = elaborated(
     ["datatype Flag where", "  | On()", "  | On()"].join("\n") + END,
   );
-  expect(fixture.messages()).toEqual(["type On is already declared"]);
+  expect(fixture.messages()).toEqual(["constructor On is already declared"]);
   expect(fixture.declarations.datatypeOf("Flag")?.ctors.length).toBe(1);
 
-  // A bare name took no type, but it did take the name *here* -- two `| On`
-  // arms are one case written twice however little the type namespace hears
-  // about it, so the declaration keeps that much of the rule to itself.
-  const bare = elaborated(
-    ["datatype Flag where", "  | On", "  | On"].join("\n") + END,
-  );
-  expect(bare.messages()).toEqual(["constructor On is already declared"]);
-  expect(bare.declarations.datatypeOf("Flag")?.ctors.length).toBe(1);
+  // Including where the two were written in different forms, which is the
+  // case a rule about type names would have let through -- `| On` claims
+  // nothing for `| On()` to collide with.
+  for (const forms of [["  | On", "  | On()"], ["  | On()", "  | On"]]) {
+    const mixed = elaborated(
+      ["datatype Flag where", ...forms].join("\n") + END,
+    );
+    expect(mixed.messages()).toEqual(["constructor On is already declared"]);
+    expect(mixed.declarations.datatypeOf("Flag")?.ctors.length).toBe(1);
+  }
 });
 
 Deno.test("a sole constructor may take its datatype's name", () => {
@@ -669,5 +671,5 @@ Deno.test("a dropped duplicate takes its fields, so no phantom either", () => {
     "datatype Tag[A] where",
     "  | Tagged(Bool)",
     "  | Tagged(A)",
-  )).toEqual(["error: type Tagged is already declared"]);
+  )).toEqual(["error: constructor Tagged is already declared"]);
 });

@@ -334,22 +334,14 @@ export class Elaborator {
    */
   #claimCtorNames(decl: DatatypeDecl, info: DatatypeInfo): boolean {
     let reported = false;
-    const bare = new Set<string>();
+    const seen = new Set<string>();
     for (const ctor of decl.ctors) {
-      // A bare name claims no *type*. Either it declares a value, and a value
-      // builds nothing, so the type would be one no term could ever have -- or
-      // the datatype takes parameters and the form is refused, where a report
-      // already stands. One test for both, and which it was stays in
-      // `#reportValueCtor`, the phase that can answer it.
-      //
-      // The name is still taken within this declaration, which is the part
-      // that was never about types: two `| On` arms are one case written
-      // twice, and the second is dropped by the pass below.
-      if (ctor.params === undefined) {
-        if (!bare.has(ctor.name.text)) {
-          bare.add(ctor.name.text);
-          continue;
-        }
+      // A declaration may not repeat a name, whichever forms the two were
+      // written in: `| On` beside `| On()` is one case written twice, and the
+      // second is dropped by the pass below. Asked first and of every form,
+      // because what claims a type no longer answers it -- half these names
+      // reach the table and half do not.
+      if (seen.has(ctor.name.text)) {
         this.#report(
           `constructor ${ctor.name.text} is already declared`,
           ctor.name.at,
@@ -358,6 +350,13 @@ export class Elaborator {
         reported = true;
         continue;
       }
+      seen.add(ctor.name.text);
+      // A bare name claims no *type*. Either it declares a value, and a value
+      // builds nothing, so the type would be one no term could ever have -- or
+      // the datatype takes parameters and the form is refused, where a report
+      // already stands. One test for both, and which it was stays in
+      // `#reportValueCtor`, the phase that can answer it.
+      if (ctor.params === undefined) continue;
       if (ctor.name.text === info.name) {
         // A sole constructor of its datatype's name is not a second type: the
         // two have the same family and the same one case, so they *are* the
