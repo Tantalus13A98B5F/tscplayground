@@ -62,8 +62,8 @@ import {
   type Variance,
 } from "./types.ts";
 
-/** What a declaration with nothing to claim claimed. */
-const NO_NAMES: ReadonlySet<string> = new Set();
+/** What a declaration with no roster to settle drops. */
+const NOTHING_DROPPED: ReadonlySet<CtorDecl> = new Set();
 
 export class Elaborator {
   constructor(
@@ -275,42 +275,49 @@ export class Elaborator {
    * before the next one's.
    */
   elaborateDeclarations(decls: readonly TypeDecl[]): void {
-    // What the first phase claimed, for the second to elaborate. The list and
-    // not `decls` again: a refused constructor name is a report against the
-    // declaration, filed a phase before the one that measures them.
-    const claimed: {
+    // What the first phase settled, for the second to elaborate. The list and
+    // not `decls` again: which cases a declaration keeps is decided where its
+    // names are, a phase before the one that reads the fields.
+    const pending: {
       decl: DatatypeDecl;
-      taken: ReadonlySet<string>;
+      dropped: ReadonlySet<CtorDecl>;
       reported: boolean;
     }[] = [];
     for (const decl of decls) {
       if (decl.kind !== "DatatypeDecl") {
-        this.#reportRedeclaration(
+        this.#reportRedeclaredType(
           decl.name,
           this.declarations.addAlias(this.#elaborateAlias(decl)),
         );
         continue;
       }
+      // Counted rather than carried out of `#settleCtorNames`: a report
+      // standing against a declaration is a fact about the diagnostics, and
+      // that is where the pass below reads it from too.
+      const before = this.diagnostics.length;
       const info = this.#elaborateSignature(decl);
       const previous = this.declarations.addDatatype(info);
-      this.#reportRedeclaration(decl.name, previous);
-      // A declaration that lost its own name claims nothing else. Its
+      this.#reportRedeclaredType(decl.name, previous);
+      // A declaration that lost its own name settles nothing else. Its
       // constructors would be types of a family the table does not have --
       // reachable, since a type name is enough to write one, and inhabited by
       // nothing, since `fillCtors` refuses the cases behind them. It is still
       // elaborated below, which is where a bad type inside it is reported.
-      claimed.push(
-        previous === undefined
-          ? { decl, ...this.#claimCtorNames(decl, info) }
-          : { decl, taken: NO_NAMES, reported: true },
-      );
+      const dropped = previous === undefined
+        ? this.#settleCtorNames(decl, info)
+        : NOTHING_DROPPED;
+      pending.push({
+        decl,
+        dropped,
+        reported: this.diagnostics.length > before,
+      });
     }
 
-    for (const { decl, taken, reported } of claimed) {
-      // Measured here because nothing read back off the field types answers
-      // it -- see `DatatypeInfo.ctorsReported`.
+    for (const { decl, dropped, reported } of pending) {
+      // Measured the same way, and for the reason nothing read back off the
+      // field types answers it -- see `DatatypeInfo.ctorsReported`.
       const before = this.diagnostics.length;
-      const ctors = this.#elaborateCtors(decl, taken);
+      const ctors = this.#elaborateCtors(decl, dropped);
       this.declarations.fillCtors(
         decl.name.text,
         ctors,
@@ -322,50 +329,49 @@ export class Elaborator {
   }
 
   /**
-   * Claim each constructor's name as a type of its own, in the phase that
-   * claims datatype names -- so a field written in this same run may mention
-   * `Cons[A]`, exactly as it may mention `List[A]`.
+   * Settle which of a declaration's constructors it keeps, claiming a type for
+   * each name that takes one, and answering the ones it does not keep.
    *
+   * First come, first served, at both scopes: within the declaration, where a
+   * name repeated is one case written twice, and across the program, where a
+   * constructor's name is a type like any other. A case that loses either way
+   * is not one of this datatype's cases at all -- kept, it would be the one
+   * constructor whose name means another family's type, which is no state the
+   * language has -- so it is answered here and dropped by the pass below,
+   * before its fields are read. They are an error case; there is nothing in
+   * them worth a second report.
+   *
+   * The answer is the *declarations*, not their names, so the first `| On`
+   * stays where the second goes.
+   *
+   * Claimed in the phase that claims datatype names, so a field written in
+   * this same run may mention `Cons[A]` exactly as it may mention `List[A]`.
    * The entry is a datatype in every respect but declaring one: its family is
    * the datatype above it, and its parameters are that declaration's *own
    * array*, so `Cons[A]` is saturated by the arity `List` was written with and
    * moves the way variance inference decides `List`'s argument moves. Its
    * single case is filled when the constructors are.
    *
-   * Two constructors claim nothing: one written as a bare name, and one of its
-   * own datatype's name -- which is refused where it would have to claim. See
-   * the loop.
-   *
-   * This is where a constructor name stops being private to its datatype. Two
-   * datatypes may no longer each declare a `Nil`, and a duplicate within one
-   * declaration is refused by the same rule rather than by a check of its own.
-   * A bare name is private still, having claimed nothing, so its only rule is
-   * the declaration's own -- which is why this answers whether anything was
-   * refused
-   * -- which is why the answer is whether anything was refused: that is a
-   * report standing against the declaration, and the phase that measures them
-   * runs after this one.
+   * Two constructors claim no type and lose nothing by it: one written as a
+   * bare name, and one of its datatype's own name. See the loop.
    */
-  #claimCtorNames(
+  #settleCtorNames(
     decl: DatatypeDecl,
     info: DatatypeInfo,
-  ): { taken: ReadonlySet<string>; reported: boolean } {
-    let reported = false;
+  ): ReadonlySet<CtorDecl> {
+    const dropped = new Set<CtorDecl>();
     const seen = new Set<string>();
-    const taken = new Set<string>();
     for (const ctor of decl.ctors) {
-      // A declaration may not repeat a name, whichever forms the two were
-      // written in: `| On` beside `| On()` is one case written twice, and the
-      // second is dropped by the pass below. Asked first and of every form,
-      // because what claims a type no longer answers it -- half these names
-      // reach the table and half do not.
+      // Asked of every form, and before anything is claimed: half these names
+      // reach the type table and half do not, so a rule about type names
+      // would let `| On` beside `| On()` through.
       if (seen.has(ctor.name.text)) {
         this.#report(
           `constructor ${ctor.name.text} is already declared`,
           ctor.name.at,
           ctor.name.text.length,
         );
-        reported = true;
+        dropped.add(ctor);
         continue;
       }
       seen.add(ctor.name.text);
@@ -381,13 +387,16 @@ export class Elaborator {
         // same type and there is nothing to claim. `datatype Box where
         // | Box(Bool)` is the wrapper this makes ordinary.
         if (decl.ctors.length === 1) continue;
+        // Beside a sibling it would be a strict subtype of the datatype above
+        // it, so the one name would mean two types. The case stays: the name
+        // is this declaration's either way, and refusing it here would take a
+        // case away over a type nobody else wanted.
         this.#report(
           `constructor ${ctor.name.text} may take its datatype's name only ` +
             `where it is the only one`,
           ctor.name.at,
           ctor.name.text.length,
         );
-        reported = true;
         continue;
       }
       const previous = this.declarations.addDatatype({
@@ -399,20 +408,14 @@ export class Elaborator {
         ctorsFilled: false,
         at: ctor.at,
       });
-      this.#reportRedeclaration(ctor.name, previous);
-      if (previous === undefined) continue;
-      // First come, first served, and all the way: the name is another
-      // declaration's, so this is not a case of this datatype either. Kept as
-      // a case it would be the one constructor whose name is a type some
-      // other family holds, which is no state the language has.
-      taken.add(ctor.name.text);
-      reported = true;
+      this.#reportRedeclaredType(ctor.name, previous);
+      if (previous !== undefined) dropped.add(ctor);
     }
-    return { taken, reported };
+    return dropped;
   }
 
-  /** Report `name` if the table refused it in favour of `previous`. */
-  #reportRedeclaration(name: Ident, previous: Position | undefined): void {
+  /** Report `name` if the table refused the type it names to `previous`. */
+  #reportRedeclaredType(name: Ident, previous: Position | undefined): void {
     if (previous === undefined) return;
     this.#report(
       `type ${name.text} is already declared`,
@@ -437,41 +440,30 @@ export class Elaborator {
   }
 
   /**
-   * Elaborate a datatype's constructors under its type parameters, dropping
-   * the ones whose names went elsewhere.
+   * Elaborate a datatype's constructors under its type parameters, less the
+   * ones the phase above did not keep.
    *
-   * `taken` is first-come-first-served carried through: a name belongs to the
-   * declaration that claimed it, and a case here under that name would be a
-   * constructor whose name means another datatype's type -- so it is not one
-   * of this datatype's cases at all. Elaborated before it is dropped, because
-   * a bad type written inside it is still a mistake worth reporting, which is
-   * how a losing *declaration* is treated a phase down.
+   * Dropped before their fields are read rather than after: a case that lost
+   * its name lands nowhere, so anything written inside it is an error already
+   * reported at the name, and reading it further would only file a second
+   * report about a case the program does not have. Which is also why the drop
+   * is silent here -- `#settleCtorNames` said it.
    */
   #elaborateCtors(
     decl: DatatypeDecl,
-    taken: ReadonlySet<string>,
+    dropped: ReadonlySet<CtorDecl>,
   ): DataCtorInfo[] {
     const ctors = this.context.inScope((mark) => {
       this.#bindPlainParams(decl.typeParams);
-
-      // The duplicate drops out and the name stays, so a later `| Nil ->` is
-      // not a second error. Dropped silently: names are claimed a phase
-      // earlier now, so a report already stands against this one.
-      const seen = new Set<string>();
-      return decl.ctors.flatMap((ctor): DataCtorInfo[] => {
-        if (seen.has(ctor.name.text)) return [];
-        seen.add(ctor.name.text);
-        const one: DataCtorInfo = {
-          name: ctor.name.text,
-          // Closed over the datatype's parameters, so a use opens them.
-          fields: (ctor.params ?? []).map((field) =>
-            closeFrom(this.elaborateType(field.type), mark)
-          ),
-          isValue: this.#reportValueCtor(ctor, decl),
-          at: ctor.at,
-        };
-        return taken.has(one.name) ? [] : [one];
-      });
+      return decl.ctors.filter((ctor) => !dropped.has(ctor)).map((ctor) => ({
+        name: ctor.name.text,
+        // Closed over the datatype's parameters, so a use opens them.
+        fields: (ctor.params ?? []).map((field) =>
+          closeFrom(this.elaborateType(field.type), mark)
+        ),
+        isValue: this.#reportValueCtor(ctor, decl),
+        at: ctor.at,
+      }));
     });
 
     // The arity is a *binder depth*: a field sits under a binder no type node
@@ -714,7 +706,9 @@ type Table = ReadonlyMap<string, readonly Occurrence[]>;
  * is correct rather than hopeful: soundness for a nominal recursive type is a
  * coinductive property, and the greatest permissive fixed point states it.
  */
-function seed(datatypes: readonly DatatypeInfo[]): Map<string, Occurrence[]> {
+function permissiveTable(
+  datatypes: readonly DatatypeInfo[],
+): Map<string, Occurrence[]> {
   return new Map(datatypes.map((datatype) => [
     datatype.name,
     datatype.params.map(() => ({
@@ -869,7 +863,7 @@ export function inferDatatypeVariance(
   datatypes: readonly DatatypeInfo[],
   diagnostics: Diagnostic[],
 ): void {
-  const table = seed(datatypes);
+  const table = permissiveTable(datatypes);
   for (let flags = 0;;) {
     oneRound(datatypes, table);
     const grown = flagsSet(table);
