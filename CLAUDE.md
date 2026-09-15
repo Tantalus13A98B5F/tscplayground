@@ -103,8 +103,14 @@ either way, so the two names are the same type; beside a sibling it would be a
 strict subtype of the datatype above it, and one name would mean two types, so
 it is refused. And a _bare_ name, which declares a value and so builds nothing
 -- there is no term that could have the type, and an uninhabitable type is worth
-no namespace entry. A bare name is still taken within its own declaration, two
-`| On` arms being one case written twice.
+no namespace entry.
+
+Which is why a declaration may not repeat a name is its own rule and not a
+consequence of that one: half a declaration's names reach the type table and
+half do not, so `| On` beside `| On()` would collide nowhere. It is asked of
+every form, before anything is claimed, and the first of the two is what the
+declaration keeps -- `evaluate.ts` keeps the same one, a later _declaration_
+still shadowing as it always did.
 
 Every head carries its _family_, the datatype whose constructors its values are
 among, and a datatype is its own -- reflexive rather than optional, so "the same
