@@ -259,12 +259,15 @@ export class Declarations {
    * subtype of one thing gets written -- so the library writes `| Pair(A, B)`
    * where it means the two to be one type. The family answers in one more
    * case, where the constructor's name went to another declaration and was
-   * refused: a report already stands, and the family is the type the
-   * constructor would have had.
+   * refused: a report already stands, the entry under that name belongs to
+   * someone else, and the family is the type this constructor would have had.
    */
   datatypeBuiltBy(family: DatatypeInfo, ctor: DataCtorInfo): DatatypeInfo {
-    const own = this.#datatypes.get(ctor.name);
-    return own?.family === family.name ? own : family;
+    // Whoever holds the name, which is not always this constructor: a name
+    // refused to another declaration leaves *its* entry here, and building
+    // that would hand a `Switch` the type `Flag`'s `On` claimed.
+    const holder = this.#datatypes.get(ctor.name);
+    return holder?.family === family.name ? holder : family;
   }
 
   /**

@@ -361,6 +361,11 @@ Deno.test("two datatypes may not share a constructor name", () => {
   expect(fixture.messages()).toEqual(["type On is already declared"]);
   expect(fixture.declarations.ctorOf("Flag", "On")).toBeDefined();
   expect(fixture.declarations.ctorOf("Switch", "On")).toBeDefined();
+  // The winner builds the type it claimed; the loser builds its family, and
+  // not the entry standing under its name -- that one is `Flag`'s, and a
+  // `Switch` built at it would be a value of one datatype typed at another.
+  expect(ctorTypeOf(fixture, "Flag", "On")).toBe("() -> On");
+  expect(ctorTypeOf(fixture, "Switch", "On")).toBe("() -> Switch");
 
   // A bare name is the exception, and claims nothing to collide with: it
   // declares a *value*, which builds nothing, so there is no type of that name
