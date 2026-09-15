@@ -62,6 +62,9 @@ import {
   type Variance,
 } from "./types.ts";
 
+/** What a declaration with nothing to claim claimed. */
+const NO_NAMES: ReadonlySet<string> = new Set();
+
 export class Elaborator {
   constructor(
     readonly declarations: Declarations,
@@ -289,11 +292,18 @@ export class Elaborator {
         continue;
       }
       const info = this.#elaborateSignature(decl);
-      this.#reportRedeclaration(
-        decl.name,
-        this.declarations.addDatatype(info),
+      const previous = this.declarations.addDatatype(info);
+      this.#reportRedeclaration(decl.name, previous);
+      // A declaration that lost its own name claims nothing else. Its
+      // constructors would be types of a family the table does not have --
+      // reachable, since a type name is enough to write one, and inhabited by
+      // nothing, since `fillCtors` refuses the cases behind them. It is still
+      // elaborated below, which is where a bad type inside it is reported.
+      claimed.push(
+        previous === undefined
+          ? { decl, ...this.#claimCtorNames(decl, info) }
+          : { decl, taken: NO_NAMES, reported: true },
       );
-      claimed.push({ decl, ...this.#claimCtorNames(decl, info) });
     }
 
     for (const { decl, taken, reported } of claimed) {

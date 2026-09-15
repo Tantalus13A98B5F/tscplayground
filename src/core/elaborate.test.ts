@@ -337,7 +337,7 @@ Deno.test("a redeclared datatype does not take the first one's constructors", ()
       "datatype Flag where",
       "  | On",
       "datatype Flag where",
-      "  | Off",
+      "  | Off()",
     ].join("\n") + END,
   );
   expect(fixture.messages()).toEqual(["type Flag is already declared"]);
@@ -345,6 +345,10 @@ Deno.test("a redeclared datatype does not take the first one's constructors", ()
   // The losing declaration is elaborated, so errors inside it are still
   // reported, but `fillCtors` refuses to hand its constructors to the name.
   expect(fixture.declarations.ctorOf("Flag", "Off")).toBeUndefined();
+  // And it claims no names either, or `Off` would be a type of a family the
+  // table does not have: writable, since a type name is all it takes, and
+  // inhabited by nothing, since the case behind it was just refused.
+  expect(fixture.declarations.datatypeOf("Off")).toBeUndefined();
 });
 
 Deno.test("two datatypes may not share a constructor name", () => {
