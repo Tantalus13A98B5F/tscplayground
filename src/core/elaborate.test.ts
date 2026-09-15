@@ -360,12 +360,11 @@ Deno.test("two datatypes may not share a constructor name", () => {
   );
   expect(fixture.messages()).toEqual(["type On is already declared"]);
   expect(fixture.declarations.ctorOf("Flag", "On")).toBeDefined();
-  expect(fixture.declarations.ctorOf("Switch", "On")).toBeDefined();
-  // The winner builds the type it claimed; the loser builds its family, and
-  // not the entry standing under its name -- that one is `Flag`'s, and a
-  // `Switch` built at it would be a value of one datatype typed at another.
+  // Keeps the name and the case with it: a `Switch` case under that name
+  // would be the one constructor whose name is another family's type, which
+  // is no state the language has. So `On` means what it meant.
+  expect(fixture.declarations.ctorOf("Switch", "On")).toBeUndefined();
   expect(ctorTypeOf(fixture, "Flag", "On")).toBe("() -> On");
-  expect(ctorTypeOf(fixture, "Switch", "On")).toBe("() -> Switch");
 
   // A bare name is the exception, and claims nothing to collide with: it
   // declares a *value*, which builds nothing, so there is no type of that name
@@ -380,6 +379,25 @@ Deno.test("two datatypes may not share a constructor name", () => {
   );
   expect(bare.messages()).toEqual([]);
   expect(bare.declarations.datatypeOf("On")).toBeUndefined();
+  expect(bare.declarations.ctorOf("Switch", "On")).toBeDefined();
+});
+
+Deno.test("a bare name keeps its case where a datatype holds its name", () => {
+  // The one place a constructor's name reaches an entry that is not its
+  // family's: nothing was claimed, so nothing was refused, and the case
+  // stands. It builds the family, as every value constructor does -- and not
+  // the `True` standing under its name, which is somebody else's datatype.
+  const fixture = elaborated(
+    [
+      "datatype True where",
+      "  | Yes()",
+      "datatype Bool where",
+      "  | True",
+      "  | False",
+    ].join("\n") + END,
+  );
+  expect(fixture.messages()).toEqual([]);
+  expect(ctorTypeOf(fixture, "Bool", "True")).toBe("Bool");
 });
 
 Deno.test("one datatype may not have two constructors of a name", () => {

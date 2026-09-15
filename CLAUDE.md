@@ -97,13 +97,18 @@ owner's _own_ parameter array, so arity and variance are the family's and
 nothing is kept in step, and one case, filled when the constructors are. So
 constructor names share the type namespace -- two datatypes may no longer each
 declare a `Nil`, and a duplicate within one declaration is refused by that same
-rule. Two claim nothing. A constructor of its datatype's own name, where it is
-the only one: `datatype Box where | Box(Bool)` has one family and one case
-either way, so the two names are the same type; beside a sibling it would be a
-strict subtype of the datatype above it, and one name would mean two types, so
-it is refused. And a _bare_ name, which declares a value and so builds nothing
--- there is no term that could have the type, and an uninhabitable type is worth
-no namespace entry.
+rule. First come, first served, and the case goes with the name: the loser is
+elaborated, so a bad type inside it is still reported, and then dropped, since a
+case under a name another family holds would be the one constructor whose name
+means somebody else's type. A `match` on the loser then says that name is no
+constructor of it, which is a second report for one mistake and the right one --
+that datatype really has no such case. Two claim nothing. A constructor of its
+datatype's own name, where it is the only one: `datatype Box where | Box(Bool)`
+has one family and one case either way, so the two names are the same type;
+beside a sibling it would be a strict subtype of the datatype above it, and one
+name would mean two types, so it is refused. And a _bare_ name, which declares a
+value and so builds nothing -- there is no term that could have the type, and an
+uninhabitable type is worth no namespace entry.
 
 Which is why a declaration may not repeat a name is its own rule and not a
 consequence of that one: half a declaration's names reach the type table and

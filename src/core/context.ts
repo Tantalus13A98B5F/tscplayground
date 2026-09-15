@@ -257,15 +257,18 @@ export class Declarations {
    * what its family does: collapsing it would leave nothing that inhabits
    * `Pair`'s constructor, and a one-constructor datatype is how a nominal
    * subtype of one thing gets written -- so the library writes `| Pair(A, B)`
-   * where it means the two to be one type. The family answers in one more
-   * case, where the constructor's name went to another declaration and was
-   * refused: a report already stands, the entry under that name belongs to
-   * someone else, and the family is the type this constructor would have had.
+   * where it means the two to be one type.
+   *
+   * A constructor whose *claim* was refused never reaches here: first come
+   * first served takes the case with the name, so what is left under a name
+   * this family does not hold is a bare one, which claimed nothing and is
+   * answered by the family like any other value constructor.
    */
   datatypeBuiltBy(family: DatatypeInfo, ctor: DataCtorInfo): DatatypeInfo {
-    // Whoever holds the name, which is not always this constructor: a name
-    // refused to another declaration leaves *its* entry here, and building
-    // that would hand a `Switch` the type `Flag`'s `On` claimed.
+    // Whoever holds the name, which is not always this constructor: a bare
+    // name claims nothing and so may coincide with a datatype or with another
+    // family's constructor, and building at *that* entry would hand a `Bool`
+    // the type someone else's `True` holds.
     const holder = this.#datatypes.get(ctor.name);
     return holder?.family === family.name ? holder : family;
   }

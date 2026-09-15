@@ -275,7 +275,11 @@ export class Elaborator {
     // What the first phase claimed, for the second to elaborate. The list and
     // not `decls` again: a refused constructor name is a report against the
     // declaration, filed a phase before the one that measures them.
-    const claimed: { decl: DatatypeDecl; reported: boolean }[] = [];
+    const claimed: {
+      decl: DatatypeDecl;
+      taken: ReadonlySet<string>;
+      reported: boolean;
+    }[] = [];
     for (const decl of decls) {
       if (decl.kind !== "DatatypeDecl") {
         this.#reportRedeclaration(
@@ -289,14 +293,14 @@ export class Elaborator {
         decl.name,
         this.declarations.addDatatype(info),
       );
-      claimed.push({ decl, reported: this.#claimCtorNames(decl, info) });
+      claimed.push({ decl, ...this.#claimCtorNames(decl, info) });
     }
 
-    for (const { decl, reported } of claimed) {
+    for (const { decl, taken, reported } of claimed) {
       // Measured here because nothing read back off the field types answers
       // it -- see `DatatypeInfo.ctorsReported`.
       const before = this.diagnostics.length;
-      const ctors = this.#elaborateCtors(decl);
+      const ctors = this.#elaborateCtors(decl, taken);
       this.declarations.fillCtors(
         decl.name.text,
         ctors,
@@ -332,9 +336,13 @@ export class Elaborator {
    * report standing against the declaration, and the phase that measures them
    * runs after this one.
    */
-  #claimCtorNames(decl: DatatypeDecl, info: DatatypeInfo): boolean {
+  #claimCtorNames(
+    decl: DatatypeDecl,
+    info: DatatypeInfo,
+  ): { taken: ReadonlySet<string>; reported: boolean } {
     let reported = false;
     const seen = new Set<string>();
+    const taken = new Set<string>();
     for (const ctor of decl.ctors) {
       // A declaration may not repeat a name, whichever forms the two were
       // written in: `| On` beside `| On()` is one case written twice, and the
@@ -382,9 +390,15 @@ export class Elaborator {
         at: ctor.at,
       });
       this.#reportRedeclaration(ctor.name, previous);
-      reported ||= previous !== undefined;
+      if (previous === undefined) continue;
+      // First come, first served, and all the way: the name is another
+      // declaration's, so this is not a case of this datatype either. Kept as
+      // a case it would be the one constructor whose name is a type some
+      // other family holds, which is no state the language has.
+      taken.add(ctor.name.text);
+      reported = true;
     }
-    return reported;
+    return { taken, reported };
   }
 
   /** Report `name` if the table refused it in favour of `previous`. */
@@ -412,9 +426,20 @@ export class Elaborator {
     };
   }
 
-  /** Elaborate a datatype's constructors under its type parameters. */
+  /**
+   * Elaborate a datatype's constructors under its type parameters, dropping
+   * the ones whose names went elsewhere.
+   *
+   * `taken` is first-come-first-served carried through: a name belongs to the
+   * declaration that claimed it, and a case here under that name would be a
+   * constructor whose name means another datatype's type -- so it is not one
+   * of this datatype's cases at all. Elaborated before it is dropped, because
+   * a bad type written inside it is still a mistake worth reporting, which is
+   * how a losing *declaration* is treated a phase down.
+   */
   #elaborateCtors(
     decl: DatatypeDecl,
+    taken: ReadonlySet<string>,
   ): DataCtorInfo[] {
     const ctors = this.context.inScope((mark) => {
       this.#bindPlainParams(decl.typeParams);
@@ -426,7 +451,7 @@ export class Elaborator {
       return decl.ctors.flatMap((ctor): DataCtorInfo[] => {
         if (seen.has(ctor.name.text)) return [];
         seen.add(ctor.name.text);
-        return [{
+        const one: DataCtorInfo = {
           name: ctor.name.text,
           // Closed over the datatype's parameters, so a use opens them.
           fields: (ctor.params ?? []).map((field) =>
@@ -434,7 +459,8 @@ export class Elaborator {
           ),
           isValue: this.#reportValueCtor(ctor, decl),
           at: ctor.at,
-        }];
+        };
+        return taken.has(one.name) ? [] : [one];
       });
     });
 
