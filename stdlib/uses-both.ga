@@ -28,7 +28,13 @@ let toCNat = fix(fn (self: (Nat) -> CNat) -> fn (n: Nat) ->
 // argument at all, for the mirror-image reason: there the *operator* is
 // annotated, `B` comes from it, and `Nil()` is what benefits. One of the two
 // has to say what the fold answers with, and staging picks `z`.
+// `Nil[A]()` answers a `Nil[A]`, which is what it is, so `B` settles there and
+// the `Cons` the operator answers with no longer fits. A staged argument is the
+// one place a constructor's own type is too precise to be a guess, and saying
+// which type is meant is the fix -- the same ascription Scala's `foldLeft(Nil)`
+// has always needed.
 let toList = fn [A](xs: CList[A]) ->
-  cfoldr(xs)(Nil[A]())(fn (h, t) -> Cons(h, t))
+  let empty : List[A] = Nil[A]();
+  cfoldr(xs)(empty)(fn (h, t) -> Cons(h, t))
 
-MkPair(toNat(cadd(toCNat(S(Z)), toCNat(S(S(Z))))), length(toList(cnil())))
+Pair(toNat(cadd(toCNat(S(Z)), toCNat(S(S(Z))))), length(toList(cnil())))

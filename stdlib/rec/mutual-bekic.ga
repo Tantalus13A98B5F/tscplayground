@@ -40,4 +40,4 @@ let tag = fix(fn (tag: (Nat) -> Nat) -> fn (n: Nat) -> match n with
   | Z -> Z
   | S(k) -> length(alt(k)))
 
-MkPair(alt(S(S(Z))), tag(S(S(S(Z)))))
+Pair(alt(S(S(Z))), tag(S(S(S(Z)))))

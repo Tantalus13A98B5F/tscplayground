@@ -30,7 +30,8 @@ let mtoList = fn [A](xs: MList[A]) ->
     | MCons(h, t) -> Cons(h, self(get!(t))))(xs)
 
 let mfromList = fn [A](xs: List[A]) ->
-  foldr(xs)(MNil[A]())(fn (h, acc) -> MCons(h, ref!(acc)))
+  let empty : MList[A] = MNil[A]();
+  foldr(xs)(empty)(fn (h, acc) -> MCons(h, ref!(acc)))
 
 // Relink a node's tail in place, answering the tail that was there. The one
 // operation here that could not be written over `List`, and the reason the

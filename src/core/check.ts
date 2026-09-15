@@ -637,6 +637,9 @@ export class Checker {
     for (const arm of term.arms) {
       // Taken and removed at once: what an arm matches is exactly what is
       // left after it, and an arm with nothing left is one nothing reaches.
+      // What killed it, and the two are separate questions even where the
+      // report is the same: a name the arms above it cover, against a name
+      // the scrutinee's type never admitted.
       let dead: string | undefined;
       let binderTypes: readonly Type[] = [];
       if (arm.pattern.kind === "PWild") {

@@ -24,5 +24,5 @@ let anyZero = foldr(ns)(False)(fn (h, acc) -> or(isZero(h), acc))
 
 // Nothing constrains this `Nil()` at all, so it is `List[never]` -- an answer
 // and not a gap, since `isEmpty` asks nothing of the element type.
-let sizes = MkPair(length(flags), length(doubled))
-MkPair(fst(sizes), and(anyZero, and(isEmpty(Nil()), not(False))))
+let sizes = Pair(length(flags), length(doubled))
+Pair(fst(sizes), and(anyZero, and(isEmpty(Nil()), not(False))))

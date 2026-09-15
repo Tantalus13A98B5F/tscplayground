@@ -85,7 +85,7 @@ Deno.test("tokenize covers the whole surface syntax", () => {
     "identifier",
     "eof",
   ]);
-  expect(kinds("datatype Pair[A, B] where | MkPair(a: A)")).toEqual([
+  expect(kinds("datatype Pair[A, B] where | Pair(a: A)")).toEqual([
     "datatype",
     "identifier",
     "lbracket",

@@ -12,6 +12,12 @@ function run(...lines: readonly string[]): [string, ...string[]] {
   ];
 }
 
+/** The severities alone, where which report was filed is the question. */
+function severities(...lines: readonly string[]): string[] {
+  const result = checkSource(mkSource(lines.join("\n"), "test.ga"));
+  return result.diagnostics.map((d) => d.severity);
+}
+
 /** The type alone, asserting nothing was reported. */
 function typeOf(...lines: readonly string[]): string {
   const [type, ...messages] = run(...lines);
@@ -22,9 +28,9 @@ function typeOf(...lines: readonly string[]): string {
 const BOOL = ["datatype Bool where", "  | True", "  | False"];
 const LIST = ["datatype List[A] where", "  | Nil()", "  | Cons(A, List[A])"];
 /** Invariant, `A` standing both ways in the one field. */
-const CELL = ["datatype Cell[A] where", "  | MkCell((A) -> A)"];
+const CELL = ["datatype Cell[A] where", "  | Cell((A) -> A)"];
 /** Contravariant, and the only shape that gets there. */
-const SINK = ["datatype Sink[A] where", "  | MkSink((A) -> Bool)"];
+const SINK = ["datatype Sink[A] where", "  | Sink((A) -> Bool)"];
 
 Deno.test("a constructor's name is a type below its family", () => {
   // Derived, not declared: nothing here says so, and the coercion is the
@@ -35,6 +41,61 @@ Deno.test("a constructor's name is a type below its family", () => {
     "def len(xs: List[Bool]): Bool = True",
     "fn (c: Cons[Bool]) -> len(c)",
   )).toBe("Cons[Bool] -> Bool");
+});
+
+Deno.test("a constructor application answers with its own type", () => {
+  // The whole of what principality buys: nothing is annotated, and the match
+  // still knows one arm covers it.
+  expect(typeOf(
+    ...BOOL,
+    ...LIST,
+    "let c = Cons(True, Nil());",
+    "match c with",
+    "  | Cons(h, t) -> h",
+  )).toBe("Bool");
+
+  // Two constructors of one family join at the family, which is what keeps an
+  // ordinary match inferring an ordinary type.
+  expect(typeOf(
+    ...BOOL,
+    ...LIST,
+    "fn (b: Bool) -> match b with",
+    "  | True -> Nil[Bool]()",
+    "  | False -> Cons(True, Nil())",
+  )).toBe("Bool -> List[Bool]");
+});
+
+Deno.test("a staged argument fixes a type argument at what it says", () => {
+  // The cost of answering with the constructor, and the one place it bites: a
+  // batch is solved at the end of the list its variable stands in, so `A` is
+  // fixed at `S` before the operator is looked at, and the `Z` it answers with
+  // no longer fits. Taking the family instead was tried and dropped -- it is a
+  // guess that unmakes the precision this whole item is for, and it would have
+  // had to be made everywhere to be worth making here.
+  expect(
+    run(
+      ...NAT,
+      "let stage = fn [A](z: A)(f: (A) -> A) -> f(z);",
+      "stage(S(Z))(fn (n) -> Z)",
+    )[1],
+  ).toBe("expected S, found Nat");
+
+  // Saying which type is meant is the fix, and there is one place to say it.
+  // This is `foldLeft(Nil)` in Scala, and it has the same answer there.
+  expect(typeOf(
+    ...NAT,
+    "let stage = fn [A](z: A)(f: (A) -> A) -> f(z);",
+    "let start : Nat = S(Z);",
+    "stage(start)(fn (n) -> Z)",
+  )).toBe("Nat");
+
+  // A declared bound is a constraint like any other, so it answers the same
+  // way an annotation does -- and keeps the constructor where it demands one.
+  expect(typeOf(
+    ...NAT,
+    "let narrow = fn [A <: S](x: A) -> x;",
+    "narrow(S(Z))",
+  )).toBe("S");
 });
 
 Deno.test("the scrutinee's type says which arms it needs", () => {
@@ -80,6 +141,26 @@ Deno.test("an arm the scrutinee's type excludes is unreachable, not unknown", ()
       "  | Nope() -> True",
     ).slice(1),
   ).toEqual(["Nope is not a constructor of List"]);
+
+  // Both are errors, though the second is a fact about a type the checker
+  // chose rather than a mistake in the arms. Two severities was tried and
+  // dropped: a prototype's diagnostics are worth less than the branch they
+  // cost, and an arm no value reaches is worth saying either way.
+  expect(severities(
+    ...BOOL,
+    ...LIST,
+    "fn (c: Cons[Bool]) -> match c with",
+    "  | Cons(h, t) -> h",
+    "  | Nil() -> True",
+  )).toEqual(["error"]);
+  expect(severities(
+    ...BOOL,
+    ...LIST,
+    "fn (xs: List[Bool]) -> match xs with",
+    "  | Cons(h, t) -> h",
+    "  | Nil() -> True",
+    "  | Nil() -> True",
+  )).toEqual(["error"]);
 });
 
 Deno.test("a constructor may not rise at an invariant argument", () => {
@@ -99,8 +180,11 @@ Deno.test("a constructor may not rise at an invariant argument", () => {
 
 Deno.test("a constructor is a function of its fields", () => {
   expect(typeOf(...BOOL, "True")).toBe("Bool");
+  // A constructor's *application* answers with the constructor's own type,
+  // which is what a value of it could still be. `True` is not one: a value
+  // constructor builds nothing, so it is a member of its family and no more.
   expect(typeOf(...LIST, ...BOOL, "Cons(True, Nil[Bool]())"))
-    .toBe("List[Bool]");
+    .toBe("Cons[Bool]");
 });
 
 Deno.test("the term form follows the declaration form", () => {
@@ -109,8 +193,8 @@ Deno.test("the term form follows the declaration form", () => {
   // And a declared `()` is a function, so the bare name is one -- which is a
   // type error only where something wanted the datatype.
   const WITH = ["datatype Flag where", "  | Off()"];
-  expect(typeOf(...WITH, "Off")).toBe("() -> Flag");
-  expect(typeOf(...WITH, "Off()")).toBe("Flag");
+  expect(typeOf(...WITH, "Off")).toBe("() -> Off");
+  expect(typeOf(...WITH, "Off()")).toBe("Off");
 });
 
 Deno.test("a pattern is spelled the same whichever form declared it", () => {
@@ -423,7 +507,7 @@ Deno.test("an expected type reaches an inner call's type argument", () => {
   // its first type argument stays unconstrained and the call fails.
   const [type, ...messages] = run(
     "datatype Pair[A, B] where",
-    "  | MkPair((A) -> A, B)",
+    "  | Both((A) -> A, B)",
     "  | NoPair()",
     ...BOOL,
     "let outer = fn [B](p: Pair[Bool, B]) -> p;",
@@ -522,7 +606,7 @@ Deno.test("an empty list takes its element type from its neighbours", () => {
   // the `List[?A]` the outer call is collecting -- so `?A` takes `Bool` from
   // the first argument and nothing has to be written. Invariance had no such
   // reading: `?A` would have had to be `never` *and* `Bool`.
-  expect(typeOf(...LIST, ...BOOL, "Cons(True, Nil())")).toBe("List[Bool]");
+  expect(typeOf(...LIST, ...BOOL, "Cons(True, Nil())")).toBe("Cons[Bool]");
 });
 
 Deno.test("arms join at the argument, not only at the datatype", () => {
@@ -557,9 +641,9 @@ Deno.test("a name in a domain is documentation and reaches no type", () => {
   expect(
     typeOf(
       "datatype Box where",
-      "  | MkBox(flag: Bool, Bool)",
+      "  | Box(flag: Bool, Bool)",
       ...BOOL,
-      "MkBox",
+      "Box",
     ),
   ).toBe("(Bool, Bool) -> Box");
 
@@ -610,7 +694,7 @@ Deno.test("Ref is a name, so it obeys the rules every type name obeys", () => {
   // Seeded as a transparent alias for the former rather than spelled in the
   // grammar, so none of these is a rule of its own -- each is the message the
   // machinery already had for a `Pair` or a `List`.
-  expect(run(...BOOL, "datatype Ref[A] where", "  | MkRef(A)", "True")[1])
+  expect(run(...BOOL, "datatype Ref[A] where", "  | Ref(A)", "True")[1])
     .toBe("type Ref is already declared");
   expect(run(...BOOL, "typedef Ref = Bool", "True")[1])
     .toBe("type Ref is already declared");
@@ -954,7 +1038,7 @@ Deno.test("a nullary constructor of a monomorphic datatype is a value", () => {
 
   // Both conditions are needed: `Nil` still has a type argument to fix, and
   // `[A]List[A]` would be a quantifier over a non-function.
-  expect(typeOf(...LIST, ...BOOL, "Nil[Bool]()")).toBe("List[Bool]");
+  expect(typeOf(...LIST, ...BOOL, "Nil[Bool]()")).toBe("Nil[Bool]");
 });
 
 Deno.test("a declared bound is checked against what the arguments demand", () => {
@@ -1175,7 +1259,7 @@ Deno.test("an unannotated def is a let, and unknown inside its own body", () => 
     ...LIST,
     "def opaque(n: Nat) = Cons(opaque, Nil())",
     "opaque(Z)",
-  )).toBe("List[unknown]");
+  )).toBe("Cons[unknown]");
 });
 
 Deno.test("a def group is the run of adjacent defs, nothing wider", () => {
