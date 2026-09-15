@@ -242,35 +242,34 @@ export class Declarations {
   }
 
   /**
-   * The datatype a constructor *builds*, which is the type its applications
-   * answer with: `Cons(h, t)` is a `Cons`, and rises to the family only where
-   * something asks it to.
+   * The type a constructor's name established, or `undefined` where it has
+   * none: `Cons(h, t)` answers a `Cons`, and a caller with no entry to build
+   * at answers with the family, which is where `Cons[A] <: List[A]` leaves it
+   * anyway.
    *
-   * Builds, so a constructor declared as a value is outside the rule rather
-   * than excepted from it: `| True` declares a member of `Bool` and builds
-   * nothing. Nothing here has to say so -- a bare name claims no type, an
-   * uninhabitable one being worth no namespace entry, so the lookup finds
-   * nothing and the family answers. That is also what keeps the common types
-   * readable: a `fn (a, b) -> True` answers `(Bool, Bool) -> Bool`.
+   * Two constructors claim no type, and neither is refused anything: a *value*
+   * constructor builds nothing, `| True` being a member of `Bool` where
+   * `| Nil()` is a function whose result is what it built; and a name a
+   * constructor could not have is a case its datatype does not have either, so
+   * nothing here ever asks about one.
    *
-   * A sole constructor is *not* an exception, though its type admits exactly
-   * what its family does: collapsing it would leave nothing that inhabits
-   * `Pair`'s constructor, and a one-constructor datatype is how a nominal
-   * subtype of one thing gets written -- so the library writes `| Pair(A, B)`
-   * where it means the two to be one type.
+   * A sole constructor does claim, though its type admits exactly what its
+   * family does: collapsing the two would leave nothing inhabiting it, and a
+   * one-constructor datatype is how a nominal subtype of one thing gets
+   * written -- so the library writes `| Pair(A, B)` where it means them to be
+   * one type.
    *
-   * A constructor whose *claim* was refused never reaches here: first come
-   * first served takes the case with the name, so what is left under a name
-   * this family does not hold is a bare one, which claimed nothing and is
-   * answered by the family like any other value constructor.
+   * The family is compared, not assumed. A bare name claims nothing and so may
+   * coincide with a datatype's name or another family's constructor, and
+   * building at *that* entry would hand a `Bool` the type someone else's
+   * `True` holds.
    */
-  datatypeBuiltBy(family: DatatypeInfo, ctor: DataCtorInfo): DatatypeInfo {
-    // Whoever holds the name, which is not always this constructor: a bare
-    // name claims nothing and so may coincide with a datatype or with another
-    // family's constructor, and building at *that* entry would hand a `Bool`
-    // the type someone else's `True` holds.
+  typeClaimedBy(
+    family: DatatypeInfo,
+    ctor: DataCtorInfo,
+  ): DatatypeInfo | undefined {
     const holder = this.#datatypes.get(ctor.name);
-    return holder?.family === family.name ? holder : family;
+    return holder?.family === family.name ? holder : undefined;
   }
 
   /**

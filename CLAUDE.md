@@ -98,25 +98,31 @@ nothing is kept in step, and one case, filled when the constructors are. So
 constructor names share the type namespace -- two datatypes may no longer each
 declare a `Nil`, and a duplicate within one declaration is refused by that same
 rule. First come, first served at both scopes -- within a declaration and across
-the program -- and the case goes with the name: a case under a name another
-family holds would be the one constructor whose name means somebody else's type.
-Dropped before its fields are read, unlike a losing _declaration_, which is
-elaborated for the reports inside it: this one is an error case whose name
-already carries the report, and a second one about a case the program does not
-have would be noise. `#settleCtorNames` decides both, and answers the
-constructor _declarations_ it did not keep, so the first `| On` stays where the
-second goes. A `match` on the loser then says that name is no constructor of it,
-which is a second report for one mistake and the right one -- that datatype
-really has no such case. A declaration that lost its _own_ name claims none of
-them, for the same reason one step up: its constructors would be types of a
-family the table does not have, writable because a type name is all it takes to
-write one, and inhabited by nothing because the cases behind them are refused.
-Two claim nothing. A constructor of its datatype's own name, where it is the
-only one: `datatype Box where | Box(Bool)` has one family and one case either
-way, so the two names are the same type; beside a sibling it would be a strict
-subtype of the datatype above it, and one name would mean two types, so it is
-refused. And a _bare_ name, which declares a value and so builds nothing --
-there is no term that could have the type, and an uninhabitable type is worth no
+the program -- and the case goes with the name, since a case under a name
+somebody else holds would be the one constructor whose name means another
+family's type. `#settleCtorNames` decides it and answers the constructor
+_declarations_ it did not keep, so the first `| On` stays where the second goes,
+and `constructor X is dropped: ...` is what every one of them says -- a report
+naming only the collision would leave the author to find out about the case.
+
+A loser's fields are never read, and a whole _declaration_ that lost its name is
+not elaborated either: there is nowhere for any of it to land, and its fields
+would be read against the names the winners hold -- a `Foo` inside the second
+`datatype Foo` naming the first one's. It is an error case, and one report at
+the name is the whole of what can be said without inventing a reading. A `match`
+on a dropped case then says that name is no constructor of its datatype, which
+is a second report for one mistake and the right one -- that datatype really has
+no such case. A declaration that lost its _own_ name claims none of them, for
+the same reason one step up: its constructors would be types of a family the
+table does not have, writable because a type name is all it takes to write one,
+and inhabited by nothing because the cases behind them are refused. Two claim
+nothing and lose nothing by it. A constructor of its datatype's own name, where
+it is the only one: `datatype Box where | Box(Bool)` has one family and one case
+either way, so the two names are the same type. Beside a sibling it would be a
+strict subtype of the datatype above it, and one name would mean two types -- so
+the datatype keeps the name, and the case goes the way every held name's case
+goes. And a _bare_ name, which declares a value and so builds nothing -- there
+is no term that could have the type, and an uninhabitable type is worth no
 namespace entry.
 
 Which is why a declaration may not repeat a name is its own rule and not a
@@ -153,7 +159,7 @@ or a `Ref[List[A]]` could be `set!` a value the read side was promised could not
 arrive -- which is the whole of why `headsLattice` answers nothing at `0`.
 
 A constructor _application_ answers with the constructor's own type, which is
-what `resultEntryOf` decides, so `Cons(h, t)` is a `Cons` and rises only where
+what `typeClaimedBy` answers, so `Cons(h, t)` is a `Cons` and rises only where
 something asks it to. A constructor declared as a _value_ is outside that rule
 rather than excepted from it: `| True` builds nothing and is a member of `Bool`,
 where `| Nil()` is a function whose result is what it built -- so the

@@ -169,7 +169,7 @@ function ctorTypeOf(
     throw new Error(`no ${data}.${ctor}`);
   }
   return typeToString(constructorType(
-    fixture.declarations.datatypeBuiltBy(datatype, found),
+    fixture.declarations.typeClaimedBy(datatype, found) ?? datatype,
     found,
   ));
 }
@@ -362,7 +362,9 @@ Deno.test("two datatypes may not share a constructor name", () => {
       "  | On()",
     ].join("\n") + END,
   );
-  expect(fixture.messages()).toEqual(["type On is already declared"]);
+  expect(fixture.messages()).toEqual([
+    "constructor On is dropped: the type name On is already declared",
+  ]);
   expect(fixture.declarations.ctorOf("Flag", "On")).toBeDefined();
   // Keeps the name and the case with it: a `Switch` case under that name
   // would be the one constructor whose name is another family's type, which
@@ -410,7 +412,9 @@ Deno.test("one datatype may not have two constructors of a name", () => {
   const fixture = elaborated(
     ["datatype Flag where", "  | On()", "  | On()"].join("\n") + END,
   );
-  expect(fixture.messages()).toEqual(["constructor On is already declared"]);
+  expect(fixture.messages()).toEqual([
+    "constructor On is dropped: the declaration already has one of that name",
+  ]);
   expect(fixture.declarations.datatypeOf("Flag")?.ctors.length).toBe(1);
 
   // Including where the two were written in different forms, which is the
@@ -420,7 +424,9 @@ Deno.test("one datatype may not have two constructors of a name", () => {
     const mixed = elaborated(
       ["datatype Flag where", ...forms].join("\n") + END,
     );
-    expect(mixed.messages()).toEqual(["constructor On is already declared"]);
+    expect(mixed.messages()).toEqual([
+      "constructor On is dropped: the declaration already has one of that name",
+    ]);
     expect(mixed.declarations.datatypeOf("Flag")?.ctors.length).toBe(1);
   }
 });
@@ -444,8 +450,12 @@ Deno.test("a constructor beside others may not take its datatype's name", () => 
     ["datatype Box where", "  | Box()", "  | Empty()"].join("\n") + END,
   );
   expect(fixture.messages()).toEqual([
-    "constructor Box may take its datatype's name only where it is the only one",
+    "constructor Box is dropped: its datatype holds that name, and only a " +
+    "sole constructor may share it",
   ]);
+  // Dropped, like every other case whose name is somebody else's.
+  expect(fixture.declarations.ctorOf("Box", "Box")).toBeUndefined();
+  expect(fixture.declarations.ctorOf("Box", "Empty")).toBeDefined();
 });
 
 Deno.test("a constructor's name is a type of its family's arity", () => {
@@ -698,5 +708,8 @@ Deno.test("a dropped duplicate takes its fields, so no phantom either", () => {
     "datatype Tag[A] where",
     "  | Tagged(Bool)",
     "  | Tagged(A)",
-  )).toEqual(["error: constructor Tagged is already declared"]);
+  )).toEqual([
+    "error: constructor Tagged is dropped: the declaration already " +
+    "has one of that name",
+  ]);
 });
