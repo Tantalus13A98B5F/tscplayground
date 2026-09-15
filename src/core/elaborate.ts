@@ -318,19 +318,46 @@ export class Elaborator {
    * moves the way variance inference decides `List`'s argument moves. Its
    * single case is filled when the constructors are.
    *
-   * A constructor of its own datatype's name is the one name that claims
-   * nothing, and is refused where it would have to. See the loop.
+   * Two constructors claim nothing: one written as a bare name, and one of its
+   * own datatype's name -- which is refused where it would have to claim. See
+   * the loop.
    *
    * This is where a constructor name stops being private to its datatype. Two
    * datatypes may no longer each declare a `Nil`, and a duplicate within one
-   * declaration is refused by the same rule rather than by a check of its own
+   * declaration is refused by the same rule rather than by a check of its own.
+   * A bare name is private still, having claimed nothing, so its only rule is
+   * the declaration's own -- which is why this answers whether anything was
+   * refused
    * -- which is why the answer is whether anything was refused: that is a
    * report standing against the declaration, and the phase that measures them
    * runs after this one.
    */
   #claimCtorNames(decl: DatatypeDecl, info: DatatypeInfo): boolean {
     let reported = false;
+    const bare = new Set<string>();
     for (const ctor of decl.ctors) {
+      // A bare name claims no *type*. Either it declares a value, and a value
+      // builds nothing, so the type would be one no term could ever have -- or
+      // the datatype takes parameters and the form is refused, where a report
+      // already stands. One test for both, and which it was stays in
+      // `#reportValueCtor`, the phase that can answer it.
+      //
+      // The name is still taken within this declaration, which is the part
+      // that was never about types: two `| On` arms are one case written
+      // twice, and the second is dropped by the pass below.
+      if (ctor.params === undefined) {
+        if (!bare.has(ctor.name.text)) {
+          bare.add(ctor.name.text);
+          continue;
+        }
+        this.#report(
+          `constructor ${ctor.name.text} is already declared`,
+          ctor.name.at,
+          ctor.name.text.length,
+        );
+        reported = true;
+        continue;
+      }
       if (ctor.name.text === info.name) {
         // A sole constructor of its datatype's name is not a second type: the
         // two have the same family and the same one case, so they *are* the
@@ -479,15 +506,10 @@ export class Elaborator {
    * resolving against the scrutinee's own datatype.
    */
   seedConstructors(): void {
-    for (const datatype of this.declarations.datatypes()) {
-      for (const ctor of datatype.ctors) {
-        this.context.pushTermVar(
-          constructorType(
-            this.declarations.resultEntryOf(datatype, ctor),
-            ctor,
-          ),
-          ctor.name,
-        );
+    for (const family of this.declarations.datatypes()) {
+      for (const ctor of family.ctors) {
+        const built = this.declarations.datatypeBuiltBy(family, ctor);
+        this.context.pushTermVar(constructorType(built, ctor), ctor.name);
       }
     }
   }
@@ -546,7 +568,7 @@ export class Elaborator {
  * `Cons : [A](A, List[A]) -> Cons[A]`, and `True : Bool`.
  *
  * The result is built from the `datatype` it is handed, which is the caller's
- * choice of what this constructor answers with -- `Declarations.resultEntryOf`
+ * choice of what this constructor answers with -- `Declarations.datatypeBuiltBy`
  * makes it, and the parameters are the family's either way.
  *
  * Derived rather than stored, so a constructor's function type and the field

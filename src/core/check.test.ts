@@ -28,9 +28,9 @@ function typeOf(...lines: readonly string[]): string {
 const BOOL = ["datatype Bool where", "  | True", "  | False"];
 const LIST = ["datatype List[A] where", "  | Nil()", "  | Cons(A, List[A])"];
 /** Invariant, `A` standing both ways in the one field. */
-const CELL = ["datatype Cell[A] where", "  | MkCell((A) -> A)"];
+const CELL = ["datatype Cell[A] where", "  | Cell((A) -> A)"];
 /** Contravariant, and the only shape that gets there. */
-const SINK = ["datatype Sink[A] where", "  | MkSink((A) -> Bool)"];
+const SINK = ["datatype Sink[A] where", "  | Sink((A) -> Bool)"];
 
 Deno.test("a constructor's name is a type below its family", () => {
   // Derived, not declared: nothing here says so, and the coercion is the
@@ -142,17 +142,17 @@ Deno.test("an arm the scrutinee's type excludes is unreachable, not unknown", ()
     ).slice(1),
   ).toEqual(["Nope is not a constructor of List"]);
 
-  // And the two are not the same report. An arm the *arms above it* cover is
-  // a mistake in a list its author wrote; an arm the scrutinee's type excludes
-  // is a fact about a type inference chose, so refusing the program for it
-  // would charge the author for the checker's precision.
+  // Both are errors, though the second is a fact about a type the checker
+  // chose rather than a mistake in the arms. Two severities was tried and
+  // dropped: a prototype's diagnostics are worth less than the branch they
+  // cost, and an arm no value reaches is worth saying either way.
   expect(severities(
     ...BOOL,
     ...LIST,
     "fn (c: Cons[Bool]) -> match c with",
     "  | Cons(h, t) -> h",
     "  | Nil() -> True",
-  )).toEqual(["warning"]);
+  )).toEqual(["error"]);
   expect(severities(
     ...BOOL,
     ...LIST,
@@ -507,7 +507,7 @@ Deno.test("an expected type reaches an inner call's type argument", () => {
   // its first type argument stays unconstrained and the call fails.
   const [type, ...messages] = run(
     "datatype Pair[A, B] where",
-    "  | MkPair((A) -> A, B)",
+    "  | Both((A) -> A, B)",
     "  | NoPair()",
     ...BOOL,
     "let outer = fn [B](p: Pair[Bool, B]) -> p;",
@@ -641,11 +641,11 @@ Deno.test("a name in a domain is documentation and reaches no type", () => {
   expect(
     typeOf(
       "datatype Box where",
-      "  | MkBox(flag: Bool, Bool)",
+      "  | Box(flag: Bool, Bool)",
       ...BOOL,
-      "MkBox",
+      "Box",
     ),
-  ).toBe("(Bool, Bool) -> MkBox");
+  ).toBe("(Bool, Bool) -> Box");
 
   // And it binds nothing: `x` scopes over nothing until a dependent arrow has
   // something to bind it to.
@@ -694,7 +694,7 @@ Deno.test("Ref is a name, so it obeys the rules every type name obeys", () => {
   // Seeded as a transparent alias for the former rather than spelled in the
   // grammar, so none of these is a rule of its own -- each is the message the
   // machinery already had for a `Pair` or a `List`.
-  expect(run(...BOOL, "datatype Ref[A] where", "  | MkRef(A)", "True")[1])
+  expect(run(...BOOL, "datatype Ref[A] where", "  | Ref(A)", "True")[1])
     .toBe("type Ref is already declared");
   expect(run(...BOOL, "typedef Ref = Bool", "True")[1])
     .toBe("type Ref is already declared");

@@ -2,7 +2,15 @@ This is a prototype checker for a Fsub-like language, written in TypeScript. We
 follow an ML-like, indent-based syntax, but use local type inference. Ignore
 `legacy/`. Keep comments brief. Don't have to document every error case we've
 been through. Be care of naming: avoid generic names; "operation + target" is
-often better.
+often better. A constructor is named for what it builds, not `MkFoo`; where it
+is a datatype's only one, that is the datatype's own name.
+
+This is for teaching and for research, so a coarser diagnostic is a fair price
+for simpler code. Where a distinction would buy a better message and cost a
+branch, a flag or a second path through a rule, the message loses -- say the one
+thing, in the one place, and let the reader of the code see why. What a report
+may _claim_ is a separate matter and is not negotiable: a coarse report is fine,
+a wrong one is not.
 
 Pipeline: require walk (`#require "path"`, textual and flat) -> lexer -> layout
 (insert scope markers, semicolons) -> parser -> elaborate -> check -> evaluate.
@@ -89,11 +97,14 @@ owner's _own_ parameter array, so arity and variance are the family's and
 nothing is kept in step, and one case, filled when the constructors are. So
 constructor names share the type namespace -- two datatypes may no longer each
 declare a `Nil`, and a duplicate within one declaration is refused by that same
-rule. The exception is a constructor of its datatype's own name, which claims
-nothing where it is the only one: `datatype Box where | Box(Bool)` has one
-family and one case either way, so the two names are the same type. Beside a
-sibling it would be a strict subtype of the datatype above it, and one name
-would mean two types, so it is refused.
+rule. Two claim nothing. A constructor of its datatype's own name, where it is
+the only one: `datatype Box where | Box(Bool)` has one family and one case
+either way, so the two names are the same type; beside a sibling it would be a
+strict subtype of the datatype above it, and one name would mean two types, so
+it is refused. And a _bare_ name, which declares a value and so builds nothing
+-- there is no term that could have the type, and an uninhabitable type is worth
+no namespace entry. A bare name is still taken within its own declaration, two
+`| On` arms being one case written twice.
 
 Every head carries its _family_, the datatype whose constructors its values are
 among, and a datatype is its own -- reflexive rather than optional, so "the same
@@ -129,25 +140,23 @@ where `| Nil()` is a function whose result is what it built -- so the
 declaration is where a monomorphic datatype says whether its nullary cases are
 members or singletons. A _sole_ constructor is not an exception either, and
 answers with itself like any other: its type admits exactly what its family
-does, but collapsing the two would leave nothing inhabiting `MkPair`, and a
-one-constructor datatype is how a nominal subtype of one thing gets written. A
-type argument solved from below is _not_ widened to match: a solution that
-survived a `let` and not a call would be most of the precision gone, and the
-ascription a staged argument then wants is `foldLeft(Nil)`'s. `docs/clti.md` has
-that argument.
+does, but collapsing the two would leave nothing inhabiting the constructor, and
+a one-constructor datatype is how a nominal subtype of one thing gets written --
+so the library writes `| Pair(A, B)` where it means them to be one type, rather
+than minting a `MkPair` for the checker to hand back. A type argument solved
+from below is _not_ widened to match: a solution that survived a `let` and not a
+call would be most of the precision gone, and the ascription a staged argument
+then wants is `foldLeft(Nil)`'s. `docs/clti.md` has that argument.
 
 A pattern name therefore fails two ways, and they are different reports.
 `#checkMatch` keeps what the scrutinee's type _admits_ beside what the arms have
 _left_: a name the family does not have is a name error, said against the
 family, and a name the type excludes is unreachability, said about the type
-rather than blamed on the name. The first two are errors and the last a
-_warning_ -- an arm the arms above it cover is a mistake in a list its author
-wrote, where an arm the scrutinee's type excludes is a fact about a type
-inference chose, and refusing the program for it would charge the author for the
-checker's precision.
+rather than blamed on the name. Both are errors: a warning for the second was
+tried and dropped, for the reason below.
 
 A domain position -- an arrow's parameter, or a constructor's field -- may carry
-a name: `(x: A, B) -> C`, `| MkBox(flag: Bool, Bool)`. One syntax, so one rule,
+a name: `(x: A, B) -> C`, `| Box(flag: Bool, Bool)`. One syntax, so one rule,
 and the rule is that the name is documentation: dropped at elaboration, scoping
 over nothing until a dependent arrow gives it something to bind. See
 `DomainType`.

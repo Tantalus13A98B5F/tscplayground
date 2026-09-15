@@ -242,26 +242,27 @@ export class Declarations {
   }
 
   /**
-   * The entry a constructor's *own* name reaches, which is the type its
-   * applications answer with: `Cons(h, t)` is a `Cons`, and rises to the
-   * family only where something asks it to.
+   * The datatype a constructor *builds*, which is the type its applications
+   * answer with: `Cons(h, t)` is a `Cons`, and rises to the family only where
+   * something asks it to.
    *
-   * An *application*, so a constructor declared as a value is outside the rule
-   * rather than excepted from it: `| True` declares a member of `Bool` and
-   * builds nothing, where `| Nil()` is a function whose result is what it
-   * built. It is also the reading that keeps the common types readable -- a
-   * `fn (a, b) -> True` answers `(Bool, Bool) -> Bool`, and a `match` on a
-   * literal does not call its other arms unreachable.
+   * Builds, so a constructor declared as a value is outside the rule rather
+   * than excepted from it: `| True` declares a member of `Bool` and builds
+   * nothing. Nothing here has to say so -- a bare name claims no type, an
+   * uninhabitable one being worth no namespace entry, so the lookup finds
+   * nothing and the family answers. That is also what keeps the common types
+   * readable: a `fn (a, b) -> True` answers `(Bool, Bool) -> Bool`.
    *
    * A sole constructor is *not* an exception, though its type admits exactly
    * what its family does: collapsing it would leave nothing that inhabits
-   * `MkPair`, and a one-constructor datatype is how a nominal subtype of one
-   * thing gets written. The family only where the constructor's name went to
-   * another declaration and was refused -- a report already stands, and the
-   * family is the type the constructor would have had.
+   * `Pair`'s constructor, and a one-constructor datatype is how a nominal
+   * subtype of one thing gets written -- so the library writes `| Pair(A, B)`
+   * where it means the two to be one type. The family answers in one more
+   * case, where the constructor's name went to another declaration and was
+   * refused: a report already stands, and the family is the type the
+   * constructor would have had.
    */
-  resultEntryOf(family: DatatypeInfo, ctor: DataCtorInfo): DatatypeInfo {
-    if (ctor.isValue) return family;
+  datatypeBuiltBy(family: DatatypeInfo, ctor: DataCtorInfo): DatatypeInfo {
     const own = this.#datatypes.get(ctor.name);
     return own?.family === family.name ? own : family;
   }

@@ -114,7 +114,7 @@ Deno.test("an alias may not name one declared after it", () => {
 
 Deno.test("a datatype elaborates to a saturated constructor", () => {
   const fixture = elaborated(
-    "datatype Pair[A, B] where\n  | MkPair(A, B)" + END,
+    "datatype Pair[A, B] where\n  | Pair(A, B)" + END,
   );
   expect(fixture.messages()).toEqual([]);
   expect(fixture.show("Pair[unknown, never]")).toBe("Pair[unknown, never]");
@@ -122,10 +122,10 @@ Deno.test("a datatype elaborates to a saturated constructor", () => {
 
 Deno.test("a constructor's function type quantifies over the datatype", () => {
   const fixture = elaborated(
-    "datatype Pair[A, B] where\n  | MkPair(A, B)" + END,
+    "datatype Pair[A, B] where\n  | Pair(A, B)" + END,
   );
   const pair = fixture.declarations.datatypeOf("Pair");
-  const ctor = fixture.declarations.ctorOf("Pair", "MkPair");
+  const ctor = fixture.declarations.ctorOf("Pair", "Pair");
   if (pair === undefined || ctor === undefined) throw new Error("no Pair");
   // The entry it is given is the head it builds, which is `seedConstructors`'
   // choice and not this function's -- here, the family.
@@ -149,7 +149,7 @@ Deno.test("a constructor field may name a datatype declared later", () => {
   const fixture = elaborated(
     [
       "datatype Wrap[A] where",
-      "  | MkWrap(A, Flag)",
+      "  | Wrap(A, Flag)",
       "datatype Flag where",
       "  | On",
     ].join("\n") + END,
@@ -169,7 +169,7 @@ function ctorTypeOf(
     throw new Error(`no ${data}.${ctor}`);
   }
   return typeToString(constructorType(
-    fixture.declarations.resultEntryOf(datatype, found),
+    fixture.declarations.datatypeBuiltBy(datatype, found),
     found,
   ));
 }
@@ -210,20 +210,22 @@ Deno.test("a value constructor of a polymorphic datatype is refused", () => {
   ]);
   // Recovered as the function it would have been, so the report is the whole
   // of what goes wrong: nothing downstream sees a second thing about `Nil`.
-  expect(ctorTypeOf(fixture, "List", "Nil")).toBe("[A]() -> Nil[A]");
+  // It answers with the family, a bare name having claimed no type of its own
+  // -- which is the recovery too, there being no `Nil[A]` to answer with.
+  expect(ctorTypeOf(fixture, "List", "Nil")).toBe("[A]() -> List[A]");
 });
 
 Deno.test("seedConstructors binds every constructor as a term", () => {
   const fixture = elaborated(
-    "datatype Pair[A, B] where\n  | MkPair(A, B)" + END,
+    "datatype Pair[A, B] where\n  | Pair(A, B)" + END,
   );
   fixture.elaborator.seedConstructors();
-  const bound = fixture.context.lookupTerm("MkPair");
+  const bound = fixture.context.lookupTerm("Pair");
   expect(bound).toBeDefined();
   expect(typeToString(bound?.entry.type ?? never())).toBe(
-    "[A, B](A, B) -> MkPair[A, B]",
+    "[A, B](A, B) -> Pair[A, B]",
   );
-  expect(fixture.context.lookupTerm("MkTriple")).toBeUndefined();
+  expect(fixture.context.lookupTerm("Triple")).toBeUndefined();
 });
 
 function never(): never {
@@ -272,7 +274,7 @@ Deno.test("a bound may not name a member of its own group", () => {
 
 Deno.test("a datatype used at the wrong arity is reported", () => {
   const fixture = elaborated(
-    "datatype Pair[A, B] where\n  | MkPair(A, B)" + END,
+    "datatype Pair[A, B] where\n  | Pair(A, B)" + END,
   );
   expect(fixture.show("Pair[unknown]")).toBe("<bad>");
   expect(fixture.messages()).toEqual([
@@ -351,24 +353,47 @@ Deno.test("two datatypes may not share a constructor name", () => {
   const fixture = elaborated(
     [
       "datatype Flag where",
-      "  | On",
+      "  | On()",
       "datatype Switch where",
-      "  | On",
+      "  | On()",
     ].join("\n") + END,
   );
   expect(fixture.messages()).toEqual(["type On is already declared"]);
   expect(fixture.declarations.ctorOf("Flag", "On")).toBeDefined();
   expect(fixture.declarations.ctorOf("Switch", "On")).toBeDefined();
+
+  // A bare name is the exception, and claims nothing to collide with: it
+  // declares a *value*, which builds nothing, so there is no type of that name
+  // for a second declaration to want. The terms shadow, as terms do.
+  const bare = elaborated(
+    [
+      "datatype Flag where",
+      "  | On",
+      "datatype Switch where",
+      "  | On",
+    ].join("\n") + END,
+  );
+  expect(bare.messages()).toEqual([]);
+  expect(bare.declarations.datatypeOf("On")).toBeUndefined();
 });
 
 Deno.test("one datatype may not have two constructors of a name", () => {
   // The same rule and not one of its own: the second `On` is refused where
   // every other repeated type name is, which is why it reads that way.
   const fixture = elaborated(
-    ["datatype Flag where", "  | On", "  | On"].join("\n") + END,
+    ["datatype Flag where", "  | On()", "  | On()"].join("\n") + END,
   );
   expect(fixture.messages()).toEqual(["type On is already declared"]);
   expect(fixture.declarations.datatypeOf("Flag")?.ctors.length).toBe(1);
+
+  // A bare name took no type, but it did take the name *here* -- two `| On`
+  // arms are one case written twice however little the type namespace hears
+  // about it, so the declaration keeps that much of the rule to itself.
+  const bare = elaborated(
+    ["datatype Flag where", "  | On", "  | On"].join("\n") + END,
+  );
+  expect(bare.messages()).toEqual(["constructor On is already declared"]);
+  expect(bare.declarations.datatypeOf("Flag")?.ctors.length).toBe(1);
 });
 
 Deno.test("a sole constructor may take its datatype's name", () => {
@@ -467,11 +492,11 @@ Deno.test("a field puts its parameter where it stands", () => {
   expect(variancesOf(
     ...BOOL,
     "datatype Box[A] where",
-    "  | MkBox(A)",
+    "  | Box(A)",
     "datatype Sink[A] where",
-    "  | MkSink((A) -> Bool)",
+    "  | Sink((A) -> Bool)",
     "datatype Cell[A] where",
-    "  | MkCell((A) -> A)",
+    "  | Cell((A) -> A)",
   )).toEqual(["Box[+A]", "Sink[-A]", "Cell[=A]"]);
 });
 
@@ -481,7 +506,7 @@ Deno.test("a field is entered covariantly, so a result is not flipped", () => {
   expect(variancesOf(
     ...BOOL,
     "datatype Source[A] where",
-    "  | MkSource((Bool) -> A)",
+    "  | Source((Bool) -> A)",
   )).toEqual(["Source[+A]"]);
 });
 
@@ -489,7 +514,7 @@ Deno.test("a bound is contravariant, like a parameter", () => {
   expect(variancesOf(
     ...BOOL,
     "datatype Lower[A] where",
-    "  | MkLower([B <: A](B) -> Bool)",
+    "  | Lower([B <: A](B) -> Bool)",
   )).toEqual(["Lower[-A]"]);
 });
 
@@ -499,13 +524,13 @@ Deno.test("a datatype argument composes rather than merging", () => {
   expect(variancesOf(
     ...BOOL,
     "datatype Sink[A] where",
-    "  | MkSink((A) -> Bool)",
+    "  | Sink((A) -> Bool)",
     "datatype Cell[A] where",
-    "  | MkCell((A) -> A)",
+    "  | Cell((A) -> A)",
     "datatype Twice[A] where",
-    "  | MkTwice(Sink[Sink[A]])",
+    "  | Twice(Sink[Sink[A]])",
     "datatype Once[A] where",
-    "  | MkOnce(Sink[Cell[A]])",
+    "  | Once(Sink[Cell[A]])",
   )).toEqual(["Sink[-A]", "Cell[=A]", "Twice[+A]", "Once[=A]"]);
 });
 
@@ -602,7 +627,7 @@ Deno.test("a phantom is reported once, at the parameter", () => {
   expect(saidOf(
     ...BOOL,
     "datatype Tag[A] where",
-    "  | MkTag(Bool)",
+    "  | Tagged(Bool)",
   )).toEqual([
     "warning: nothing observes the type parameter A of Tag, so it makes no " +
     "difference to the type; write it `_` if that is meant",
@@ -613,7 +638,7 @@ Deno.test("a wildcard parameter is deliberate, so it is not reported", () => {
   expect(saidOf(
     ...BOOL,
     "datatype Tag[_] where",
-    "  | MkTag(Bool)",
+    "  | Tagged(Bool)",
   )).toEqual([]);
 });
 
@@ -623,7 +648,7 @@ Deno.test("a datatype with a bad field is not also blamed for a phantom", () => 
   expect(saidOf(
     ...BOOL,
     "datatype Tag[A] where",
-    "  | MkTag(Nosuchtype)",
+    "  | Tagged(Nosuchtype)",
   )).toEqual(["error: unknown type Nosuchtype"]);
 
   // However deep the bad type sits, and under whatever kind. Asking the
@@ -632,17 +657,17 @@ Deno.test("a datatype with a bad field is not also blamed for a phantom", () => 
   expect(saidOf(
     ...BOOL,
     "datatype Tag[A] where",
-    "  | MkTag(Ref[Nosuchtype[A]])",
+    "  | Tagged(Ref[Nosuchtype[A]])",
   )).toEqual(["error: unknown type Nosuchtype"]);
 });
 
 Deno.test("a dropped duplicate takes its fields, so no phantom either", () => {
-  // The second `MkTag` is refused, and with it the only occurrence of `A`.
+  // The second `Tagged` is refused, and with it the only occurrence of `A`.
   // The parameter is not what went wrong there either.
   expect(saidOf(
     ...BOOL,
     "datatype Tag[A] where",
-    "  | MkTag(Bool)",
-    "  | MkTag(A)",
-  )).toEqual(["error: type MkTag is already declared"]);
+    "  | Tagged(Bool)",
+    "  | Tagged(A)",
+  )).toEqual(["error: type Tagged is already declared"]);
 });

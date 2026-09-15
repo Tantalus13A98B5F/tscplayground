@@ -203,10 +203,10 @@ export type MatchPat =
   };
 
 /**
- * `datatype Pair[A, B] = | MkPair(A, B)`, top-level only -- `exp` has no
+ * `datatype Pair[A, B] = | Pair(A, B)`, top-level only -- `exp` has no
  * `datatype` case, so that holds by absence rather than by a check.
  *
- * Contributes *term bindings* (`MkPair : [A, B](A, B) -> MkPair[A, B]`), so there
+ * Contributes *term bindings* (`Pair : [A, B](A, B) -> Pair[A, B]`), so there
  * is no constructor term form and saturation follows from function arity.
  * Unscoped: every constructor is seeded before the first `let` is elaborated.
  */

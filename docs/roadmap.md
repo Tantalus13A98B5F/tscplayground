@@ -165,10 +165,13 @@ binding. Both anticipated consequences arrived. `#latticeData` is on the
 critical path, and now asks `headsLattice` which head stands between two --
 upward, one family's constructors rise to it; downward there is nothing to
 build, the constructors partitioning the family's values, so all that can be
-answered is the one already below the other. And an arm the _scrutinee's type_
-excludes is now a warning, where an arm covered by the arms above it stays an
-error: the first is a fact about a type the checker chose, the second a mistake
-in a list its author wrote.
+answered is the one already below the other. The second consequence was supposed
+to be a severity: an arm the _scrutinee's type_ excludes is a fact about a type
+the checker chose, where an arm covered by the arms above it is a mistake in a
+list its author wrote, so the first would warn and the second report. It was
+written and then taken out. Both are errors, and the arm is dead either way; a
+prototype for teaching does not buy a branch, a two-field record and a second
+reporting path with a distinction that changes no program.
 
 Two questions were not anticipated, and both are about which types are worth
 minting. Only the first turned into a rule.
@@ -184,11 +187,20 @@ arms unreachable. The escape hatch is the declaration rather than a second
 spelling at the use site: `| True()` is the function form, and its applications
 answer `True`.
 
+It follows that a bare name claims no type either, and that is where the rule
+pays for itself: nothing can have the type `True`, so the entry was a name taken
+out of the shared namespace for no reader's benefit. Two datatypes may each
+declare a `| True` again. Within one declaration the name is still taken, two
+`| On` arms being one case written twice, and that report moved to the phase
+that claims the names rather than growing a home of its own.
+
 A **sole** constructor was collapsed to its family for a while, on the grounds
-that the two admit the same values and `MkPair(a, b)` reads better as a `Pair`.
-That was wrong, and the reason is what a one-constructor datatype is _for_: it
-is how a nominal subtype of one thing gets written, and collapsing the
-constructor leaves nothing that inhabits `MkPair` at all.
+that the two admit the same values and the library's `MkPair(a, b)` read better
+as a `Pair`. That was wrong twice over. A one-constructor datatype is how a
+nominal subtype of one thing gets written, and collapsing the constructor leaves
+nothing that inhabits it -- and the library's complaint was really about the
+_name_, which it now spells `| Pair(A, B)`, a sole constructor being free to
+take its datatype's own.
 
 A type argument is **not** widened when it is solved from below, and that was
 the closest call of the three. A batch closes at the end of the list its
@@ -270,7 +282,7 @@ single EVar exists, and nothing inside a batch's body calls a lattice operation,
 so the case is unreachable by construction rather than by luck. The invariant is
 `withEVars`'s to state and `#applyCall`'s to keep.
 
-**Optional names in a domain.** `(x: A, B) -> C` and `| MkBox(flag: Bool, Bool)`
+**Optional names in a domain.** `(x: A, B) -> C` and `| Box(flag: Bool, Bool)`
 parse, an arrow's parameters and a constructor's fields being one syntax and so
 one rule. The name is documentation: dropped at elaboration, so a named arrow
 and a bare one are the same type and a name can never decide an equality, a cast
