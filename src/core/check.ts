@@ -607,10 +607,10 @@ export class Checker {
    * because the join is above every arm and the coercion only goes further up.
    *
    * `remaining` is the whole of the analysis: what a value could still be on
-   * reaching the arm being checked. It is seeded from the scrutinee's *type*
-   * rather than from the declaration its name reaches -- the same set today,
-   * and the one that narrows first when a type can say which constructors it
-   * admits. One-level patterns keep it a set of constructor names, and every question a *list* of arms raises is a
+   * reaching the arm being checked, seeded from the scrutinee's *type* rather
+   * than from the declaration its name reaches, so a `Cons[A]` needs one arm
+   * where a `List[A]` needs both. One-level patterns keep it a set of
+   * constructor names, and every question a *list* of arms raises is a
    * question about that set -- an arm is unreachable when nothing it matches
    * is left in it, and the arms are exhaustive when it is empty at the end.
    * Each is about an arm against the ones before it, which is what an arm
@@ -624,14 +624,7 @@ export class Checker {
     if (scrutinee.kind !== "TData") {
       return this.#checkUnmatchable(term, scrutinee, expected);
     }
-    // Two sets, because a pattern name can now fail two ways. `admits` is what
-    // the scrutinee's type allows at all and never shrinks; `remaining` is
-    // what is left after the arms above. A name in neither is no constructor,
-    // a name in the first but not the second is covered above, and a name the
-    // family has but the type excludes is unreachable for a third reason --
-    // which is a fact about the type and not a mistake about the name.
-    const admits = new Set(this.declarations.casesOf(scrutinee));
-    const remaining = new Set(admits);
+    const remaining = new Set(this.declarations.casesOf(scrutinee));
 
     const types: Type[] = [];
     for (const arm of term.arms) {
@@ -656,8 +649,11 @@ export class Checker {
         // been taken out, and reporting it as matched above -- which
         // `#armBinderTypes` is about to report as no constructor at all --
         // would blame the author twice for one thing.
+        // Which of the two it was, asked of the type rather than of what is
+        // left: a name this type never admitted is unreachable for a reason
+        // the arms above it had no part in.
         if (ctor !== undefined && !remaining.delete(name)) {
-          dead = admits.has(name)
+          dead = this.declarations.casesOf(scrutinee).includes(name)
             ? `${name} is matched above`
             : `no ${typeToString(scrutinee)} is a ${name}`;
         }
