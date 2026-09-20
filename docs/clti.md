@@ -317,7 +317,7 @@ it saves three ascriptions across the corpus.
 
 It was dropped because of what it does everywhere else. `id(Cons(x, xs))` would
 answer `List`, so the principal type would survive a `let` and not a call, and
-the one thing that item 2's last step promised -- that a constructor's own type
+the one thing _Constructors as types_ promised -- that a constructor's own type
 is what inference returns -- would hold only until a polymorphic function was in
 the way. The precision is worth more than the three ascriptions, and the
 ascriptions are ordinary: this is `foldLeft(Nil)` in Scala, which has always
@@ -345,8 +345,8 @@ So a bare lambda is what closes a batch early in both designs. We close one per
 list, which is a coarser cut at the same place and for the same reason, and the
 list boundary is where an author can see it. Widening the answer was a way of
 paying for that cut with imprecision everywhere; the cut described in the
-roadmap's item 3 is the way of making it later and narrower, and it is where
-this pressure should go.
+roadmap's _Batching one parameter list_ is the way of making it later and
+narrower, and it is where this pressure should go.
 
 ## Who says what went wrong
 
@@ -513,8 +513,8 @@ that keeps the invariant is to solve the batch _before_ any context-sensitive
 argument is checked, and check those against what came out -- best effort, no
 second solve, no live batch during an argument. Which is a cut in the list
 rather than a deferral within it: one list, several batches, `withEVars` still
-owning each alone. `docs/roadmap.md` item 3 is what that would take, and where
-the cut would fall.
+owning each alone. `docs/roadmap.md`'s _Batching one parameter list_ is what
+that would take, and where the cut would fall.
 
 ### Recursion, and a rule that was rejected
 

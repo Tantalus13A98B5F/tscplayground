@@ -70,6 +70,33 @@ Deno.test("a program is a chain of bindings ending in one expression", () => {
   expect(bindings(program.term)).toEqual(["x", "y"]);
 });
 
+Deno.test("a destructuring `let` is one arm over what follows it", () => {
+  const program = clean("let Pair(x, y) = p\nx\n");
+  expect(program.term.kind).toBe("Match");
+  const match = program.term.kind === "Match" ? program.term : undefined;
+  expect(match?.scrutinee.kind).toBe("Var");
+  expect(match?.arms.length).toBe(1);
+  const pattern = match?.arms[0]?.pattern;
+  expect(pattern?.kind === "PCtor" && pattern.name.text).toBe("Pair");
+  expect(pattern?.kind === "PCtor" && pattern.args.map(bindingHint))
+    .toEqual(["x", "y"]);
+  // The rest of the block is the arm's body, which is what makes the binders
+  // scope over it.
+  expect(match?.arms[0]?.body.kind).toBe("Var");
+});
+
+Deno.test("a `(` is what tells a pattern from a name", () => {
+  // `let nil = e` binds, whatever `nil` may be declared as elsewhere.
+  expect(bindings(clean("let nil = e\nnil\n").term)).toEqual(["nil"]);
+  expect(clean("let Nil = e\nNil\n").term.kind).toBe("Let");
+});
+
+Deno.test("a destructuring `let` takes no annotation", () => {
+  expect(parse("let Pair(x, y) : T = p\nx\n")).toEqual([
+    "expected `=` -- a destructuring `let` takes no annotation, found `:`",
+  ]);
+});
+
 Deno.test("`;` and a new line are the same separator", () => {
   expect(bindings(clean("let x = a; let y = b; x").term)).toEqual(["x", "y"]);
 });

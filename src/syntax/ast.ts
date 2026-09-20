@@ -276,6 +276,17 @@ export type DefItem = {
   readonly bound: Extract<TermNode, { kind: "Abs" }>;
   readonly at: Position;
 };
+/**
+ * `let Pair(x, y) = e`: a `Match` short of its body, the way `LetItem` is a
+ * `Let` short of one. The arm is the block that follows, so the sugar is a
+ * fold in the parser and nothing downstream knows it was written this way.
+ */
+export type DestructureItem = {
+  readonly pattern: MatchPat;
+  readonly bound: TermNode;
+  readonly at: Position;
+};
+
 export type LetItem = {
   readonly name: BindingIdent;
   readonly annotation?: TypeNode;

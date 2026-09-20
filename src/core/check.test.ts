@@ -109,7 +109,43 @@ Deno.test("the scrutinee's type says which arms it needs", () => {
       "fn (xs: List[Bool]) -> match xs with",
       "  | Cons(h, t) -> h",
     )[1],
-  ).toBe("match is not exhaustive: Nil not covered");
+  ).toBe("not exhaustive: Nil not covered");
+});
+
+const PAIR = ["datatype Pair[A, B] where", "  | Pair(A, B)"];
+
+Deno.test("a destructuring `let` is total where the type says it is", () => {
+  // The sugar's whole case: a sole constructor is the scrutinee's own type,
+  // so nothing is left uncovered and the form says nothing.
+  expect(typeOf(
+    ...BOOL,
+    ...PAIR,
+    "let Pair(x, y) = Pair(True, False);",
+    "x",
+  )).toBe("Bool");
+
+  // And a constructor of a family with siblings is total too, where that is
+  // the type inferred for what it takes apart.
+  expect(typeOf(
+    ...BOOL,
+    ...LIST,
+    "let Cons(h, t) = Cons(True, Nil());",
+    "h",
+  )).toBe("Bool");
+});
+
+Deno.test("a destructuring `let` is partial against the family", () => {
+  // The report `#remaining` already produces, and it names no `match`: the
+  // author wrote none.
+  expect(
+    run(
+      ...BOOL,
+      ...LIST,
+      "let xs : List[Bool] = Nil[Bool]();",
+      "let Cons(h, t) = xs;",
+      "h",
+    ),
+  ).toEqual(["Bool", "not exhaustive: Nil not covered"]);
 });
 
 Deno.test("a pattern names a constructor of the scrutinee's own type", () => {
@@ -749,7 +785,7 @@ Deno.test("a match that misses a constructor is reported", () => {
     "match xs with",
     "  | Nil -> True",
   );
-  expect(messages).toEqual(["match is not exhaustive: Cons not covered"]);
+  expect(messages).toEqual(["not exhaustive: Cons not covered"]);
 });
 
 Deno.test("an arm no value reaches is reported, and does not join", () => {

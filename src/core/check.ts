@@ -662,8 +662,10 @@ export class Checker {
     }
 
     if (remaining.size > 0) {
+      // Not "this match": a destructuring `let` is one arm folded into a
+      // `Match` by the parser, and its author wrote no such word.
       this.#report(
-        `match is not exhaustive: ${[...remaining].join(", ")} not covered`,
+        `not exhaustive: ${[...remaining].join(", ")} not covered`,
         term.at,
       );
     }
