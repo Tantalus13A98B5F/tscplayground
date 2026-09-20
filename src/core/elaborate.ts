@@ -323,9 +323,7 @@ export class Elaborator {
    * this same run may mention `Cons[A]` exactly as it may mention `List[A]`.
    * The entry is a datatype in every respect but declaring one: its family is
    * the datatype above it, and its parameters are that declaration's *own
-   * array*, so `Cons[A]` is saturated by the arity `List` was written with and
-   * moves the way variance inference decides `List`'s argument moves. Its
-   * single case is filled when the constructors are.
+   * array*, so arity and variance are `List`'s and nothing is kept in step.
    */
   #settleCtorNames(
     decl: DatatypeDecl,

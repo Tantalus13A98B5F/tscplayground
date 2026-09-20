@@ -102,18 +102,16 @@ class FuelExhausted extends Error {
 const FUEL = 2000;
 
 /**
- * Whether a `from` conforms to a `to` at a position of `dir` -- may be answered
- * where the `to` is demanded. The one question two datatype heads raise, asked
- * by the relation and by the cast alike, and directional: at `-1` it is the
- * `to` that has to reach the `from`, the position having turned the demand
- * around.
+ * Whether a `from` conforms to a `to` at a position of `dir` -- may be
+ * answered where the `to` is demanded. The one question two datatype heads
+ * raise, asked by the relation and by the cast alike, and directional: at
+ * `-1` it is the `to` that has to reach the `from`, the position having
+ * turned the demand around.
  *
- * Nominal, so a head conforms to itself and to nothing else -- bar one derived
- * leaf, a constructor being below its family, `Cons[A] <: List[A]`. That leaf
- * is a hierarchy, and a hierarchy is where a relation and a join can come to
- * disagree, so this is not a second reading of it: the `from` conforms exactly
- * where the head `headsLattice` names between the two *is* the `to`. Nothing at
- * `0` follows from there rather than being written twice.
+ * Nominal, bar one derived leaf: a constructor is below its family,
+ * `Cons[A] <: List[A]`. A hierarchy is where a relation and a join can come
+ * to disagree, so this is not a second reading of it -- the `from` conforms
+ * exactly where the head `headsLattice` names between the two *is* the `to`.
  */
 function headConforms(from: DataHead, to: DataHead, dir: Variance): boolean {
   return headsLattice(from, to, dir)?.name === to.name;
@@ -122,10 +120,6 @@ function headConforms(from: DataHead, to: DataHead, dir: Variance): boolean {
 /**
  * The head above two heads, or below them, moving `dir` -- `undefined` where
  * the family leaves nothing to say and the caller's own extreme answers.
- *
- * Agreement is this with the answer pinned: `from` may be answered as `to`
- * exactly where the head between them *is* `to`, which is what keeps the
- * relation's leaf and the join from being two opinions about one hierarchy.
  *
  * Upward, two constructors of one family rise to that family, and a
  * constructor beside its own family rises to it -- both are `familyHead`,
@@ -504,10 +498,8 @@ export class Subtyper {
             composeVariance(dir, argVarianceOf(pattern, i)),
           )
         );
-        // Built on the *pattern's* head, which is the demanded type and so
-        // the answer: where the two are the same they carry the same name,
-        // family and parameters, and where a family was crossed the demand is
-        // what the cast moved to.
+        // The pattern's head, which is the demanded type and so the answer:
+        // where a family was crossed, the demand is what the cast moved to.
         return TData(pattern, args);
       }
 
@@ -724,11 +716,10 @@ export class Subtyper {
    * itself stands.
    *
    * `headConforms` is where the heads are compared, so the cast and the
-   * relation cross a family on the same terms. The coercion is the identity: a `Cons` value
-   * already *is* the `List` value, so nothing is built here that was not
-   * already there, and arity and variance are the family's throughout -- the
-   * parameters being shared by reference, the argument walk is the one it
-   * always was.
+   * relation cross a family on the same terms, and the coercion is the
+   * identity: a `Cons` value already *is* the `List` value. Arity and variance
+   * are the family's throughout, the parameters being shared by reference, so
+   * the argument walk is the one it always was.
    *
    * Which is why equivalence needs no case of its own: `0` absorbs, so asking
    * two datatypes to be the same asks it of every argument, and `headConforms`
