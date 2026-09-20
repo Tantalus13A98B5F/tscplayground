@@ -114,7 +114,7 @@ Deno.test("an alias may not name one declared after it", () => {
 
 Deno.test("a datatype elaborates to a saturated constructor", () => {
   const fixture = elaborated(
-    "datatype Pair[A, B] where\n  | MkPair(A, B)" + END,
+    "datatype Pair[A, B] where\n  | Pair(A, B)" + END,
   );
   expect(fixture.messages()).toEqual([]);
   expect(fixture.show("Pair[unknown, never]")).toBe("Pair[unknown, never]");
@@ -122,11 +122,13 @@ Deno.test("a datatype elaborates to a saturated constructor", () => {
 
 Deno.test("a constructor's function type quantifies over the datatype", () => {
   const fixture = elaborated(
-    "datatype Pair[A, B] where\n  | MkPair(A, B)" + END,
+    "datatype Pair[A, B] where\n  | Pair(A, B)" + END,
   );
   const pair = fixture.declarations.datatypeOf("Pair");
-  const ctor = fixture.declarations.ctorOf("Pair", "MkPair");
+  const ctor = fixture.declarations.ctorOf("Pair", "Pair");
   if (pair === undefined || ctor === undefined) throw new Error("no Pair");
+  // The entry it is given is the head it builds, which is `seedConstructors`'
+  // choice and not this function's -- here, the family.
   expect(typeToString(constructorType(pair, ctor)))
     .toBe("[A, B](A, B) -> Pair[A, B]");
 });
@@ -147,7 +149,7 @@ Deno.test("a constructor field may name a datatype declared later", () => {
   const fixture = elaborated(
     [
       "datatype Wrap[A] where",
-      "  | MkWrap(A, Flag)",
+      "  | Wrap(A, Flag)",
       "datatype Flag where",
       "  | On",
     ].join("\n") + END,
@@ -166,7 +168,10 @@ function ctorTypeOf(
   if (datatype === undefined || found === undefined) {
     throw new Error(`no ${data}.${ctor}`);
   }
-  return typeToString(constructorType(datatype, found));
+  return typeToString(constructorType(
+    fixture.declarations.typeClaimedBy(datatype, found) ?? datatype,
+    found,
+  ));
 }
 
 Deno.test("a bare constructor is a value, and a written `()` a function", () => {
@@ -175,8 +180,11 @@ Deno.test("a bare constructor is a value, and a written `()` a function", () => 
   // was meant.
   const fixture = elaborated("datatype Flag where\n  | On\n  | Off()" + END);
   expect(fixture.messages()).toEqual([]);
+  // And the form decides what a nullary constructor's term answers with: a
+  // value is a member of its family, where a function's result is what it
+  // built, so `| Off()` is how a monomorphic datatype gets a singleton.
   expect(ctorTypeOf(fixture, "Flag", "On")).toBe("Flag");
-  expect(ctorTypeOf(fixture, "Flag", "Off")).toBe("() -> Flag");
+  expect(ctorTypeOf(fixture, "Flag", "Off")).toBe("() -> Off");
 });
 
 Deno.test("a nullary constructor of a polymorphic datatype stays a function", () => {
@@ -186,7 +194,7 @@ Deno.test("a nullary constructor of a polymorphic datatype stays a function", ()
     "datatype List[A] where\n  | Nil()\n  | Cons(A, List[A])" + END,
   );
   expect(fixture.messages()).toEqual([]);
-  expect(ctorTypeOf(fixture, "List", "Nil")).toBe("[A]() -> List[A]");
+  expect(ctorTypeOf(fixture, "List", "Nil")).toBe("[A]() -> Nil[A]");
 });
 
 Deno.test("a value constructor of a polymorphic datatype is refused", () => {
@@ -202,20 +210,22 @@ Deno.test("a value constructor of a polymorphic datatype is refused", () => {
   ]);
   // Recovered as the function it would have been, so the report is the whole
   // of what goes wrong: nothing downstream sees a second thing about `Nil`.
+  // It answers with the family, a bare name having claimed no type of its own
+  // -- which is the recovery too, there being no `Nil[A]` to answer with.
   expect(ctorTypeOf(fixture, "List", "Nil")).toBe("[A]() -> List[A]");
 });
 
 Deno.test("seedConstructors binds every constructor as a term", () => {
   const fixture = elaborated(
-    "datatype Pair[A, B] where\n  | MkPair(A, B)" + END,
+    "datatype Pair[A, B] where\n  | Pair(A, B)" + END,
   );
   fixture.elaborator.seedConstructors();
-  const bound = fixture.context.lookupTerm("MkPair");
+  const bound = fixture.context.lookupTerm("Pair");
   expect(bound).toBeDefined();
   expect(typeToString(bound?.entry.type ?? never())).toBe(
     "[A, B](A, B) -> Pair[A, B]",
   );
-  expect(fixture.context.lookupTerm("MkTriple")).toBeUndefined();
+  expect(fixture.context.lookupTerm("Triple")).toBeUndefined();
 });
 
 function never(): never {
@@ -264,7 +274,7 @@ Deno.test("a bound may not name a member of its own group", () => {
 
 Deno.test("a datatype used at the wrong arity is reported", () => {
   const fixture = elaborated(
-    "datatype Pair[A, B] where\n  | MkPair(A, B)" + END,
+    "datatype Pair[A, B] where\n  | Pair(A, B)" + END,
   );
   expect(fixture.show("Pair[unknown]")).toBe("<bad>");
   expect(fixture.messages()).toEqual([
@@ -327,20 +337,45 @@ Deno.test("a redeclared datatype does not take the first one's constructors", ()
       "datatype Flag where",
       "  | On",
       "datatype Flag where",
-      "  | Off",
+      "  | Off()",
     ].join("\n") + END,
   );
   expect(fixture.messages()).toEqual(["type Flag is already declared"]);
   expect(fixture.declarations.ctorOf("Flag", "On")).toBeDefined();
   // The losing declaration is elaborated, so errors inside it are still
-  // reported, but `initCtors` refuses to hand its constructors to the name.
+  // reported, but `fillCtors` refuses to hand its constructors to the name.
   expect(fixture.declarations.ctorOf("Flag", "Off")).toBeUndefined();
+  // And it claims no names either, or `Off` would be a type of a family the
+  // table does not have: writable, since a type name is all it takes, and
+  // inhabited by nothing, since the case behind it was just refused.
+  expect(fixture.declarations.datatypeOf("Off")).toBeUndefined();
 });
 
-Deno.test("two datatypes may share a constructor name", () => {
-  // A pattern is resolved against the scrutinee's datatype, so each `On` is
-  // reachable and neither shadows the other.
+Deno.test("two datatypes may not share a constructor name", () => {
+  // A constructor name is a type name, so the two meet in the one namespace
+  // that no scope may shadow. The first declaration keeps it, as for any type.
   const fixture = elaborated(
+    [
+      "datatype Flag where",
+      "  | On()",
+      "datatype Switch where",
+      "  | On()",
+    ].join("\n") + END,
+  );
+  expect(fixture.messages()).toEqual([
+    "constructor On is dropped: the type name On is already declared",
+  ]);
+  expect(fixture.declarations.ctorOf("Flag", "On")).toBeDefined();
+  // Keeps the name and the case with it: a `Switch` case under that name
+  // would be the one constructor whose name is another family's type, which
+  // is no state the language has. So `On` means what it meant.
+  expect(fixture.declarations.ctorOf("Switch", "On")).toBeUndefined();
+  expect(ctorTypeOf(fixture, "Flag", "On")).toBe("() -> On");
+
+  // A bare name is the exception, and claims nothing to collide with: it
+  // declares a *value*, which builds nothing, so there is no type of that name
+  // for a second declaration to want. The terms shadow, as terms do.
+  const bare = elaborated(
     [
       "datatype Flag where",
       "  | On",
@@ -348,19 +383,93 @@ Deno.test("two datatypes may share a constructor name", () => {
       "  | On",
     ].join("\n") + END,
   );
+  expect(bare.messages()).toEqual([]);
+  expect(bare.declarations.datatypeOf("On")).toBeUndefined();
+  expect(bare.declarations.ctorOf("Switch", "On")).toBeDefined();
+});
+
+Deno.test("a bare name keeps its case where a datatype holds its name", () => {
+  // The one place a constructor's name reaches an entry that is not its
+  // family's: nothing was claimed, so nothing was refused, and the case
+  // stands. It builds the family, as every value constructor does -- and not
+  // the `True` standing under its name, which is somebody else's datatype.
+  const fixture = elaborated(
+    [
+      "datatype True where",
+      "  | Yes()",
+      "datatype Bool where",
+      "  | True",
+      "  | False",
+    ].join("\n") + END,
+  );
   expect(fixture.messages()).toEqual([]);
-  expect(fixture.declarations.ctorOf("Flag", "On")).toBeDefined();
-  expect(fixture.declarations.ctorOf("Switch", "On")).toBeDefined();
+  expect(ctorTypeOf(fixture, "Bool", "True")).toBe("Bool");
 });
 
 Deno.test("one datatype may not have two constructors of a name", () => {
+  // Its own rule, and it has to be: a constructor name reaches the type
+  // namespace only where it claims a type, and half of them no longer do.
   const fixture = elaborated(
-    ["datatype Flag where", "  | On", "  | On"].join("\n") + END,
+    ["datatype Flag where", "  | On()", "  | On()"].join("\n") + END,
   );
   expect(fixture.messages()).toEqual([
-    "datatype Flag already has a constructor On",
+    "constructor On is dropped: the declaration already has one of that name",
   ]);
   expect(fixture.declarations.datatypeOf("Flag")?.ctors.length).toBe(1);
+
+  // Including where the two were written in different forms, which is the
+  // case a rule about type names would have let through -- `| On` claims
+  // nothing for `| On()` to collide with.
+  for (const forms of [["  | On", "  | On()"], ["  | On()", "  | On"]]) {
+    const mixed = elaborated(
+      ["datatype Flag where", ...forms].join("\n") + END,
+    );
+    expect(mixed.messages()).toEqual([
+      "constructor On is dropped: the declaration already has one of that name",
+    ]);
+    expect(mixed.declarations.datatypeOf("Flag")?.ctors.length).toBe(1);
+  }
+});
+
+Deno.test("a sole constructor may take its datatype's name", () => {
+  // The two are the same type -- one family, one case either way -- so there
+  // is no second type to claim and nothing collides. The wrapper idiom.
+  const fixture = elaborated(
+    ["datatype Unit where", "  | Unit()"].join("\n") + END,
+  );
+  expect(fixture.messages()).toEqual([]);
+  const unit = fixture.declarations.datatypeOf("Unit");
+  expect(unit?.family).toBe("Unit");
+  expect(unit?.ctors.map((ctor) => ctor.name)).toEqual(["Unit"]);
+});
+
+Deno.test("a constructor beside others may not take its datatype's name", () => {
+  // With a sibling it would be a strict subtype of the datatype above it, and
+  // one name would mean two types.
+  const fixture = elaborated(
+    ["datatype Box where", "  | Box()", "  | Empty()"].join("\n") + END,
+  );
+  expect(fixture.messages()).toEqual([
+    "constructor Box is dropped: its datatype holds that name, and only a " +
+    "sole constructor may share it",
+  ]);
+  // Dropped, like every other case whose name is somebody else's.
+  expect(fixture.declarations.ctorOf("Box", "Box")).toBeUndefined();
+  expect(fixture.declarations.ctorOf("Box", "Empty")).toBeDefined();
+});
+
+Deno.test("a constructor's name is a type of its family's arity", () => {
+  const fixture = elaborated(
+    ["datatype List[A] where", "  | Nil()", "  | Cons(A, List[A])"].join("\n") +
+      END,
+  );
+  expect(fixture.messages()).toEqual([]);
+  // The family's parameters, by reference -- so the arity is `List`'s and
+  // nothing has to be kept in step.
+  const cons = fixture.declarations.datatypeOf("Cons");
+  expect(cons?.family).toBe("List");
+  expect(cons?.params).toBe(fixture.declarations.datatypeOf("List")?.params);
+  expect(cons?.ctors.map((ctor) => ctor.name)).toEqual(["Cons"]);
 });
 
 Deno.test("a type parameter used twice in one group is reported", () => {
@@ -422,11 +531,11 @@ Deno.test("a field puts its parameter where it stands", () => {
   expect(variancesOf(
     ...BOOL,
     "datatype Box[A] where",
-    "  | MkBox(A)",
+    "  | Box(A)",
     "datatype Sink[A] where",
-    "  | MkSink((A) -> Bool)",
+    "  | Sink((A) -> Bool)",
     "datatype Cell[A] where",
-    "  | MkCell((A) -> A)",
+    "  | Cell((A) -> A)",
   )).toEqual(["Box[+A]", "Sink[-A]", "Cell[=A]"]);
 });
 
@@ -436,7 +545,7 @@ Deno.test("a field is entered covariantly, so a result is not flipped", () => {
   expect(variancesOf(
     ...BOOL,
     "datatype Source[A] where",
-    "  | MkSource((Bool) -> A)",
+    "  | Source((Bool) -> A)",
   )).toEqual(["Source[+A]"]);
 });
 
@@ -444,7 +553,7 @@ Deno.test("a bound is contravariant, like a parameter", () => {
   expect(variancesOf(
     ...BOOL,
     "datatype Lower[A] where",
-    "  | MkLower([B <: A](B) -> Bool)",
+    "  | Lower([B <: A](B) -> Bool)",
   )).toEqual(["Lower[-A]"]);
 });
 
@@ -454,13 +563,13 @@ Deno.test("a datatype argument composes rather than merging", () => {
   expect(variancesOf(
     ...BOOL,
     "datatype Sink[A] where",
-    "  | MkSink((A) -> Bool)",
+    "  | Sink((A) -> Bool)",
     "datatype Cell[A] where",
-    "  | MkCell((A) -> A)",
+    "  | Cell((A) -> A)",
     "datatype Twice[A] where",
-    "  | MkTwice(Sink[Sink[A]])",
+    "  | Twice(Sink[Sink[A]])",
     "datatype Once[A] where",
-    "  | MkOnce(Sink[Cell[A]])",
+    "  | Once(Sink[Cell[A]])",
   )).toEqual(["Sink[-A]", "Cell[=A]", "Twice[+A]", "Once[=A]"]);
 });
 
@@ -557,7 +666,7 @@ Deno.test("a phantom is reported once, at the parameter", () => {
   expect(saidOf(
     ...BOOL,
     "datatype Tag[A] where",
-    "  | MkTag(Bool)",
+    "  | Tagged(Bool)",
   )).toEqual([
     "warning: nothing observes the type parameter A of Tag, so it makes no " +
     "difference to the type; write it `_` if that is meant",
@@ -568,7 +677,7 @@ Deno.test("a wildcard parameter is deliberate, so it is not reported", () => {
   expect(saidOf(
     ...BOOL,
     "datatype Tag[_] where",
-    "  | MkTag(Bool)",
+    "  | Tagged(Bool)",
   )).toEqual([]);
 });
 
@@ -578,7 +687,7 @@ Deno.test("a datatype with a bad field is not also blamed for a phantom", () => 
   expect(saidOf(
     ...BOOL,
     "datatype Tag[A] where",
-    "  | MkTag(Nosuchtype)",
+    "  | Tagged(Nosuchtype)",
   )).toEqual(["error: unknown type Nosuchtype"]);
 
   // However deep the bad type sits, and under whatever kind. Asking the
@@ -587,17 +696,20 @@ Deno.test("a datatype with a bad field is not also blamed for a phantom", () => 
   expect(saidOf(
     ...BOOL,
     "datatype Tag[A] where",
-    "  | MkTag(Ref[Nosuchtype[A]])",
+    "  | Tagged(Ref[Nosuchtype[A]])",
   )).toEqual(["error: unknown type Nosuchtype"]);
 });
 
 Deno.test("a dropped duplicate takes its fields, so no phantom either", () => {
-  // The second `MkTag` is refused, and with it the only occurrence of `A`.
+  // The second `Tagged` is refused, and with it the only occurrence of `A`.
   // The parameter is not what went wrong there either.
   expect(saidOf(
     ...BOOL,
     "datatype Tag[A] where",
-    "  | MkTag(Bool)",
-    "  | MkTag(A)",
-  )).toEqual(["error: datatype Tag already has a constructor MkTag"]);
+    "  | Tagged(Bool)",
+    "  | Tagged(A)",
+  )).toEqual([
+    "error: constructor Tagged is dropped: the declaration already " +
+    "has one of that name",
+  ]);
 });

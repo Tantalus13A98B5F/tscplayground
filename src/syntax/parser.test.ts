@@ -102,7 +102,7 @@ Deno.test("a bare expression before the last one binds nothing", () => {
 
 Deno.test("declarations are collected, never nested in the chain", () => {
   const program = clean(
-    "let a = x\ndatatype Pair[A, B] where\n  | MkPair(A, B)\nlet b = y\na\n",
+    "let a = x\ndatatype Pair[A, B] where\n  | Pair(A, B)\nlet b = y\na\n",
   );
   expect(datatypes(program).map((d) => d.name.text)).toEqual(["Pair"]);
   expect(datatypes(program)[0]?.typeParams.map(bindingHint)).toEqual([
@@ -126,7 +126,7 @@ Deno.test("a bound is read where none is meant, then reported on itself", () => 
   // The bracket form is one rule, so `A <: B` parses and is refused after. The
   // caret is the point: it goes back to the bound, not on to the `]` the parse
   // has reached by then.
-  const [error, ...rest] = report("datatype Box[A <: B] where\n  | MkBox\nx\n");
+  const [error, ...rest] = report("datatype Box[A <: B] where\n  | Box\nx\n");
   expect(error?.message).toBe(
     "a declaration's type parameters take no bound",
   );
@@ -137,7 +137,7 @@ Deno.test("a bound is read where none is meant, then reported on itself", () => 
 Deno.test("a domain may name its positions, an arrow's and a constructor's alike", () => {
   // One syntax, so one rule: the name is documentation and scopes over nothing
   // until there is a dependent arrow to bind it.
-  const fields = datatypes(clean("datatype Box where\n  | MkBox(x: A)\nx\n"))[0]
+  const fields = datatypes(clean("datatype Box where\n  | Box(x: A)\nx\n"))[0]
     ?.ctors[0]?.params;
   expect(fields?.map((f) => f.name?.text)).toEqual(["x"]);
   expect(fields?.map((f) => f.type.kind)).toEqual(["NameType"]);
@@ -172,10 +172,10 @@ Deno.test("only a name may be given a type in a domain", () => {
 
 Deno.test("a constructor's fields are the same domain a function type has", () => {
   const program = clean(
-    "datatype Box[A] where\n  | MkBox(A)\n  | Empty()\n  | Solo\nx\n",
+    "datatype Box[A] where\n  | Box(A)\n  | Empty()\n  | Solo\nx\n",
   );
   const ctors = datatypes(program)[0]?.ctors;
-  expect(ctors?.map((c) => c.name.text)).toEqual(["MkBox", "Empty", "Solo"]);
+  expect(ctors?.map((c) => c.name.text)).toEqual(["Box", "Empty", "Solo"]);
   // Absent, and not empty, for a bare name: `Empty()` writes a domain of no
   // types where `Solo` writes no domain, and the two declare different things.
   expect(ctors?.map((c) => c.params?.length)).toEqual([1, 0, undefined]);
@@ -427,7 +427,7 @@ Deno.test("a nested match binds its arms innermost", () => {
 });
 
 Deno.test("patterns are one level deep and positional", () => {
-  const program = clean("match y with\n  | MkPair(a, _) -> a\n  | _ -> b\n");
+  const program = clean("match y with\n  | Pair(a, _) -> a\n  | _ -> b\n");
   const arms = program.term.kind === "Match" ? program.term.arms : [];
   expect(arms[0]?.pattern.kind).toBe("PCtor");
   expect(arms[0]?.pattern.kind === "PCtor" && arms[0].pattern.args.length)
@@ -438,7 +438,7 @@ Deno.test("patterns are one level deep and positional", () => {
 Deno.test("an arm whose pattern fails is dropped, and the next one still read", () => {
   // Dropped rather than stood in for: a pattern nothing could be read from must
   // not end up covering anything, least of all everything.
-  expect(parse("match y with\n  | -> a\n  | MkPair(p, q) -> p\n")).toEqual([
+  expect(parse("match y with\n  | -> a\n  | Pair(p, q) -> p\n")).toEqual([
     "expected a constructor name or `_`, found `->`",
   ]);
 });

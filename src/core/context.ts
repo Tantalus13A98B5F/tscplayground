@@ -118,6 +118,8 @@ export type DataParamInfo = DatatypeParam & {
 
 export type DatatypeInfo = {
   readonly name: string;
+  /** See `DataHead`. A declared datatype is its own family. */
+  readonly family: string;
   /** Parameters, in order. Its length is the arity. */
   readonly params: readonly DataParamInfo[];
   /**
@@ -127,11 +129,11 @@ export type DatatypeInfo = {
    */
   ctors: readonly DataCtorInfo[];
   /**
-   * Whether `initCtors` has run. Not the same question as `ctors` being empty:
-   * the two passes leave a signature standing with no constructors yet, and
-   * this is what tells that apart from a datatype that turned out to have none.
+   * Not the same question as `ctors` being empty: the two passes leave a
+   * signature standing with no constructors yet, and this is what tells that
+   * apart from a datatype that turned out to have none.
    */
-  initialized: boolean;
+  ctorsFilled: boolean;
   /**
    * Whether elaborating those constructors reported anything, so a report
    * already stands against this declaration. Recorded where it is known rather
@@ -164,9 +166,18 @@ export class Declarations {
     return this.#aliases.get(name);
   }
 
-  /** Every datatype, in declaration order. */
+  /**
+   * Every *declared* datatype, in declaration order -- the entries that are
+   * their own family. A constructor has an entry beside them, so that its name
+   * is a type and is claimed from the one namespace, but it declares nothing:
+   * it shares its family's parameters by reference and holds the one case, so
+   * a walk that visited it would infer the same variance twice and seed the
+   * same constructor term twice.
+   */
   datatypes(): readonly DatatypeInfo[] {
-    return [...this.#datatypes.values()];
+    return [...this.#datatypes.values()].filter(
+      (info) => info.family === info.name,
+    );
   }
 
   /**
@@ -201,19 +212,64 @@ export class Declarations {
    * Fill in a datatype's constructors, once. A second attempt is a second
    * declaration of the same name, whose signature was refused above; its
    * constructors are refused here for the same reason, so the datatype that
-   * owns the name owns the constructors that came with it.
+   * owns the name owns the constructors that came with it -- which is why the
+   * refusal is silent here and answers nothing to the caller.
+   *
+   * The family's entry and its constructors' own entries are one act and not
+   * two: they share the constructors filled in, so a caller that could do one
+   * without the other could leave a constructor type standing with no case.
    */
-  initCtors(
+  fillCtors(
     name: string,
     ctors: readonly DataCtorInfo[],
     reported: boolean,
-  ): boolean {
+  ): void {
     const info = this.#datatypes.get(name);
-    if (info === undefined || info.initialized) return false;
+    if (info === undefined || info.ctorsFilled) return;
     info.ctors = ctors;
     info.ctorsReported = reported;
-    info.initialized = true;
-    return true;
+    info.ctorsFilled = true;
+    // The same fill for each constructor's own entry, whose one case is that
+    // constructor. Guarded by the family, since a constructor whose name went
+    // to another declaration has an entry that is not ours to write.
+    for (const ctor of ctors) {
+      const one = this.#datatypes.get(ctor.name);
+      if (one === undefined || one.family !== name || one.ctorsFilled) continue;
+      one.ctors = [ctor];
+      one.ctorsReported = reported;
+      one.ctorsFilled = true;
+    }
+  }
+
+  /**
+   * The type a constructor's name established, or `undefined` where it has
+   * none: `Cons(h, t)` answers a `Cons`, and a caller with no entry to build
+   * at answers with the family, which is where `Cons[A] <: List[A]` leaves it
+   * anyway.
+   *
+   * Two constructors claim no type, and neither is refused anything: a *value*
+   * constructor builds nothing, `| True` being a member of `Bool` where
+   * `| Nil()` is a function whose result is what it built; and a name a
+   * constructor could not have is a case its datatype does not have either, so
+   * nothing here ever asks about one.
+   *
+   * A sole constructor does claim, though its type admits exactly what its
+   * family does: collapsing the two would leave nothing inhabiting it, and a
+   * one-constructor datatype is how a nominal subtype of one thing gets
+   * written -- so the library writes `| Pair(A, B)` where it means them to be
+   * one type.
+   *
+   * The family is compared, not assumed. A bare name claims nothing and so may
+   * coincide with a datatype's name or another family's constructor, and
+   * building at *that* entry would hand a `Bool` the type someone else's
+   * `True` holds.
+   */
+  typeClaimedBy(
+    family: DatatypeInfo,
+    ctor: DataCtorInfo,
+  ): DatatypeInfo | undefined {
+    const holder = this.#datatypes.get(ctor.name);
+    return holder?.family === family.name ? holder : undefined;
   }
 
   /**

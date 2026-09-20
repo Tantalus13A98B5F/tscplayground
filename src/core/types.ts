@@ -83,6 +83,16 @@ export type DatatypeParam = {
  */
 export type DataHead = {
   readonly name: string;
+  /**
+   * The datatype whose constructors this type's values are among -- its
+   * *family*. A datatype is its own, so the field is reflexive rather than
+   * optional, and "the same family" is one string comparison at every reader
+   * instead of a case for whether there is one.
+   *
+   * Carried rather than looked up, for `params`' reason: a walk in this file
+   * asks which types could relate at all without knowing declarations exist.
+   */
+  readonly family: string;
   readonly params: readonly DatatypeParam[];
 };
 
@@ -138,6 +148,8 @@ export type TypeMaybe<M> =
   | {
     readonly kind: "TData";
     readonly name: string;
+    /** The datatype this one's values are among -- see `DataHead`. */
+    readonly family: string;
     /** The declaration's own, by reference -- see `DataHead`. */
     readonly params: readonly DatatypeParam[];
     readonly args: readonly TypeMaybe<M>[];
@@ -234,7 +246,13 @@ export function TData<M = never>(
   head: DataHead,
   args: readonly TypeMaybe<M>[] = [],
 ): TypeMaybe<M> {
-  return { kind: "TData", name: head.name, params: head.params, args };
+  return {
+    kind: "TData",
+    name: head.name,
+    family: head.family,
+    params: head.params,
+    args,
+  };
 }
 
 /**
