@@ -607,14 +607,14 @@ export class Checker {
    * because the join is above every arm and the coercion only goes further up.
    *
    * `remaining` is the whole of the analysis: what a value could still be on
-   * reaching the arm being checked. It is seeded from the scrutinee's *type*
-   * rather than from the declaration its name reaches -- the same set today,
-   * and the one that narrows first when a type can say which constructors it
-   * admits. One-level patterns keep it a set of constructor names, and every question a *list* of arms raises is a
-   * question about that set -- an arm is unreachable when nothing it matches
-   * is left in it, and the arms are exhaustive when it is empty at the end.
-   * Each is about an arm against the ones before it, which is what an arm
-   * cannot see and this method can.
+   * reaching the arm being checked, seeded from the scrutinee's *type* and
+   * from nothing else, so a `Cons[A]` needs one arm where a `List[A]` needs
+   * both, and a name is a constructor here exactly where that type has one.
+   * One-level patterns keep it a set of constructor names, and every question
+   * a *list* of arms raises is a question about that set -- an arm is
+   * unreachable when nothing it matches is left in it, and the arms are
+   * exhaustive when it is empty at the end. Each is about an arm against the
+   * ones before it, which is what an arm cannot see and this method can.
    */
   #checkMatch(
     term: Extract<TermNode, { kind: "Match" }>,
@@ -637,12 +637,13 @@ export class Checker {
         remaining.clear();
       } else {
         const name = arm.pattern.name.text;
+        // The scrutinee's own type and not its family: a `Nil` arm over a
+        // `Cons[A]` names a constructor that type does not have, `Cons`
+        // being a datatype whose one case is `Cons`.
         const ctor = this.declarations.ctorOf(scrutinee.name, name);
-        // A name that is no constructor is a mistake of its own and answers
-        // nothing about coverage: it was never in the set, so it cannot have
-        // been taken out, and reporting it as matched above -- which
-        // `#armBinderTypes` is about to report as no constructor at all --
-        // would blame the author twice for one thing.
+        // Such a name answers nothing about coverage -- never in the set, so
+        // never taken out of it -- and `#armBinderTypes` is where it is
+        // reported.
         if (ctor !== undefined && !remaining.delete(name)) {
           dead = `${name} is matched above`;
         }
@@ -653,10 +654,9 @@ export class Checker {
       }
 
       // Checked whether or not it can be reached: what is written in a dead
-      // arm is as wrong as it would be anywhere else, the way a mistyped
-      // call's arguments are still checked. Only the *type* is dropped -- a
-      // value that cannot arrive here cannot be what the match answers with,
-      // and joining it in would widen the answer for an arm that never runs.
+      // arm is as wrong as it would be anywhere else. Only its *type* is
+      // dropped, joining it in being how an arm that never runs would widen
+      // what the match answers.
       const type = this.#checkArm(arm, binderTypes, expected);
       if (dead === undefined) types.push(type);
     }
@@ -716,7 +716,7 @@ export class Checker {
   /**
    * One type per binder the pattern wrote, so the arm has nothing left to
    * reconcile: a wrong field count is padded here and said here, and so is a
-   * name that is no constructor of `matched`.
+   * name `matched` has no constructor of, which is the one way a name fails.
    *
    * Settled before the arm's scope opens, which nothing objects to: a field
    * type is the constructor's own, opened at the scrutinee's type arguments,

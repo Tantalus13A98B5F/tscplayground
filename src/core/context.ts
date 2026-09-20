@@ -242,6 +242,37 @@ export class Declarations {
   }
 
   /**
+   * The type a constructor's name established, or `undefined` where it has
+   * none: `Cons(h, t)` answers a `Cons`, and a caller with no entry to build
+   * at answers with the family, which is where `Cons[A] <: List[A]` leaves it
+   * anyway.
+   *
+   * Two constructors claim no type, and neither is refused anything: a *value*
+   * constructor builds nothing, `| True` being a member of `Bool` where
+   * `| Nil()` is a function whose result is what it built; and a name a
+   * constructor could not have is a case its datatype does not have either, so
+   * nothing here ever asks about one.
+   *
+   * A sole constructor does claim, though its type admits exactly what its
+   * family does: collapsing the two would leave nothing inhabiting it, and a
+   * one-constructor datatype is how a nominal subtype of one thing gets
+   * written -- so the library writes `| Pair(A, B)` where it means them to be
+   * one type.
+   *
+   * The family is compared, not assumed. A bare name claims nothing and so may
+   * coincide with a datatype's name or another family's constructor, and
+   * building at *that* entry would hand a `Bool` the type someone else's
+   * `True` holds.
+   */
+  typeClaimedBy(
+    family: DatatypeInfo,
+    ctor: DataCtorInfo,
+  ): DatatypeInfo | undefined {
+    const holder = this.#datatypes.get(ctor.name);
+    return holder?.family === family.name ? holder : undefined;
+  }
+
+  /**
    * What a value of this type could have been built by. Asked of the *type*
    * and not of a name, because that is the question: a name reaches one
    * declaration, and what a scrutinee could still be is a property of the type

@@ -226,6 +226,10 @@ class Evaluator {
       const datatype = decl.name.text;
       const names = new Set<string>();
       for (const ctor of decl.ctors) {
+        // The first of a repeated name, as the checker's own pass keeps it --
+        // a later *declaration* still shadows, which is the rule this keeps
+        // out of the way of.
+        if (names.has(ctor.name.text)) continue;
         this.#ctors.set(ctor.name.text, {
           name: ctor.name.text,
           datatype,

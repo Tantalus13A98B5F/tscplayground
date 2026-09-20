@@ -101,6 +101,66 @@ class FuelExhausted extends Error {
  */
 const FUEL = 2000;
 
+/**
+ * Whether a `from` conforms to a `to` at a position of `dir` -- may be answered
+ * where the `to` is demanded. The one question two datatype heads raise, asked
+ * by the relation and by the cast alike, and directional: at `-1` it is the
+ * `to` that has to reach the `from`, the position having turned the demand
+ * around.
+ *
+ * Nominal, so a head conforms to itself and to nothing else -- bar one derived
+ * leaf, a constructor being below its family, `Cons[A] <: List[A]`. That leaf
+ * is a hierarchy, and a hierarchy is where a relation and a join can come to
+ * disagree, so this is not a second reading of it: the `from` conforms exactly
+ * where the head `headsLattice` names between the two *is* the `to`. Nothing at
+ * `0` follows from there rather than being written twice.
+ */
+function headConforms(from: DataHead, to: DataHead, dir: Variance): boolean {
+  return headsLattice(from, to, dir)?.name === to.name;
+}
+
+/**
+ * The head above two heads, or below them, moving `dir` -- `undefined` where
+ * the family leaves nothing to say and the caller's own extreme answers.
+ *
+ * Agreement is this with the answer pinned: `from` may be answered as `to`
+ * exactly where the head between them *is* `to`, which is what keeps the
+ * relation's leaf and the join from being two opinions about one hierarchy.
+ *
+ * Upward, two constructors of one family rise to that family, and a
+ * constructor beside its own family rises to it -- both are `familyHead`,
+ * since a family's own family is itself. Downward there is no such meet to
+ * build: the family's constructors partition its values, so two of them have
+ * nothing but `never` below, and all that can be answered is the one that is
+ * already below the other.
+ */
+function headsLattice(
+  s: DataHead,
+  t: DataHead,
+  dir: Variance,
+): DataHead | undefined {
+  if (s.name === t.name) return s;
+  if (dir > 0) return s.family === t.family ? familyHead(s) : undefined;
+  if (dir < 0) {
+    if (t.family === s.name) return t;
+    return s.family === t.name ? s : undefined;
+  }
+  // Nothing at `0`. An invariant position asks for the type itself, and
+  // letting a constructor answer there is what would let a `Ref[List[A]]` be
+  // `set!` a value the read side was promised could not arrive.
+  return undefined;
+}
+
+/**
+ * The head of a head's family, built rather than looked up: a constructor's
+ * entry shares its family's parameter array, so the two differ in name alone
+ * and no declaration table has to be reached from here.
+ */
+function familyHead(head: DataHead): DataHead {
+  if (head.name === head.family) return head;
+  return { name: head.family, family: head.family, params: head.params };
+}
+
 export class Subtyper {
   #fuel: number;
 
@@ -425,7 +485,7 @@ export class Subtyper {
 
       case "TData": {
         if (
-          head.kind !== "TData" || head.name !== pattern.name ||
+          head.kind !== "TData" || !headConforms(head, pattern, dir) ||
           head.args.length !== pattern.args.length
         ) {
           return this.#castFailed(type, pattern);
@@ -444,7 +504,11 @@ export class Subtyper {
             composeVariance(dir, argVarianceOf(pattern, i)),
           )
         );
-        return TData(head, args);
+        // Built on the *pattern's* head, which is the demanded type and so
+        // the answer: where the two are the same they carry the same name,
+        // family and parameters, and where a family was crossed the demand is
+        // what the cast moved to.
+        return TData(pattern, args);
       }
 
       case "TRef": {
@@ -654,21 +718,28 @@ export class Subtyper {
   }
 
   /**
-   * Two datatypes, related at a position of `variance`. Nominal, so the names
-   * have to agree and there is nothing to unfold; what is left is the
-   * arguments, each taken at its own parameter's variance composed with
-   * wherever the pair itself stands.
+   * Two datatypes, related at a position of `variance`. Nominal, so there is
+   * nothing to unfold; what has to agree is the head, and then the arguments,
+   * each taken at its own parameter's variance composed with wherever the pair
+   * itself stands.
+   *
+   * `headConforms` is where the heads are compared, so the cast and the
+   * relation cross a family on the same terms. The coercion is the identity: a `Cons` value
+   * already *is* the `List` value, so nothing is built here that was not
+   * already there, and arity and variance are the family's throughout -- the
+   * parameters being shared by reference, the argument walk is the one it
+   * always was.
    *
    * Which is why equivalence needs no case of its own: `0` absorbs, so asking
-   * two datatypes to be the same asks it of every argument. Arity is part of
-   * the type, so a `Foo[A]` and a `Foo[A, B]` reaching here do not relate.
+   * two datatypes to be the same asks it of every argument, and `headConforms`
+   * has already refused to cross a family there.
    */
   #relateData(
     s: Extract<Type, { kind: "TData" }>,
     t: Extract<Type, { kind: "TData" }>,
     variance: Variance,
   ): boolean {
-    return s.name === t.name && allPairs(
+    return headConforms(s, t, variance) && allPairs(
       s.args,
       t.args,
       (a, b, i) =>
@@ -1123,7 +1194,8 @@ export class Subtyper {
     t: Extract<Type, { kind: "TData" }>,
     dir: Direction,
   ): Type | undefined {
-    if (s.name !== t.name || s.args.length !== t.args.length) return undefined;
+    const head = headsLattice(s, t, dir);
+    if (head === undefined || s.args.length !== t.args.length) return undefined;
     const args = [];
     for (const [i, mine] of s.args.entries()) {
       const other = t.args[i] ?? impossible("arities agree above");
@@ -1135,7 +1207,7 @@ export class Subtyper {
       if (arg === undefined) return undefined;
       args.push(arg);
     }
-    return TData(s, args);
+    return TData(head, args);
   }
 
   /**

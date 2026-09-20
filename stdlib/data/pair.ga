@@ -1,11 +1,14 @@
+// The constructor takes the datatype's name, which a sole constructor may do:
+// with one case there is nothing for the two names to tell apart, so they are
+// the same type rather than one below the other.
 datatype Pair[A, B] where
-| MkPair(A, B)
+| Pair(A, B)
 
 let fst = fn [A, B](p: Pair[A, B]) -> match p with
-| MkPair(a, b) -> a
+| Pair(a, b) -> a
 
 let snd = fn [A, B](p: Pair[A, B]) -> match p with
-| MkPair(a, b) -> b
+| Pair(a, b) -> b
 
 let swap = fn [A, B](p: Pair[A, B]) -> match p with
-| MkPair(a, b) -> MkPair(b, a)
+| Pair(a, b) -> Pair(b, a)

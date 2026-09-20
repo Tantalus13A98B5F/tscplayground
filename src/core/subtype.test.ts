@@ -68,6 +68,13 @@ const SINK = declare("Sink", -1);
 const BOOL = declare("Bool");
 const INT = declare("Int");
 
+/**
+ * A constructor of `List`: its own name, `List`'s family, and `List`'s
+ * parameters by reference, which is what elaboration builds.
+ */
+const CONS: DatatypeInfo = { ...declare("Cons", 1), family: "List" };
+const NIL: DatatypeInfo = { ...declare("Nil", 1), family: "List" };
+
 /** A `<bad>` to hand the relation, under a report a test stands in for. */
 const TBad = badUnder(reportError("something was already wrong", somewhere));
 
@@ -82,6 +89,8 @@ function saidBy(sub: Subtyper): string[] {
   return sub.diagnostics.map((d) => `${d.severity}: ${d.message}`);
 }
 
+const ConsP = (arg: TypePattern) => TData(CONS, [arg]);
+const NilP = (arg: TypePattern) => TData(NIL, [arg]);
 const CellP = (arg: TypePattern) => TData(CELL, [arg]);
 const ListP = (arg: TypePattern) => TData(LIST, [arg]);
 const SinkP = (arg: TypePattern) => TData(SINK, [arg]);
@@ -114,6 +123,8 @@ const exact = (sub: Subtyper, type: Type, pattern: TypePattern) =>
 const Bool = TData(BOOL);
 const Int = TData(INT);
 const Cell = (arg: Type) => TData(CELL, [arg]);
+const Cons = (arg: Type) => TData(CONS, [arg]);
+const Nil = (arg: Type) => TData(NIL, [arg]);
 const RefP = (arg: TypePattern) => TRef(arg);
 const List = (arg: Type) => TData(LIST, [arg]);
 const Sink = (arg: Type) => TData(SINK, [arg]);
@@ -126,7 +137,7 @@ const fn = (params: readonly Type[], result: Type) => TFun([], params, result);
  */
 function fixture(): { context: Context; sub: Subtyper } {
   const declarations = new Declarations();
-  for (const datatype of [CELL, LIST, SINK, BOOL, INT]) {
+  for (const datatype of [CELL, LIST, SINK, BOOL, INT, CONS, NIL]) {
     declarations.addDatatype(datatype);
   }
   const context = new Context(declarations);
@@ -164,6 +175,34 @@ Deno.test("an argument moves the way its own parameter says", () => {
   expect(sub.isSubtype(Sink(TUnknown), Sink(TNever))).toBe(true);
   expect(sub.isSubtype(Sink(TNever), Sink(TUnknown))).toBe(false);
   expect(sub.isSubtype(List(Bool), Sink(Bool))).toBe(false);
+});
+
+Deno.test("a constructor is below its family, and nothing else is", () => {
+  const { sub } = fixture();
+  expect(sub.isSubtype(Cons(Bool), List(Bool))).toBe(true);
+  // Depth one and one direction: a family is a name, not a chain.
+  expect(sub.isSubtype(List(Bool), Cons(Bool))).toBe(false);
+  // Siblings share a family and are not each other's.
+  expect(sub.isSubtype(Cons(Bool), Nil(Bool))).toBe(false);
+  // A different family is a different type, as it always was.
+  expect(sub.isSubtype(Cons(Bool), Sink(Bool))).toBe(false);
+});
+
+Deno.test("a constructor rises with its family's variance, not around it", () => {
+  const { sub } = fixture();
+  // The parameters are `List`'s by reference, so the argument is covariant
+  // here for the reason it is covariant there.
+  expect(sub.isSubtype(Cons(TNever), List(Bool))).toBe(true);
+  expect(sub.isSubtype(Cons(TUnknown), List(Bool))).toBe(false);
+});
+
+Deno.test("equivalence demands the family itself", () => {
+  const { sub } = fixture();
+  // What an invariant position asks, and the reason it may not rise: a
+  // `Ref[List[A]]` accepts a `Nil` the read side was promised could not come.
+  expect(sub.isSubtype(Cell(Cons(Bool)), Cell(List(Bool)))).toBe(false);
+  expect(sub.isSubtype(Cell(List(Bool)), Cell(Cons(Bool)))).toBe(false);
+  expect(sub.isSubtype(Cell(Cons(Bool)), Cell(Cons(Bool)))).toBe(true);
 });
 
 Deno.test("a cell is invariant without consulting anything", () => {
@@ -474,6 +513,23 @@ Deno.test("two datatypes meet argumentwise where an argument can move", () => {
   expect(typeToString(sub.join(Cell(Bool), Cell(TNever)))).toBe("unknown");
   expect(typeToString(sub.meet(Cell(Bool), Cell(Bool)))).toBe("Cell[Bool]");
   expect(typeToString(sub.join(List(Bool), Sink(Bool)))).toBe("unknown");
+});
+
+Deno.test("one family's constructors join at the family", () => {
+  const { sub } = fixture();
+  // The relation's leaf, read as a lattice: two constructors rise to what they
+  // are constructors of, and a constructor beside its family rises to it.
+  expect(typeToString(sub.join(Cons(Bool), Nil(Bool)))).toBe("List[Bool]");
+  expect(typeToString(sub.join(Cons(Bool), List(Bool)))).toBe("List[Bool]");
+  // Downward there is nothing to build: the family's constructors partition
+  // its values, so all that can be answered is one already below the other.
+  expect(typeToString(sub.meet(Cons(Bool), List(Bool)))).toBe("Cons[Bool]");
+  expect(typeToString(sub.meet(Cons(Bool), Nil(Bool)))).toBe("never");
+  // The arguments still have to move, the family being no excuse for them.
+  expect(typeToString(sub.join(Cons(Bool), Nil(Int)))).toBe("List[unknown]");
+  // And nothing rises inside an invariant one.
+  expect(typeToString(sub.join(Cell(Cons(Bool)), Cell(Nil(Bool)))))
+    .toBe("unknown");
 });
 
 Deno.test("top and bottom meet an EVar without constraining it", () => {
