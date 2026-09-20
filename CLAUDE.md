@@ -214,14 +214,31 @@ Exhaustion is the checker's limit, not the program's mistake: say so and answer
 the author never wrote and then blame them for it.
 
 Unannotated lambda parameters are never EVars -- a parameter's type comes from
-annotations or from the checking context. In an argument list the parameter
-binds to the callee's EVar directly, so a bare lambda works there as long as its
-body does not need the parameter's _structure_; `match` on it does, and that is
-where a _later_ parameter list is required, the way Scala's `foldLeft(z)(op)`
-stages it. Currying gives this for free; there is no multi-list function type.
-`fn [A](xs)[B](z)(op) -> e` writes the lists on one binder, and that is surface
-sugar the parser folds into nested `fn`s -- so several lists cost the checker
-nothing, and the type they give is the curried one.
+annotations or from the checking context. In an argument list that context is
+the parameter pattern, which hides the callee's type parameters behind missing
+parts, so a bare lambda has nothing to read until they are settled.
+
+Which is why a parameter list is not one batch. `planStages` cuts it into
+stages: an argument _requires_ a type parameter where it left a parameter bare
+in that position, and _mentions_ one that occurs anywhere in its parameter type,
+so requiring is what must happen before it is checked and mentioning is what it
+can say after. `fold(op, z, l)` is then one list -- `z` and `l` first, their
+answers committed, `op` checked against them -- and `op`'s own vote on `B` is
+what is given up to get it, the same thing a second written list gives up. A
+type parameter is committed as late as it can be, and never where nothing
+checked so far mentions it, which would solve it from nothing. Where no argument
+can go first, one is checked without what it requires and reports as it always
+did; the leftmost of each source of the condensation is taken, which is the
+fewest such reports and the one an author can predict. `docs/roadmap.md` has the
+limits, all of which a single-stage call -- any call with no bare lambda in it
+-- avoids by being unchanged.
+
+A written list still stages what no argument determines, and is still where a
+type parameter's scope is decided. Currying gives this for free; there is no
+multi-list function type. `fn [A](xs)[B](z)(op) -> e` writes the lists on one
+binder, and that is surface sugar the parser folds into nested `fn`s -- so
+several lists cost the checker nothing, and the type they give is the curried
+one.
 
 Recursion is `def`, and what it adds to `let` is a scope rather than a shape: a
 run of _adjacent_ `def`s is one group whose members may name each other, and

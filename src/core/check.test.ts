@@ -377,11 +377,11 @@ Deno.test("an invariant occurrence is settled by a bound from one side", () => {
   ).toBe("Bool");
 });
 
-Deno.test("a bare lambda in the same list has no type to take", () => {
-  // What an argument is checked against hides the type parameters behind
-  // missing parts, so `(A) -> A` arrives as `(?) -> ?` and `y` is told
-  // nothing. The constraint from the other argument cannot help: it is
-  // collected after this argument has already had to be checked.
+Deno.test("a bare lambda is told what its siblings settled", () => {
+  // One list, cut into stages: `True` settles `A`, and only then is the
+  // lambda checked, against a parameter type that no longer hides it. Which
+  // is what the staged form below has always done, now reached without the
+  // author writing the staging.
   for (
     const call of [
       "both(True, fn (y) -> y)",
@@ -391,9 +391,7 @@ Deno.test("a bare lambda in the same list has no type to take", () => {
     const decl = call.startsWith("both(True")
       ? "let both = fn [A](x: A, f: (A) -> A) -> f(x);"
       : "let both = fn [A](f: (A) -> A, x: A) -> f(x);";
-    const [, ...messages] = run(...BOOL, decl, call);
-    expect(messages.length).toBe(1);
-    expect(messages[0]).toContain("cannot infer a type for y");
+    expect(typeOf(...BOOL, decl, call)).toBe("Bool");
   }
 
   // Annotated, in either order, and nothing else has changed.
@@ -413,20 +411,16 @@ Deno.test("a bare lambda in the same list has no type to take", () => {
   ).toBe("Bool");
 });
 
-Deno.test("a bare lambda that destructures needs a later list", () => {
-  // Reported at the parameter now rather than at the `match`: there is no
-  // type to destructure because there was none to begin with. One message
-  // either way, and it names the thing the author can fix.
-  const [, ...messages] = run(
+Deno.test("a bare lambda may destructure what a sibling settled", () => {
+  // The body needs the parameter's *structure*, which is the case a bare
+  // lambda used to need a later list for.
+  expect(typeOf(
     ...BOOL,
     "let both = fn [A](x: A, f: (A) -> A) -> f(x);",
     "both(True, fn (y) -> match y with | True -> False | False -> True)",
-  );
-  expect(messages.length).toBe(1);
-  expect(messages[0]).toContain("cannot infer a type for y");
+  )).toBe("Bool");
 
-  // Staged over two lists, the same body is fine: the first list settles `A`
-  // from `True` alone, so by the second one `y` has a type to match on.
+  // Staged over two lists, the same body, and the same answer.
   expect(
     typeOf(
       ...BOOL,
@@ -434,6 +428,53 @@ Deno.test("a bare lambda that destructures needs a later list", () => {
       "staged(True)(fn (y) -> match y with | True -> False | False -> True)",
     ),
   ).toBe("Bool");
+});
+
+Deno.test("an annotated parameter waits on nothing", () => {
+  // Half a lambda's parameters may be all that is waiting: `a` is read from
+  // the term, so this argument needs only `B` before it can be checked.
+  expect(typeOf(
+    ...BOOL,
+    ...LIST,
+    "let each = fn [A, B](f: (A, B) -> B, z: B, xs: List[A]) -> z;",
+    "each(fn (a: Bool, b) -> b, True, Nil())",
+  )).toBe("Bool");
+});
+
+Deno.test("a cycle between two bare lambdas is reported once", () => {
+  // Neither can be checked first, and nothing else says what either is: one
+  // of them has to be checked without an answer, and the leftmost is taken so
+  // that editing the other cannot move the blame. One report, not two.
+  const [, ...messages] = run(
+    ...BOOL,
+    "let two = fn [A, B](g: (A) -> B, h: (B) -> A) -> True;",
+    "two(fn (x) -> x, fn (y) -> y)",
+  );
+  expect(messages.length).toBe(1);
+  expect(messages[0]).toContain("cannot infer a type for x");
+
+  // One argument that says what `A` is breaks the cycle, and then the two
+  // lambdas fall out in order -- `g` from `A`, `h` from the `B` that `g`
+  // answered with. Nothing is reported.
+  expect(typeOf(
+    ...BOOL,
+    "let three = fn [A, B](g: (A) -> B, h: (B) -> A, a: A) -> True;",
+    "three(fn (x) -> x, fn (y) -> y, True)",
+  )).toBe("Bool");
+});
+
+Deno.test("two cycles are two seeds, and an unrelated one is not a third", () => {
+  // Nothing joins the pairs, so neither can answer for the other and each
+  // must give one argument up. Two reports and not one, and not four.
+  const [, ...messages] = run(
+    ...BOOL,
+    "let four = fn [A, B, C, D]" +
+      "(g: (A) -> B, h: (B) -> A, k: (C) -> D, m: (D) -> C) -> True;",
+    "four(fn (w) -> w, fn (x) -> x, fn (y) -> y, fn (z) -> z)",
+  );
+  expect(messages.length).toBe(2);
+  expect(messages[0]).toContain("cannot infer a type for w");
+  expect(messages[1]).toContain("cannot infer a type for y");
 });
 
 Deno.test("an explicit type application discharges the quantifier", () => {

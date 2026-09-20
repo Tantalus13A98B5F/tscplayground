@@ -140,6 +140,16 @@ until the whole list is in.
 
 Step 3 walks terms and step 4 walks types, so there is no re-checking.
 
+Steps 2 to 4 run once per _stage_, not once per call. An argument that is a
+lambda with an unannotated parameter cannot be checked at step 3 while that
+parameter's position is still `TMissing`, so the list is cut before it: the
+stages before it are solved, their answers replace `TMissing` in step 2's
+pattern, and only then is it checked. This is the cut the item _Staging one
+parameter list_ argued for, in the form that keeps batches from overlapping --
+`withEVars` still owns each stage alone, and a constraint still cannot mention
+an EVar that is not its own batch's. `src/core/batching.ts` has the two
+relations the cut is computed from and what it gives up.
+
 ## 5. `match`
 
 Check each arm against the pattern, join the complete results, then
@@ -345,7 +355,7 @@ So a bare lambda is what closes a batch early in both designs. We close one per
 list, which is a coarser cut at the same place and for the same reason, and the
 list boundary is where an author can see it. Widening the answer was a way of
 paying for that cut with imprecision everywhere; the cut described in the
-roadmap's _Batching one parameter list_ is the way of making it later and
+roadmap's _Staging one parameter list_ is the way of making it later and
 narrower, and it is where this pressure should go.
 
 ## Who says what went wrong
@@ -513,8 +523,8 @@ that keeps the invariant is to solve the batch _before_ any context-sensitive
 argument is checked, and check those against what came out -- best effort, no
 second solve, no live batch during an argument. Which is a cut in the list
 rather than a deferral within it: one list, several batches, `withEVars` still
-owning each alone. `docs/roadmap.md`'s _Batching one parameter list_ is what
-that would take, and where the cut would fall.
+owning each alone. `docs/roadmap.md`'s _Staging one parameter list_ is what that
+would take, and where the cut would fall.
 
 ### Recursion, and a rule that was rejected
 
