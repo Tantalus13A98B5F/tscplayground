@@ -41,4 +41,4 @@ let _ = set!(rtag, fn (n: Nat) -> match n with
 // Nothing in the types says the two writes above happened. Call `alt` between
 // the allocation and its `set!` and it diverges rather than answering, which is
 // the whole of what the bottom seed guarantees.
-MkPair(alt(S(S(Z))), tag(S(S(S(Z)))))
+Pair(alt(S(S(Z))), tag(S(S(S(Z)))))

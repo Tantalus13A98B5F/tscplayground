@@ -44,4 +44,4 @@ let go = fn [R](r0: Req[R]) ->
 let alt = fn (n: Nat) -> go(ReqAlt(n, fn (xs: List[Nat]) -> xs))
 let tag = fn (n: Nat) -> go(ReqTag(n, fn (m: Nat) -> m))
 
-MkPair(alt(S(S(Z))), tag(S(S(S(Z)))))
+Pair(alt(S(S(Z))), tag(S(S(S(Z)))))

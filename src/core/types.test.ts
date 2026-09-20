@@ -31,6 +31,7 @@ const closeXY = (type: typeof TUnknown) => closeFrom(type, X);
  */
 const head = (name: string, ...variances: readonly Variance[]): DataHead => ({
   name: name,
+  family: name,
   params: variances.map((variance, j) => ({
     hint: String.fromCharCode(65 + j),
     variance,

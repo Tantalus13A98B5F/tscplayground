@@ -52,4 +52,4 @@ let go = fix(fn (self: (Which) -> (Nat) -> Out) -> fn (w: Which) -> fn (n: Nat) 
 let alt = fn (n: Nat) -> outList(go(WAlt)(n))
 let tag = fn (n: Nat) -> outNat(go(WTag)(n))
 
-MkPair(alt(S(S(Z))), tag(S(S(S(Z)))))
+Pair(alt(S(S(Z))), tag(S(S(S(Z)))))

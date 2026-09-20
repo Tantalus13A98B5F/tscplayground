@@ -302,6 +302,52 @@ batch was instantiated from, so it opens _that_ with the solutions: one ordinary
 substitution, and `Context.apply` -- a second mechanism that walked a type to do
 the same job -- deletes.
 
+### A lower bound is taken as it is
+
+A solution from below is the join of the lower constraints and nothing else. It
+is not widened, and the case for widening it is worth recording, because it came
+close.
+
+Once a constructor has a type of its own, a batch's timing has a price:
+`foldr(xs)(Z)(op)` solves `B` at the end of the list `Z` stands in, before `op`
+is checked at all, so `B` fixed at `Z` refuses the `S` the operator answers
+with. Taking the solution at its _family_ fixes exactly that, costs nothing
+where an upper bound demands the constructor, and was implemented and measured:
+it saves three ascriptions across the corpus.
+
+It was dropped because of what it does everywhere else. `id(Cons(x, xs))` would
+answer `List`, so the principal type would survive a `let` and not a call, and
+the one thing that item 2's last step promised -- that a constructor's own type
+is what inference returns -- would hold only until a polymorphic function was in
+the way. The precision is worth more than the three ascriptions, and the
+ascriptions are ordinary: this is `foldLeft(Nil)` in Scala, which has always
+needed `List.empty[Int]` and for the same reason.
+
+Scala's own widenings are a narrower thing, and the difference is instructive.
+`widenInferred` widens _singleton_ and _union_ types when a variable is
+instantiated -- types an author mostly cannot write and rarely means -- and
+leaves nominal precision alone: `val x = Some(1)` is a `Some[Int]`, never an
+`Option[Int]`. The rule is keyed on which types are too precise to be meant, not
+on where the solution stands. Our own version of it is the value form: `|
+True`
+is a member of `Bool`, and that is decided at the declaration.
+
+And `foldLeft(Nil)` fails there for our reason, not for a different one. Scala's
+constraint set does outlive a parameter list -- the variables are made once, at
+the polymorphic method, and every list records into the same set -- but
+instantiation is demand-driven, and typing a lambda is the demand: its parameter
+types come from the expected type, so a `B` still standing in `(B, A) => B` is
+forced to a value before the lambda's body is looked at, and what it is forced
+to is what `z` said. Constraints from the later list are not weighed, because
+the later list cannot be typed until the variable is gone.
+
+So a bare lambda is what closes a batch early in both designs. We close one per
+list, which is a coarser cut at the same place and for the same reason, and the
+list boundary is where an author can see it. Widening the answer was a way of
+paying for that cut with imprecision everywhere; the cut described in the
+roadmap's item 3 is the way of making it later and narrower, and it is where
+this pressure should go.
+
 ## Who says what went wrong
 
 `Subtyper` shares the checker's `diagnostics` array, the way `Elaborator` does,
@@ -465,7 +511,10 @@ checked while the call's batch is live, so batches overlap again and "a
 constraint mentioning an EVar can only mean a sibling" goes with them. The form
 that keeps the invariant is to solve the batch _before_ any context-sensitive
 argument is checked, and check those against what came out -- best effort, no
-second solve, no live batch during an argument.
+second solve, no live batch during an argument. Which is a cut in the list
+rather than a deferral within it: one list, several batches, `withEVars` still
+owning each alone. `docs/roadmap.md` item 3 is what that would take, and where
+the cut would fall.
 
 ### Recursion, and a rule that was rejected
 

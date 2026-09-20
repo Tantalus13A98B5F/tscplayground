@@ -172,13 +172,12 @@ Deno.test("stdlib: a Ref makes its datatype invariant, and that costs", () => {
   expect(check("uses-ref.ga")).toEqual(["Pair[Nat, List[Nat]]"]);
 
   // The two refusals `uses-ref.ga` documents, which are the same fact twice.
-  // A `never` tail cannot widen, so the argument list has no solution --
+  // A `never` tail cannot widen, so the argument list has no solution -- and
+  // now it is the cell that says so, `ref!` being invariant in what it holds
+  // and `MNil[never]` being what it was handed.
   const inMList = '#require "ref/list.ga"\n';
   expect(check("m.ga", { "m.ga": inMList + "MCons(Z, ref!(MNil()))\n" })[1])
-    .toBe(
-      "m.ga:2:6: error: cannot infer the type argument A: it is bounded " +
-        "below by Nat and above by never, and no type is both",
-    );
+    .toBe("m.ga:2:14: error: expected MList[?], found MNil[never]");
 
   // -- and an expected type does not rescue it, because joining two `MList`s
   // that disagree gives `unknown`: invariance leaves nothing between them.
@@ -191,10 +190,11 @@ Deno.test("stdlib: a Ref makes its datatype invariant, and that costs", () => {
       "below by unknown and above by MList[Nat], and no type is both",
   );
 
-  // The covariant list, written the same way, needs neither.
+  // The covariant list, written the same way, needs neither -- and answers
+  // with the constructor it was built by, which is the principal type.
   expect(check("l.ga", {
     "l.ga": '#require "data/list.ga"\n' + "Cons(Z, Nil())\n",
-  })).toEqual(["List[Nat]"]);
+  })).toEqual(["Cons[Nat]"]);
 });
 
 Deno.test("stdlib: fusing a Church nil's two binders does not work", () => {
@@ -277,14 +277,14 @@ Deno.test("stdlib: bottom is a value at an arrow and nowhere else", () => {
  * from what it encodes shows up here and nowhere in the types.
  */
 Deno.test("stdlib: the corpus runs, and the encodings agree on a value", () => {
-  expect(evaluated("uses-data.ga")).toEqual(["MkPair(S(S(Z)), True)"]);
-  expect(evaluated("uses-both.ga")).toEqual(["MkPair(S(S(S(Z))), Z)"]);
-  expect(evaluated("uses-ref.ga")).toEqual(["MkPair(S(Z), Nil())"]);
+  expect(evaluated("uses-data.ga")).toEqual(["Pair(S(S(Z)), True)"]);
+  expect(evaluated("uses-both.ga")).toEqual(["Pair(S(S(S(Z))), Z)"]);
+  expect(evaluated("uses-ref.ga")).toEqual(["Pair(S(Z), Nil())"]);
   // A Church value is a function, so running one says only that it did not get
   // stuck. What it computes is read by converting it, which `uses-both.ga` is.
   expect(evaluated("uses-church.ga")).toEqual(["<function>"]);
 
-  const mutual = "MkPair(Cons(Z, Cons(Z, Nil())), S(S(Z)))";
+  const mutual = "Pair(Cons(Z, Cons(Z, Nil())), S(S(Z)))";
   for (const encoding of ["bekic", "pair", "tag", "cps", "ref", "def"]) {
     expect(evaluated(`rec/mutual-${encoding}.ga`)).toEqual([mutual]);
   }

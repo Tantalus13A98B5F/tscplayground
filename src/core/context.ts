@@ -49,9 +49,11 @@
 
 import type { Position } from "../diagnostics/diagnostic.ts";
 import {
+  type DataHead,
   type DatatypeParam,
   FVar,
   type FVarRef,
+  impossible,
   isClosed,
   type Level,
   mkLevel,
@@ -116,6 +118,8 @@ export type DataParamInfo = DatatypeParam & {
 
 export type DatatypeInfo = {
   readonly name: string;
+  /** See `DataHead`. A declared datatype is its own family. */
+  readonly family: string;
   /** Parameters, in order. Its length is the arity. */
   readonly params: readonly DataParamInfo[];
   /**
@@ -125,11 +129,11 @@ export type DatatypeInfo = {
    */
   ctors: readonly DataCtorInfo[];
   /**
-   * Whether `initCtors` has run. Not the same question as `ctors` being empty:
-   * the two passes leave a signature standing with no constructors yet, and
-   * this is what tells that apart from a datatype that turned out to have none.
+   * Not the same question as `ctors` being empty: the two passes leave a
+   * signature standing with no constructors yet, and this is what tells that
+   * apart from a datatype that turned out to have none.
    */
-  initialized: boolean;
+  ctorsFilled: boolean;
   /**
    * Whether elaborating those constructors reported anything, so a report
    * already stands against this declaration. Recorded where it is known rather
@@ -162,9 +166,18 @@ export class Declarations {
     return this.#aliases.get(name);
   }
 
-  /** Every datatype, in declaration order. */
+  /**
+   * Every *declared* datatype, in declaration order -- the entries that are
+   * their own family. A constructor has an entry beside them, so that its name
+   * is a type and is claimed from the one namespace, but it declares nothing:
+   * it shares its family's parameters by reference and holds the one case, so
+   * a walk that visited it would infer the same variance twice and seed the
+   * same constructor term twice.
+   */
   datatypes(): readonly DatatypeInfo[] {
-    return [...this.#datatypes.values()];
+    return [...this.#datatypes.values()].filter(
+      (info) => info.family === info.name,
+    );
   }
 
   /**
@@ -199,19 +212,69 @@ export class Declarations {
    * Fill in a datatype's constructors, once. A second attempt is a second
    * declaration of the same name, whose signature was refused above; its
    * constructors are refused here for the same reason, so the datatype that
-   * owns the name owns the constructors that came with it.
+   * owns the name owns the constructors that came with it -- which is why the
+   * refusal is silent here and answers nothing to the caller.
+   *
+   * The family's entry and its constructors' own entries are one act and not
+   * two: they share the constructors filled in, so a caller that could do one
+   * without the other could leave a constructor type standing with no case.
    */
-  initCtors(
+  fillCtors(
     name: string,
     ctors: readonly DataCtorInfo[],
     reported: boolean,
-  ): boolean {
+  ): void {
     const info = this.#datatypes.get(name);
-    if (info === undefined || info.initialized) return false;
+    if (info === undefined || info.ctorsFilled) return;
     info.ctors = ctors;
     info.ctorsReported = reported;
-    info.initialized = true;
-    return true;
+    info.ctorsFilled = true;
+    // The same fill for each constructor's own entry, whose one case is that
+    // constructor. Guarded by the family, since a constructor whose name went
+    // to another declaration has an entry that is not ours to write.
+    for (const ctor of ctors) {
+      const one = this.#datatypes.get(ctor.name);
+      if (one === undefined || one.family !== name || one.ctorsFilled) continue;
+      one.ctors = [ctor];
+      one.ctorsReported = reported;
+      one.ctorsFilled = true;
+    }
+  }
+
+  /**
+   * The type a constructor's name established, or `undefined` where it has
+   * none -- a *value* constructor builds nothing, `| True` being a member of
+   * `Bool` where `| Nil()` is a function whose result is what it built. A
+   * caller with no entry to build at answers with the family, which is where
+   * `Cons[A] <: List[A]` leaves it anyway.
+   *
+   * The family is compared, not assumed: a name that claims nothing may
+   * coincide with a datatype's name or another family's constructor, and
+   * building at *that* entry would hand a `Bool` the type someone else's
+   * `True` holds.
+   */
+  typeClaimedBy(
+    family: DatatypeInfo,
+    ctor: DataCtorInfo,
+  ): DatatypeInfo | undefined {
+    const holder = this.#datatypes.get(ctor.name);
+    return holder?.family === family.name ? holder : undefined;
+  }
+
+  /**
+   * What a value of this type could have been built by. Asked of the *type*
+   * and not of a name: what a scrutinee could still be is a property of the
+   * type standing in front of the `match`, and a constructor type holds the
+   * one case.
+   *
+   * Total, unlike the lookups above: a `DataHead` was resolved by elaboration,
+   * so a head naming no declaration is a checker bug rather than a program
+   * that mentions an undeclared type.
+   */
+  casesOf(head: DataHead): readonly string[] {
+    const info = this.#datatypes.get(head.name) ??
+      impossible("a data head whose name no declaration table holds");
+    return info.ctors.map((ctor) => ctor.name);
   }
 
   /** The constructor `name` of datatype `owner`, or `undefined`. */
