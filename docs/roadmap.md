@@ -70,15 +70,7 @@ not one. That phase is still worth having on its own -- it turns a forward
 reference into "`foo` is declared below; its signature is not available here"
 rather than `unknown name foo` -- and it is additive, so it can land whenever.
 
-## 2. Sugar for single-case datatypes
-
-`let Pair(x, y) = e` as a one-arm match, which is one token of lookahead in
-`letBinding` handing off to `matchPat`. It works for any constructor, not only a
-sole one -- `let Cons(hd, tl) = xs` is legal and partial, and the totality
-report is the one `#remaining` already produces, which under item 2 is silent
-exactly when the scrutinee's type says it is total.
-
-## 3. Batching one parameter list
+## 2. Batching one parameter list
 
 Today a parameter list is one batch, and the staging that a bare lambda needs is
 the author's to write: `foldLeft(z)(op)`, a second list so that `z` is solved
@@ -110,6 +102,25 @@ written list is still the only way to stage what no argument determines. This
 would make the common case stop needing it.
 
 ## Landed
+
+### Sugar for single-case datatypes
+
+`let Pair(x, y) = e`, one arm of a match folded in the parser: the block that
+follows is the arm's body, and nothing downstream knows the form exists. A `(`
+after the name is what tells it from `let pair = e`, so a bare name is never a
+pattern -- `let nil = e` would otherwise mean one thing or the other according
+to whether `nil` is a constructor somewhere, which the parser cannot ask.
+
+It works for any constructor, not only a sole one: `let Cons(hd, tl) = xs` is
+legal and partial, and the totality report is the one `#remaining` already
+produces -- silent exactly when the scrutinee's type says the match is total,
+which is what _Constructors as types_ bought. `let Cons(h, t) = Cons(x, ys)` is
+total, because that is a `Cons`.
+
+It takes no annotation. One would have to be the scrutinee's, and the binders it
+could not speak for are the whole of what the form binds, so `let` on the value
+first is how to write one. The exhaustiveness report lost the word "match" with
+this: the author of a destructuring `let` wrote none.
 
 ### Constructors as types
 
@@ -212,7 +223,8 @@ principal type would survive a `let` and not a call, which is most of what this
 step is for. Scala widens singletons and unions at instantiation and leaves
 nominal precision alone for the same reason, and pays the same price: this is
 `foldLeft(Nil)`, which has always wanted `List.empty[Int]`. `docs/clti.md` has
-the argument, including why the pressure belongs on item 3 instead.
+the argument, including why the pressure belongs on _Batching one parameter
+list_ instead.
 
 The known cost is the usual one for inference under subtyping: `ref!(Cons(...))`
 infers `Ref[Cons[Bool]]`, a cell nothing can `set!` a `Nil` into, and the fix is

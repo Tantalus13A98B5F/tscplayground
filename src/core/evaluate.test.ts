@@ -126,6 +126,27 @@ Deno.test("a def's parameter needs no type at runtime", () => {
   expect(messages.length).toBe(1);
 });
 
+Deno.test("a destructuring `let` runs as the one arm it is", () => {
+  expect(valueOf(
+    ...NAT,
+    "datatype Pair[A, B] where",
+    "  | Pair(A, B)",
+    "let Pair(a, b) = Pair(Z, S(Z));",
+    "b",
+  )).toBe("S(Z)");
+
+  // Partial at runtime the way a one-armed `match` is, which is what the
+  // checker reported ahead of: the program ran until nothing matched.
+  const [value, ...messages] = run(
+    ...NAT,
+    "let n : Nat = Z;",
+    "let S(m) = n;",
+    "m",
+  );
+  expect(value).toBe("<stuck>");
+  expect(messages.at(-1)).toBe("no arm matches Z");
+});
+
 Deno.test("an ill-typed program runs until it is stuck, and says where", () => {
   // Each of these is a shape the checker would have guaranteed. With no such
   // guarantee they are the whole error vocabulary: a value arrived where a

@@ -89,8 +89,6 @@ function saidBy(sub: Subtyper): string[] {
   return sub.diagnostics.map((d) => `${d.severity}: ${d.message}`);
 }
 
-const ConsP = (arg: TypePattern) => TData(CONS, [arg]);
-const NilP = (arg: TypePattern) => TData(NIL, [arg]);
 const CellP = (arg: TypePattern) => TData(CELL, [arg]);
 const ListP = (arg: TypePattern) => TData(LIST, [arg]);
 const SinkP = (arg: TypePattern) => TData(SINK, [arg]);

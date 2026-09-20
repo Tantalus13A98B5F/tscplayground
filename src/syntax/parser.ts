@@ -32,6 +32,7 @@ import type {
   CtorDecl,
   DatatypeDecl,
   DefItem,
+  DestructureItem,
   DomainType,
   Ident,
   LetItem,
@@ -187,10 +188,23 @@ class Parser {
 
     // Each item is its node short of a body, which the fold supplies.
     return items.reduceRight<TermNode>(
-      (body, item) =>
-        Array.isArray(item)
-          ? { kind: "LetRec", defs: item, body, at: item[0].at }
-          : { kind: "Let", ...item, body },
+      (body, item) => {
+        if (Array.isArray(item)) {
+          return { kind: "LetRec", defs: item, body, at: item[0].at };
+        }
+        // A destructuring `let` is one arm over what follows it, so the body
+        // the fold supplies is the arm's and the match has no other.
+        if ("pattern" in item) {
+          const arm = { pattern: item.pattern, body, at: item.at };
+          return {
+            kind: "Match",
+            scrutinee: item.bound,
+            arms: [arm],
+            at: item.at,
+          };
+        }
+        return { kind: "Let", ...item, body };
+      },
       result,
     );
   }
@@ -309,11 +323,33 @@ class Parser {
     return results;
   }
 
-  /** `let x = e`, without the separator or the body that follows it. */
-  private letBinding(): LetItem {
+  /**
+   * `let x = e` or `let Pair(x, y) = e`, without the separator or the body
+   * that follows it.
+   *
+   * A `(` after the name is what tells the two apart, and a bare name is
+   * therefore never a pattern: `let nil = e` would otherwise mean one thing or
+   * the other according to whether `nil` is a constructor somewhere, which is
+   * a question the parser cannot ask and a reader would have to look up.
+   */
+  private letBinding(): LetItem | DestructureItem {
     const at = this.cursor.here; // the `let` the block loop saw
     this.cursor.advance();
     const name = this.binderName("a name to bind");
+    if (name.text !== undefined && this.cursor.at("lparen")) {
+      const pattern = this.ctorPat({ text: name.text, at: name.at });
+      // An annotation would have to be the scrutinee's, and the binders it
+      // could not speak for are the whole of what this form binds. `let` on
+      // the value first is the way to write one.
+      if (this.cursor.at("colon")) {
+        this.cursor.fail("`=` -- a destructuring `let` takes no annotation");
+      }
+      this.cursor.expect("equals", "`=`");
+      const bound = this.blockOrExp(
+        "the value to take apart, indented past the `let`",
+      );
+      return { pattern, bound, at };
+    }
     const annotation = this.cursor.accept("colon") === undefined
       ? undefined
       : this.type();
@@ -465,9 +501,13 @@ class Parser {
     const head = this.binderName("a constructor name or `_`");
     if (head.text === undefined) return { kind: "PWild", at: head.at };
 
-    const name = { text: head.text, at: head.at };
+    return this.ctorPat({ text: head.text, at: head.at });
+  }
+
+  /** `C` or `C(x, y)`, its name already read -- which is where `let` joins. */
+  private ctorPat(name: Ident): MatchPat {
     const args = this.cursor.at("lparen") ? this.plainFunBinders() : [];
-    return { kind: "PCtor", name, args, at: head.at };
+    return { kind: "PCtor", name, args, at: name.at };
   }
 
   /** The postfix tier: application and instantiation, both left-associative. */
@@ -823,7 +863,7 @@ function wildcard(at: Position): BindingIdent {
  * each other, told apart by being an array. Non-empty, so the run's position is
  * its first member's and is recorded nowhere else.
  */
-type BlockItem = LetItem | [DefItem, ...DefItem[]];
+type BlockItem = LetItem | DestructureItem | [DefItem, ...DefItem[]];
 
 /** One `[T](x: A)` list pair, before it is folded into an arrow. */
 type ParamGroup = {

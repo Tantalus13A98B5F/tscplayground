@@ -261,6 +261,15 @@ analysis one set: what a value could still be on reaching the arm being checked,
 which makes both unreachability and exhaustiveness questions about that set. An
 unreachable arm is still checked and only its type dropped. See `#remaining`.
 
+`let Pair(x, y) = e` is that form and nothing more: the parser folds it into a
+one-arm `Match` whose body is the block that follows, so no phase below knows it
+was written this way. A `(` after the name is what tells it from `let pair =
+e`,
+since a bare name would otherwise be a pattern or a binding according to what is
+declared elsewhere. Any constructor may be written, not only a sole one, and
+what a partial one costs is the report `#remaining` already makes -- which is
+why that report names no `match`.
+
 Some limitations:
 
 - Type aliases cannot be recursive: they are transparent, so expansion would not
