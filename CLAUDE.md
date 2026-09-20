@@ -149,11 +149,12 @@ survived a `let` and not a call would be most of the precision gone, and the
 ascription a staged argument then wants is `foldLeft(Nil)`'s. `docs/clti.md` has
 that argument.
 
-A pattern name therefore fails two ways, and they are different reports.
-`#checkMatch` keeps what the scrutinee's type _admits_ beside what the arms have
-_left_: a name the family does not have is a name error, said against the
-family, and a name the type excludes is unreachability, said about the type
-rather than blamed on the name. Both are errors.
+A pattern therefore names a constructor of the scrutinee's _own_ type, not of
+its family: `#checkMatch` seeds `#remaining` from that type and resolves each
+arm's name against it, so the two agree by construction. A `Nil` arm over a
+`Cons[A]` is then the same mistake as a name nothing declares -- `Cons` is a
+datatype with one case, and `Nil` is not it -- which leaves unreachability
+saying one thing, that the arms above cover this one.
 
 A domain position -- an arrow's parameter, or a constructor's field -- may carry
 a name: `(x: A, B) -> C`, `| Box(flag: Bool, Bool)`. One syntax, so one rule,

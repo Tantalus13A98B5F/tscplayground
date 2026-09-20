@@ -12,12 +12,6 @@ function run(...lines: readonly string[]): [string, ...string[]] {
   ];
 }
 
-/** The severities alone, where which report was filed is the question. */
-function severities(...lines: readonly string[]): string[] {
-  const result = checkSource(mkSource(lines.join("\n"), "test.ga"));
-  return result.diagnostics.map((d) => d.severity);
-}
-
 /** The type alone, asserting nothing was reported. */
 function typeOf(...lines: readonly string[]): string {
   const [type, ...messages] = run(...lines);
@@ -118,10 +112,10 @@ Deno.test("the scrutinee's type says which arms it needs", () => {
   ).toBe("match is not exhaustive: Nil not covered");
 });
 
-Deno.test("an arm the scrutinee's type excludes is unreachable, not unknown", () => {
-  // Two ways for a pattern name to fail, and this is not the name's. `Nil` is
-  // a constructor of the family; what rules it out is the type in front of
-  // the match, so that is what the report names -- once.
+Deno.test("a pattern names a constructor of the scrutinee's own type", () => {
+  // Resolved against the type in front of the match and not its family, so a
+  // name that type does not have fails the way any other unknown name does.
+  // `Cons` is a datatype with one case, and `Nil` is not it.
   expect(
     run(
       ...BOOL,
@@ -130,37 +124,32 @@ Deno.test("an arm the scrutinee's type excludes is unreachable, not unknown", ()
       "  | Cons(h, t) -> h",
       "  | Nil() -> True",
     ).slice(1),
-  ).toEqual(["this arm is unreachable: no Cons[Bool] is a Nil"]);
-  // Still a name error where the family has no such constructor at all.
+  ).toEqual(["Nil is not a constructor of Cons"]);
+  // Which is the same report a name nothing declares gets, and the same one
+  // the family gives for a name it lacks.
   expect(
     run(
       ...BOOL,
       ...LIST,
-      "fn (c: Cons[Bool]) -> match c with",
+      "fn (xs: List[Bool]) -> match xs with",
       "  | Cons(h, t) -> h",
+      "  | Nil() -> True",
       "  | Nope() -> True",
     ).slice(1),
   ).toEqual(["Nope is not a constructor of List"]);
 
-  // Both are errors, though the second is a fact about a type the checker
-  // chose rather than a mistake in the arms. Two severities was tried and
-  // dropped: a prototype's diagnostics are worth less than the branch they
-  // cost, and an arm no value reaches is worth saying either way.
-  expect(severities(
-    ...BOOL,
-    ...LIST,
-    "fn (c: Cons[Bool]) -> match c with",
-    "  | Cons(h, t) -> h",
-    "  | Nil() -> True",
-  )).toEqual(["error"]);
-  expect(severities(
-    ...BOOL,
-    ...LIST,
-    "fn (xs: List[Bool]) -> match xs with",
-    "  | Cons(h, t) -> h",
-    "  | Nil() -> True",
-    "  | Nil() -> True",
-  )).toEqual(["error"]);
+  // An arm the arms above it cover is the other thing entirely, and the only
+  // way a `match` calls one unreachable.
+  expect(
+    run(
+      ...BOOL,
+      ...LIST,
+      "fn (xs: List[Bool]) -> match xs with",
+      "  | Cons(h, t) -> h",
+      "  | Nil() -> True",
+      "  | Nil() -> True",
+    ).slice(1),
+  ).toEqual(["this arm is unreachable: Nil is matched above"]);
 });
 
 Deno.test("a constructor may not rise at an invariant argument", () => {

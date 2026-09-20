@@ -607,14 +607,17 @@ export class Checker {
    * because the join is above every arm and the coercion only goes further up.
    *
    * `remaining` is the whole of the analysis: what a value could still be on
-   * reaching the arm being checked, seeded from the scrutinee's *type* rather
-   * than from the declaration its name reaches, so a `Cons[A]` needs one arm
-   * where a `List[A]` needs both. One-level patterns keep it a set of
-   * constructor names, and every question a *list* of arms raises is a
-   * question about that set -- an arm is unreachable when nothing it matches
-   * is left in it, and the arms are exhaustive when it is empty at the end.
-   * Each is about an arm against the ones before it, which is what an arm
-   * cannot see and this method can.
+   * reaching the arm being checked, seeded from the scrutinee's *type*, so a
+   * `Cons[A]` needs one arm where a `List[A]` needs both. One-level patterns
+   * keep it a set of constructor names, and every question a *list* of arms
+   * raises is a question about that set -- an arm is unreachable when nothing
+   * it matches is left in it, and the arms are exhaustive when it is empty at
+   * the end. Each is about an arm against the ones before it, which is what
+   * an arm cannot see and this method can.
+   *
+   * A name is resolved against that same type, so what a `match` may write is
+   * what the scrutinee could be, and the one way a name fails is not being a
+   * constructor of it.
    */
   #checkMatch(
     term: Extract<TermNode, { kind: "Match" }>,
@@ -630,9 +633,6 @@ export class Checker {
     for (const arm of term.arms) {
       // Taken and removed at once: what an arm matches is exactly what is
       // left after it, and an arm with nothing left is one nothing reaches.
-      // What killed it, and the two are separate questions even where the
-      // report is the same: a name the arms above it cover, against a name
-      // the scrutinee's type never admitted.
       let dead: string | undefined;
       let binderTypes: readonly Type[] = [];
       if (arm.pattern.kind === "PWild") {
@@ -640,22 +640,18 @@ export class Checker {
         remaining.clear();
       } else {
         const name = arm.pattern.name.text;
-        // Resolved against the *family*: what a name means is the datatype's
-        // business, and whether a value of this type could have it is the
-        // question below.
-        const ctor = this.declarations.ctorOf(scrutinee.family, name);
-        // A name that is no constructor is a mistake of its own and answers
-        // nothing about coverage: it was never in the set, so it cannot have
-        // been taken out, and reporting it as matched above -- which
-        // `#armBinderTypes` is about to report as no constructor at all --
-        // would blame the author twice for one thing.
-        // Which of the two it was, asked of the type rather than of what is
-        // left: a name this type never admitted is unreachable for a reason
-        // the arms above it had no part in.
+        // Resolved against the scrutinee's own type, which is the same
+        // question `remaining` was seeded with: a `Nil` arm over a `Cons[A]`
+        // names a constructor the *family* has and this type does not, and
+        // that is no different from naming one nothing has -- `Cons` is a
+        // datatype with one case, and `Nil` is not it.
+        const ctor = this.declarations.ctorOf(scrutinee.name, name);
+        // A name that is no constructor answers nothing about coverage: it
+        // was never in the set, so it cannot have been taken out, and calling
+        // it matched above -- where `#armBinderTypes` is about to report it
+        // as no constructor at all -- would blame the author twice.
         if (ctor !== undefined && !remaining.delete(name)) {
-          dead = this.declarations.casesOf(scrutinee).includes(name)
-            ? `${name} is matched above`
-            : `no ${typeToString(scrutinee)} is a ${name}`;
+          dead = `${name} is matched above`;
         }
         binderTypes = this.#armBinderTypes(arm.pattern, ctor, scrutinee);
       }
@@ -742,7 +738,7 @@ export class Checker {
   ): readonly Type[] {
     if (ctor === undefined) {
       const bad = badUnder(this.#report(
-        `${pattern.name.text} is not a constructor of ${matched.family}`,
+        `${pattern.name.text} is not a constructor of ${matched.name}`,
         pattern.name.at,
         pattern.name.text.length,
       ));
