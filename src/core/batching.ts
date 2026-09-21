@@ -25,7 +25,7 @@
  */
 
 import type { Param, TermNode } from "../syntax/ast.ts";
-import { TMissing, type TypePattern } from "./types.ts";
+import { openWith, TMissing, type TypePattern } from "./types.ts";
 
 /**
  * One round. `solve` happens *before* `args` are checked -- a bare lambda
@@ -47,38 +47,20 @@ export type Plan = {
 };
 
 /**
- * The enclosing binder's variables occurring in a type, counted from `depth`
- * binders in. Not `openWith`, which would have to rebuild the type and cannot
- * be handed a node that already sits under binders.
+ * The enclosing binder's variables occurring in a type that sits `depth`
+ * binders in. `openWith` does the walk; its rule sees each index relative to
+ * the node it was handed, so the binders above that node are subtracted here,
+ * and what it rebuilds is dropped.
  */
 function collectVars(
   type: TypePattern,
   depth: number,
   into: Set<number>,
 ): void {
-  switch (type.kind) {
-    case "BVar":
-      if (type.index >= depth) into.add(type.index - depth);
-      return;
-    case "TFun": {
-      // Bounds are parallel, so they stay outside the binder they belong to.
-      const inner = depth + type.typeParams.length;
-      for (const binder of type.typeParams) {
-        collectVars(binder.bound, depth, into);
-      }
-      for (const param of type.params) collectVars(param, inner, into);
-      collectVars(type.result, inner, into);
-      return;
-    }
-    case "TData":
-      for (const arg of type.args) collectVars(arg, depth, into);
-      return;
-    case "TRef":
-      collectVars(type.arg, depth, into);
-      return;
-    default:
-      return;
-  }
+  openWith(type, (index) => {
+    if (index >= depth) into.add(index - depth);
+    return TMissing;
+  });
 }
 
 /**
