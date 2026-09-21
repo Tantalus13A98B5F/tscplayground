@@ -341,12 +341,13 @@ forced to a value before the lambda's body is looked at, and what it is forced
 to is what `z` said. Constraints from the later list are not weighed, because
 the later list cannot be typed until the variable is gone.
 
-So a bare lambda is what closes a batch early in both designs. We close one per
-list, which is a coarser cut at the same place and for the same reason, and the
-list boundary is where an author can see it. Widening the answer was a way of
-paying for that cut with imprecision everywhere; the cut described in the
-roadmap's _Batching one parameter list_ is the way of making it later and
-narrower, and it is where this pressure should go.
+So a bare lambda is what closes a batch early in both designs. We used to close
+one per list, a coarser cut at the same place and for the same reason. Widening
+the answer was a way of paying for that cut with imprecision everywhere;
+_Staging one parameter list_ made the cut later and narrower instead, which is
+where this pressure went. A type parameter is now answered when nothing still
+waiting can say more about it, so the cut falls inside the list and no longer
+needs the author to put it there.
 
 ## Who says what went wrong
 
@@ -507,14 +508,13 @@ So it recovers one of the two regressions step 0 measured and not the other:
                                    TS "succeeds" only by giving `y` implicit any
 
 The price is not the ordering, which is cheap. It is that a deferred argument is
-checked while the call's batch is live, so batches overlap again and "a
-constraint mentioning an EVar can only mean a sibling" goes with them. The form
-that keeps the invariant is to solve the batch _before_ any context-sensitive
-argument is checked, and check those against what came out -- best effort, no
-second solve, no live batch during an argument. Which is a cut in the list
-rather than a deferral within it: one list, several batches, `withEVars` still
-owning each alone. `docs/roadmap.md`'s _Batching one parameter list_ is what
-that would take, and where the cut would fall.
+checked while the call's batch is live, so a constraint mentioning an EVar could
+mean something other than a sibling. _Staging one parameter list_ keeps that
+apart a different way: the EVars do live across the whole list, but an argument
+is _checked_ against answers and missing parts and never against an EVar, so
+nothing it or a nested call relates can mention one. What is solved before a
+context-sensitive argument is checked is what that argument waits on, and only
+that. `docs/staging.md` has the model.
 
 ### Recursion, and a rule that was rejected
 

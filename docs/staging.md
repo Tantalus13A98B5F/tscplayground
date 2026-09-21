@@ -177,9 +177,10 @@ solve  every unsolved type parameter that has any constraint
 check  every remaining argument
 ```
 
-and stop ordering. Whatever still has no type reports where it always did --
-`cannot infer a type for x` -- so this needs no diagnostic of its own and no
-cycle-finding: the absence of an in-degree-zero node _is_ the detection.
+and stop ordering. "Any constraint" is the same test as above. Whatever still
+has no type reports where it always did -- `cannot infer a type for x` -- so
+this needs no diagnostic of its own and no cycle-finding: the absence of an
+in-degree-zero node _is_ the detection.
 
 The alternative is to break the cycle by seeding one argument. Rejected. Picking
 which argument is a heuristic -- the leftmost, the leftmost on a cycle -- and

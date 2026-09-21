@@ -13,8 +13,7 @@
 let ns = Cons(Z, Cons(S(Z), Nil()))
 
 // Staged, so `A` is settled by the list before the function is looked at and
-// `B` comes from the function: every lambda below is *bare*, and would need a
-// parameter annotation in the one-list form `map(f, xs)`.
+// `B` comes from the function. Every lambda below is *bare*.
 let flags = map(ns)(isZero)
 let doubled = map(ns)(fn (n) -> add(n)(n))
 
@@ -22,9 +21,15 @@ let doubled = map(ns)(fn (n) -> add(n)(n))
 // so the operator's `acc` is known by the time the lambda is checked.
 let anyZero = foldr(ns)(False)(fn (h, acc) -> or(isZero(h), acc))
 
+// The same thing in one list, which the checker stages for itself: nothing
+// waiting can say more about `A` than `xs` does, so `xs` goes first and `f` is
+// checked against the answer. The written `(xs)(f)` is now a choice.
+let mapAll = fn [A, B](xs: List[A], f: (A) -> B) -> map(xs)(f)
+let tripled = mapAll(ns, fn (n) -> add(n)(add(n)(n)))
+
 // Nothing constrains this `Nil()` at all, so it is `List[never]` -- an answer
 // and not a gap, since `isEmpty` asks nothing of the element type.
-let sizes = Pair(length(flags), length(doubled))
+let sizes = Pair(length(flags), length(tripled))
 
 // Taken apart where it is built: a sole constructor is the type `sizes` has,
 // so the one arm covers it and this says nothing about the cases it is not.

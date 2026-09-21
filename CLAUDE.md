@@ -214,14 +214,45 @@ Exhaustion is the checker's limit, not the program's mistake: say so and answer
 the author never wrote and then blame them for it.
 
 Unannotated lambda parameters are never EVars -- a parameter's type comes from
-annotations or from the checking context. In an argument list the parameter
-binds to the callee's EVar directly, so a bare lambda works there as long as its
-body does not need the parameter's _structure_; `match` on it does, and that is
-where a _later_ parameter list is required, the way Scala's `foldLeft(z)(op)`
-stages it. Currying gives this for free; there is no multi-list function type.
-`fn [A](xs)[B](z)(op) -> e` writes the lists on one binder, and that is surface
-sugar the parser folds into nested `fn`s -- so several lists cost the checker
-nothing, and the type they give is the curried one.
+annotations or from the checking context. In an argument list that context is
+the parameter pattern, which hides the callee's type parameters behind missing
+parts, so a bare lambda has nothing to read until they are answered.
+
+Which is why a parameter list is not one batch. `planStages` cuts it into
+rounds. An argument _requires_ a type parameter where it left a parameter bare
+in that position, and _supplies_ one it names anywhere else -- a bare lambda's
+parameter type **is** the solution of what it required, so relating that back
+says only `?A <: solution(A)`, and a requirer supplies its result alone. An
+argument nothing still waiting can supply to has parameters as constrained as
+they will ever be, so answering them now gives up nothing; that is the whole
+order, and it is deliberately not a measure of how constrained a parameter
+already is. So `fold(op, z, l)` is one list, and what is given up to get it is
+`op`'s own vote on `B` -- the same thing a second written list gives up.
+
+Where no argument can go first, every one left is on or downstream of a cycle
+and the ordering has run out. It is not broken: picking which argument to break
+at is a choice no cheap rule makes soundly, and a wrong one answers a parameter
+from fewer constraints than were available and then blames the next argument for
+not conforming. Instead, answer what an argument already checked can speak to,
+check the rest, and let whatever still has no type report where it always did. A
+parameter _nothing_ constrained is never answered either, in any round: the
+answer would be the checker's choice, and "nothing constrained `A`" is the
+parameter's own report under a name the author did not write.
+
+Every EVar of a call lives for its whole argument list, pushed in reverse of the
+order they are answered in, so each round pops what it answered and
+`nothing
+outside holds a type naming an EVar` stays structural. Bounds are
+unaffected: `addConstraint` refuses any that mentions an EVar either way, which
+is what lets any subset be answered at any time. `docs/staging.md` has the model
+and the limits.
+
+A written list still stages what no argument determines, and is still where a
+type parameter's scope is decided. Currying gives this for free; there is no
+multi-list function type. `fn [A](xs)[B](z)(op) -> e` writes the lists on one
+binder, and that is surface sugar the parser folds into nested `fn`s -- so
+several lists cost the checker nothing, and the type they give is the curried
+one.
 
 Recursion is `def`, and what it adds to `let` is a scope rather than a shape: a
 run of _adjacent_ `def`s is one group whose members may name each other, and

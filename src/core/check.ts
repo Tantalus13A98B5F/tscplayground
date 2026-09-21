@@ -27,6 +27,7 @@ import {
   type Program,
   type TermNode,
 } from "../syntax/ast.ts";
+import { planStages } from "./batching.ts";
 import { Context } from "./context.ts";
 import { type DataCtorInfo, Declarations } from "./context.ts";
 import { ctorFieldsAt, Elaborator } from "./elaborate.ts";
@@ -449,23 +450,19 @@ export class Checker {
       return answer;
     }
 
-    // Every argument is checked before a single EVar exists, against a
-    // pattern that hides the type parameters behind missing parts: an
-    // undecided type argument says nothing about an argument's shape. So
-    // nothing here can reach an EVar, and batches cannot nest -- a nested call
-    // opens and closes its own entirely within this loop.
-    const missing = callee.typeParams.map(() => TMissing);
-    const patterns = callee.params.map((param) =>
-      openMany<unknown>(param, missing)
-    );
-    const actuals = term.args.map((arg, i) =>
-      this.check(arg, patterns[i] ?? TMissing)
-    );
-
     // An argument list of the wrong length settles the call on its own: the
     // missing arguments were what the type parameters were to be read from, so
-    // there is nothing left to ask and nothing to suppress afterwards.
+    // there is nothing left to ask and nothing to suppress afterwards. Checked
+    // all the same, against a pattern hiding every type parameter, since errors
+    // inside the arguments are real either way.
     if (term.args.length !== callee.params.length) {
+      const hidden = callee.typeParams.map(() => TMissing);
+      for (const [i, arg] of term.args.entries()) {
+        this.check(
+          arg,
+          openMany<unknown>(callee.params[i] ?? TMissing, hidden),
+        );
+      }
       return badUnder(
         this.#report(
           `expected ${callee.params.length} argument${
@@ -478,72 +475,138 @@ export class Checker {
 
     const demanded = this.subtyper.widestMatching(expected);
 
-    // What is left is the relating, which is all the EVars are for: the
-    // complete type each argument came back with against a parameter type over
-    // variables -- the dependency-free relation LTI is decidable on.
-    const solutions = this.subtyper.withEVars(
-      callee.typeParams.map((binder) => binder.hint),
+    // Where the list is cut, and in what order the type parameters are
+    // answered. A list with no bare lambda in it plans to one round that
+    // checks everything and demands nothing, which is what this rule did
+    // before it had rounds at all. `planStages` has the reasons.
+    const plan = planStages(
+      callee.params,
+      term.args,
+      callee.typeParams.length,
+    );
+    const order = [
+      ...plan.rounds.flatMap((round) => round.solve),
+      ...plan.rest,
+    ];
+    const solved: (Type | undefined)[] = callee.typeParams.map(() => undefined);
+    // What an argument is *told*, which is not everything that was solved: an
+    // answer nothing constrained is the checker's choice, and handing it over
+    // would type a parameter from thin air instead of saying it could not be.
+    const told: (Type | undefined)[] = callee.typeParams.map(() => undefined);
+
+    const answers = this.subtyper.withStagedEVars(
+      order.map((j) =>
+        callee.typeParams[j]?.hint ?? impossible("the plan indexes the binders")
+      ),
       term.at,
-      (evars) => {
+      (evars, solveNext) => {
+        const opened = new Map(
+          order.map((j, k) => [
+            j,
+            evars[k] ?? impossible("an EVar per type parameter"),
+          ]),
+        );
+        // A type parameter's answer once it has one, and the variable standing
+        // for it until then. A solved one is never read back through `opened`:
+        // its entry is popped, and the solution is what everything after wants.
+        const standing = (j: number): Type =>
+          solved[j] ?? opened.get(j) ??
+            impossible("every type parameter is in the order");
+
         // The declared bound is a constraint like any other, so it takes part
         // in the `lower <: upper` check rather than being enforced separately.
-        // Asked and not recorded directly, so that `?A <: unknown` falls out
-        // as vacuous instead of needing to be excluded.
+        // Asked and not recorded directly, so that `?A <: unknown` falls out as
+        // vacuous instead of needing to be excluded.
         //
         // Bounds are *parallel*, so this can never mention a sibling.
-        for (const [j, binder] of callee.typeParams.entries()) {
-          const evar = evars[j] ?? impossible("an EVar per type parameter");
+        for (const [k, j] of order.entries()) {
+          const evar = evars[k] ?? impossible("an EVar per type parameter");
+          const binder = callee.typeParams[j] ??
+            impossible("the plan indexes the binders");
           this.subtyper.isSubtype(evar, binder.bound);
         }
 
-        // Opened before anything is related, so every entry is fully
-        // described from the start: opening the result is what records where
-        // each EVar occurs.
+        // The result, opened before anything is related, so every entry is
+        // fully described from the start: opening it is what records where each
+        // EVar occurs. It demands nothing and supplies whatever the call's
+        // context says, so it is the one contributor that belongs to no round
+        // -- which is what lets `Nil()` at `List[Bool]` know what it is empty
+        // of whichever round settles the argument.
         const result = openWith(callee.result, (j, variance) => {
-          const evar = evars[j] ??
-            impossible("the result binds only this binder");
-          // Once per occurrence, so two placements accumulate -- which is how
-          // a variable comes to occur both ways with neither occurrence
-          // invariant. Reached from a type and not from the batch, so the
-          // entry is looked up here.
+          const evar = opened.get(j) ??
+            impossible("every type parameter is in the order");
+          // Once per occurrence, so two placements accumulate -- which is how a
+          // variable comes to occur both ways with neither occurrence
+          // invariant.
           const entry = this.context.evarAt(evar) ??
-            impossible("the batch's variables name EVar entries");
+            impossible("the staged variables name EVar entries");
           entry.noteOccurrence(variance);
           return evar;
         });
+        // The verdict is dropped because the types it would name still hold
+        // EVars; `check` coerces towards it once they are solved.
+        this.subtyper.isSubtype(result, demanded);
 
-        // Nothing is decided until the whole list is in, so the solution is a
-        // join and not a race, and the order here cannot matter.
-        const params = callee.params.map((param) => openMany(param, evars));
-        for (const [i, actual] of actuals.entries()) {
-          const param = params[i] ?? impossible("arities agree above");
-          // The argument's own position, not the call's: a bound recorded
-          // under this ask is this argument's doing, so anything the subtyper
-          // says about it names the argument.
-          //
-          // A plain `no` should be unreachable -- the complete parts of the
-          // parameter type were in the pattern and are already answered for,
-          // and EVar positions record rather than refuse -- so what is left is
-          // `exhausted`, the relation giving up before it could record.
-          const arg = term.args[i] ?? impossible("one actual per argument");
-          const verdict = this.subtyper.isSubtype(actual, param, arg.at);
-          if (verdict !== true) {
-            this.#reportVerdict(verdict, actual, param, arg.at);
+        for (const round of plan.rounds) {
+          // Before the arguments that demanded them: a bare lambda cannot be
+          // checked until the positions it left bare have answers.
+          const got = solveNext(round.solve.length);
+          for (const [k, j] of round.solve.entries()) {
+            const answer = got[k] ?? impossible("a solution per solved binder");
+            solved[j] = answer.type;
+            if (answer.constrained) told[j] = answer.type;
+          }
+
+          for (const i of round.args) {
+            const arg = term.args[i] ??
+              impossible("the plan indexes the arguments");
+            const param = callee.params[i] ?? impossible("arities agree above");
+            const actual = this.check(
+              arg,
+              openMany<unknown>(
+                param,
+                callee.typeParams.map((_, j) => told[j] ?? TMissing),
+              ),
+            );
+
+            // Related as soon as it is checked, so what it says reaches every
+            // type parameter it names -- those already answered as a check
+            // against the answer, those still open as a constraint on it.
+            //
+            // The argument's own position, not the call's: a bound recorded
+            // under this ask is this argument's doing, so anything the subtyper
+            // says about it names the argument.
+            //
+            // A plain `no` should be unreachable -- the complete parts of the
+            // parameter type were in the pattern and are already answered for,
+            // and EVar positions record rather than refuse -- so what is left
+            // is `exhausted`, the relation giving up before it could record.
+            const against = openMany(
+              param,
+              callee.typeParams.map((_, j) => standing(j)),
+            );
+            const verdict = this.subtyper.isSubtype(actual, against, arg.at);
+            if (verdict !== true) {
+              this.#reportVerdict(verdict, actual, against, arg.at);
+            }
           }
         }
-
-        // The expected type, last -- though order cannot matter, every
-        // constraint being joined at once. The verdict is dropped because the
-        // types it would name still hold EVars; `check` coerces towards it
-        // once they are solved.
-        this.subtyper.isSubtype(result, demanded);
       },
     );
 
-    // The result the batch was instantiated from, opened with what the batch
+    for (const [k, j] of order.entries()) {
+      solved[j] = answers[k] ?? impossible("a solution per type parameter");
+    }
+
+    // The result the call was instantiated from, opened with what the rounds
     // came to -- the same substitution the parameter types got above, and the
     // reason nothing has to carry a type out of the scope the EVars lived in.
-    const result = openMany(callee.result, solutions);
+    const result = openMany(
+      callee.result,
+      solved.map((type) =>
+        type ?? impossible("every one is solved by the end")
+      ),
+    );
     this.context.assertClosed("application", [result]);
     return result;
   }
