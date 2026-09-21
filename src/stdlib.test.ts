@@ -134,11 +134,11 @@ function restagedFold(signature: string, call: string) {
   });
 }
 
-Deno.test("stdlib: one parameter list stages itself where it has to", () => {
-  // What a binder still decides, and what it no longer has to. A type
-  // parameter's *scope* is still the list that binds it, so writing `B` on
-  // the first list is still wrong; where `B` is bound with the arguments that
-  // say what it is, the list stages itself and the second list is optional.
+Deno.test("stdlib: a bare lambda needs its type argument fixed by an earlier list", () => {
+  // Why `foldr` is `(xs)(z)(op)` and not either shorter shape. One parameter
+  // list is one batch of type arguments, so a binder decides where its
+  // argument becomes available -- which is the staging Scala 2 uses for
+  // `foldLeft(z)(op)`, reached here for the same reason.
   const op = "fn (h, acc) -> add(h)(acc)";
 
   expect(restagedFold(
@@ -155,24 +155,17 @@ Deno.test("stdlib: one parameter list stages itself where it has to", () => {
     )[1],
   ).toBe("fold.ga:7:19: error: expected never, found Nat");
 
-  // Both in one list: staging cuts the list where the second list used to be,
-  // so `z` settles `B` and `op` is checked after it. Which is why `foldr` no
-  // longer *needs* three lists, though it keeps them.
+  // Both in one list: they are one batch, `op` is checked before `z` has
+  // contributed, and `acc` has no type yet.
   expect(
     restagedFold(
       "fn [A](xs: List[A]) -> fn [B](z: B, op: (A, B) -> B)",
       `f(Cons(Z, Nil()))(Z, ${op})`,
-    ),
-  ).toEqual(["Nat"]);
-
-  // All three in one list, which is the shape the staging was written to
-  // avoid: `xs` and `z` are checked first, and `op` after both.
-  expect(
-    restagedFold(
-      "fn [A, B](xs: List[A], z: B, op: (A, B) -> B)",
-      `f(Cons(Z, Nil()), Z, ${op})`,
-    ),
-  ).toEqual(["Nat"]);
+    )[1],
+  ).toBe(
+    "fold.ga:7:29: error: cannot infer a type for acc: annotate it, or use " +
+      "this function where its parameter types are known",
+  );
 });
 
 Deno.test("stdlib: a Ref makes its datatype invariant, and that costs", () => {

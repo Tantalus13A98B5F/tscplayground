@@ -70,57 +70,38 @@ not one. That phase is still worth having on its own -- it turns a forward
 reference into "`foo` is declared below; its signature is not available here"
 rather than `unknown name foo` -- and it is additive, so it can land whenever.
 
+## 2. Batching one parameter list
+
+Today a parameter list is one batch, and the staging that a bare lambda needs is
+the author's to write: `foldLeft(z)(op)`, a second list so that `z` is solved
+before `op` is checked. TypeScript reaches the same effect without the syntax --
+it defers the context-sensitive arguments of a single list, fixes what the rest
+determines, and checks the deferred ones against that. So the benefit is
+available to a language that never asks the author to split the list, and the
+question is what it costs us.
+
+The cost is the one `docs/clti.md` names in "Context-sensitive arguments in
+rounds": TS checks a deferred argument while the call's batch is still live,
+which overlaps batches and takes "a constraint mentioning an EVar can only mean
+a sibling" with them. The form that keeps the invariant is to _cut_ the list
+rather than defer within it -- solve the batch at the cut, and check what is
+after it against the solutions, exactly as a second written list behaves. One
+list, several batches, and `withEVars` still owns each one alone.
+
+What is left to decide is where the cut falls. "Before the first
+context-sensitive argument" is one batch boundary and recovers
+`f(fn (x) -> id(x), True)` only if the lambda is not first, which is the
+left-to-right restriction TS lifts; a cut before _each_ context-sensitive
+argument recovers it wherever it sits, at one solve per lambda. Neither reaches
+`both(True, fn (y) -> y)`, where nothing in the list determines the parameter --
+that answer is an annotation here as it is in Scala, and TS only appears to have
+one because it has implicit `any`.
+
+Which is why this is an item and not a dependency: the syntax stays, since a
+written list is still the only way to stage what no argument determines. This
+would make the common case stop needing it.
+
 ## Landed
-
-### Staging one parameter list
-
-A parameter list is no longer one batch. `planStages` cuts it into stages, and
-the checker runs one `withEVars` per stage, so `fold(op, z, l)` works in one
-list: `z` and `l` are checked first, their type parameters are committed, and
-`op` is checked against a parameter type that no longer hides them. What a
-second written list did, computed from the types.
-
-Two relations over the arguments decide it. An argument **requires** a type
-parameter when it is a lambda with an unannotated parameter standing where that
-type parameter does -- the position that used to report `cannot infer a type`.
-It **mentions** one when it occurs anywhere in its parameter type, which is what
-it can say once it has been checked. Requiring is before and mentioning after,
-and that asymmetry is the plan: `op` mentions the `B` it also requires, and its
-vote on `B` is given up so that `z`'s can be counted first.
-
-A type parameter is committed as late as it can be -- at the end of the last
-stage before something waiting on it is checked -- and only where some argument
-already checked mentions it. Committing one that nothing mentions would solve it
-from no constraints and call the answer `never`, which is how the second
-`restagedFold` case in `src/stdlib.test.ts` fails when `B` is bound on the wrong
-list.
-
-Where no argument can be checked at all, one is checked anyway, without what it
-requires -- which is exactly today's report. Which one is not a heuristic: edges
-run from an argument to one waiting on something it mentions, so a source of the
-condensation is a group nothing else can unblock and must contain one, and one
-from each source is both necessary and enough. The leftmost member is taken, so
-that editing an unrelated argument cannot move the blame. Two independent cycles
-are therefore two reports, not one and not four.
-
-Known limits, none of which the single-stage case reaches -- a call with no bare
-lambda in it plans to one stage and behaves exactly as before:
-
-- An argument is related once every type parameter its own parameter type names
-  is committed. One committed earlier, for someone else's sake, is settled
-  without this argument's vote.
-- The expected type constrains the last stage only, so a type parameter
-  committed before it takes nothing from the call's context.
-- A parameter type with a quantifier of its own, or a lambda argument with one,
-  requires nothing: the positions sit under a second binder and the indices
-  would be the wrong ones.
-- An annotated parameter of a waiting lambda stops that lambda waiting on its
-  position, but does not yet _constrain_ it before the lambda is checked.
-  Harvesting it would elaborate the annotation twice, and so report twice.
-
-The syntax stays: a written list is still the only way to stage what no argument
-in the list determines, and it is still where a type parameter's scope is
-decided. `foldr` keeps its three lists; it no longer needs them.
 
 ### Sugar for single-case datatypes
 
@@ -242,8 +223,8 @@ principal type would survive a `let` and not a call, which is most of what this
 step is for. Scala widens singletons and unions at instantiation and leaves
 nominal precision alone for the same reason, and pays the same price: this is
 `foldLeft(Nil)`, which has always wanted `List.empty[Int]`. `docs/clti.md` has
-the argument, including why the pressure belongs on _Staging one parameter list_
-instead.
+the argument, including why the pressure belongs on _Batching one parameter
+list_ instead.
 
 The known cost is the usual one for inference under subtyping: `ref!(Cons(...))`
 infers `Ref[Cons[Bool]]`, a cell nothing can `set!` a `Nil` into, and the fix is
