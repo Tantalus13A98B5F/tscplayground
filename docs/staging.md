@@ -1,272 +1,317 @@
 # Staging one parameter list
 
-A design model, for review before it is built. PR #13 on `stage-parameter-list`
-is an earlier and coarser version; where it differs it is wrong, not merely
-older.
+A reading guide to how a call's type arguments are ordered and answered. It
+assumes no familiarity with the code; `src/core/batching.ts` and `#applyCall` in
+`src/core/check.ts` are what it describes, and section 8 maps the two.
 
-## The problem
+## 1. The problem
 
-`#applyCall` checks every argument against a pattern built from
-`callee.typeParams.map(() => TMissing)`, so an unannotated lambda parameter in
-an argument list has nothing to read and always reports:
+A lambda's unannotated parameter has no type of its own. It reads one from the
+_pattern_ the lambda is checked against -- the expected type, with the parts
+nobody has settled yet standing as `TMissing`, a hole meaning "nothing is known
+here".
+
+At a polymorphic call the callee's type parameters start out as exactly such
+holes, because they are what the argument list is about to determine. So an
+argument that is a bare lambda used to find nothing where its parameter's type
+should be:
 
 ```
+def apply[A, B](f: (A) -> B, x: A): B = f(x)
+
 apply(fn (y) -> y, True)
-      ^ cannot infer a type for y
+          ^ cannot infer a type for y
 ```
 
-A _second_ parameter list works, the first list's type parameters being solved
-by then. That is why `foldr` is `(xs)(z)(op)`. This computes that staging from
-the types instead of asking the author to write it.
+even though the sibling `True` says perfectly well that `A` is `Bool`. A
+_second_ parameter list worked, because by the time it is reached the first
+list's type parameters have answers. That is why the list library writes
+`foldr(xs)(z)(op)` rather than `foldr(xs, z, op)`.
 
-## 1. What the planner reads
+Staging computes that split from the types instead of asking the author to write
+it.
 
-Walk the argument term and its parameter type **in parallel**, descending
-through matched arrow/lambda pairs, stopping at any quantifier on either side.
-Per argument:
+## 2. The idea
 
-|               |                                                                 |
-| ------------- | --------------------------------------------------------------- |
-| `requires(i)` | type parameters standing where the lambda left a parameter bare |
-| `mentions(i)` | type parameters occurring anywhere in its parameter type        |
-| `supplies(i)` | `mentions(i) \ requires(i)`                                     |
-| `harvest(i)`  | `(position, annotation)` per parameter it did annotate          |
+Cut the argument list into **rounds**. Each round begins by answering the type
+parameters that round's arguments are waiting on, and then checks those
+arguments against the answers. `fold(op, z, l)` then works in one list: `z` and
+`l` go first, `A` and `B` are answered from them, and `op` is checked against
+real types.
 
-`supplies` is what the argument can say that it was not _told_. A bare lambda's
-parameter type **is** the solution of what it required, so relating it back says
-only `?A <: solution(A)`, which is vacuous. `requires` and `supplies` are
-disjoint by construction, so no argument has an edge to itself.
+Everything below is about one question -- _when is it safe to answer a type
+parameter?_ -- and the answer is: when nothing that has yet to be checked could
+still say anything about it.
 
-Stopping at quantifiers keeps everything flat: no depth field, no scope push in
-the planner. Anything reached sits at the callee's binder depth, so an
-annotation there mentions only ambient scope. An annotation mentioning the
-lambda's _own_ type parameter would constrain a variable about to leave scope,
-which `#avoid` would discard anyway, so nothing is lost. `[C](C, A) -> A`
-requires nothing and reports as it does today.
+## 3. Three sets per argument
 
-**Harvesting is out of scope for v1, and may stay out.** It means elaborating
-the annotation in `#applyCall` and again in `#checkAbs`, doubling what it
-reports, so `#checkAbs` would have to take the already-elaborated types -- what
-the parser already does for a `def`, but only straightforward for the outermost
-list.
+All three are read off the tree before anything is checked, by walking each
+argument term against its parameter type in parallel. Nothing is elaborated or
+compared here; they are bookkeeping about which type parameters sit where.
 
-Dropping it costs less than it sounds, and the distinction is worth keeping
-straight: that an annotated parameter does not **block** is a fact about
-`requires`, which excludes it, and that holds with or without harvesting. So
-`fn (a: Bool, b) -> e` still waits on one type parameter rather than two. What
-is given up is only the annotation _contributing a constraint_ before the lambda
-is checked.
+**`requires(i)`** -- the type parameters standing where argument `i` left a
+lambda parameter bare. These are what it must be _told_ before it can be checked
+at all. An annotated parameter requires nothing, its type being written down;
+`fn (a: Bool, b) -> e` waits on one position rather than two.
 
-**Collecting `requires` correctly is the fiddly part**, and the effort is in the
-co-walk rather than the idea. It descends wherever the term and the type agree
--- an `Abs` against a `TFun`, parameter by parameter, through curried arrows and
-through quantifiers -- and stops only at a genuine disagreement: a body that is
-not literally a lambda (a `Let` or a `Match` wrapping one), an arity mismatch, a
-type that is no arrow at all. `mentions` and `supplies` need no co-walk, being
-read off the type alone.
+**`mentions(i)`** -- every type parameter occurring anywhere in its parameter
+type.
 
-Every stop is **safe but imprecise**: recording no requirement means the
-argument is not waited for, is checked with that position still missing, and
-reports exactly as it does today. So the walk can be extended case by case
-without any extension being load-bearing.
+**`supplies(i)` = `mentions(i) \ requires(i)`** -- what it can say that it was
+not told.
 
-The hazard is the opposite one -- descending where the shapes do _not_
-correspond, which records a requirement nothing will ever satisfy and stalls the
-peel into a rejection. Agreement is the precondition; a quantifier is not a
-disagreement.
+That subtraction is the crux. A bare lambda's parameter type _is_ the answer it
+was handed, so comparing it back against `A` afterwards only re-states the
+answer and constrains nothing. A requirer contributes its **result** and nothing
+else. Since `requires` and `supplies` are disjoint by construction, no argument
+can supply what it is itself waiting for.
 
-## 2. Checking entities
+## 4. The order
 
-No parameter is a checking entity. An annotation the walk reaches needs no scope
-push; an unannotated parameter needs no elaboration. Parameters are _planning
-data_. The entities are:
+Draw an edge `a → b` when `supplies(a)` meets `requires(b)`: "`a`, once checked,
+could still say something `b` is waiting on."
 
-- a non-lambda argument,
-- a whole lambda, processed atomically as `#checkAbs` does today,
-- the call's **result type**, which checks nothing and only synthesizes.
+> An argument of **in-degree zero** is one that nothing still waiting can tell
+> anything more. Its type parameters are as constrained as they will ever be, so
+> answering them now gives up nothing.
 
-Nothing interleaves, so `Context`'s stack discipline and `closeFrom(_, mark)`
-are untouched. The result entity requires nothing, so it contributes in round
-one -- which is what lets `Nil()` at `List[Bool]` know what it is empty of
-whatever round its type parameter is solved in.
-
-## 3. The graph
-
-Nodes are arguments. One edge:
-
-```
-a → b   iff   supplies(a) ∩ (requires(b) \ solved) ≠ ∅
-```
-
-**The edge set is built once.** `\ solved` never fires: if `A ∈ supplies(a)` and
-`A ∈ requires(b)` with `a` still waiting, `A` cannot have been solved, because
-it is solved only when some ready `r` requires it -- and `r` ready means nothing
-waiting supplies what `r` requires, which `a` does. So the graph is static and
-the loop below is Kahn peeling, not a rebuild per round.
-
-An argument of **in-degree zero** is one that nothing still waiting can tell
-anything more. Its parameters are as constrained as they will ever be, so
-solving them now gives up nothing. That is the entire ordering criterion.
-
-It is deliberately not a measure of how constrained a parameter is, nor of
-whether it has anything to solve from:
+That is the entire criterion. It is deliberately **not** a measure of how
+constrained a type parameter already is:
 
 ```
 bar(f: (A) -> B, g: (B) -> C, w: A, x: B, y: B, z: B)
 ```
 
-`B` carries three constraints and `A` one before either lambda is looked at, so
-any rule that counts -- or that asks merely whether a parameter is constrainable
--- solves `B` first and checks `g`. Wrong: `f` supplies `B` too. `f → g`, `f`
-has in-degree zero and `g` does not, so the order is solve `A`, check `f`, then
-solve `B` with `f`'s body in hand.
+Before either lambda is looked at, `B` carries three constraints and `A` one.
+Any rule that counted them -- or that merely asked whether a parameter has
+_anything_ to answer from -- would answer `B` first and check `g`. That is
+wrong, because `f` supplies `B` too. Here `supplies(f) = {B}` meets
+`requires(g)`, so `f → g`: `f` has in-degree zero and `g` does not, and the
+order is answer `A`, check `f`, then answer `B` with `f`'s body in hand.
 
-## 4. The loop
+**The edge set is built once.** It never needs recomputing against what has been
+answered, because a type parameter is answered only when some in-degree- zero
+argument requires it -- and an in-degree-zero argument has no waiting supplier
+for anything it requires. So no edge can go stale while its source is still
+waiting. What the loop does is peel in-degree-zero nodes off a fixed graph.
+
+## 5. The loop
 
 ```
-state       solved ⊆ type parameters      (each solved once, never revised)
-            checked ⊆ arguments           (each checked once)
-
-build the graph once, then peel it
-
 repeat
   ready = waiting arguments of in-degree 0
-  if ready is empty and waiting is not:  give up ordering -- see 5
-  solve   ⋃ requires(i) \ solved   over i ∈ ready
-  check   each i ∈ ready against openMany(params[i], solved ?? TMissing)
-  relate  each i ∈ ready against openMany(params[i], solved ?? evar)
-until waiting is empty
-solve   every type parameter still unsolved
+  if ready is empty and waiting is not:  the order has run out -- see 6
+  answer  ⋃ requires(i)   over i ∈ ready        -- before checking them
+  check   each i ∈ ready against the answers so far
+  relate  each i ∈ ready against its parameter type
+until nothing is waiting
+answer  every type parameter still unanswered
 ```
 
-Needs are solved **before** the arguments that demanded them are checked. An
-argument requiring nothing has in-degree zero from the start, so every
-non-lambda goes in round one and solves nothing. Nothing is solved for any other
-reason: a type parameter no argument requires collects from the whole list and
-is solved by the last line.
+Answering comes **before** checking, which is the point of the exercise: a bare
+lambda cannot be checked until the positions it left bare have types.
 
-Well-founded, each quantity using only settled ones -- and with a static graph
-the in-degrees come from removing the previous round's nodes rather than from
-recomputing:
+An argument requiring nothing has in-degree zero from the start, so every
+non-lambda argument goes in round one and causes no answers. A type parameter
+that no argument requires is never answered by a round at all -- nothing is
+waiting on it, so it collects constraints from the whole list and is answered by
+the last line.
 
-```
-graph ─→ in-degree_k ─→ ready_k ─→ solve_k ─→ solved_k
-                                └─→ checked_k ─→ in-degree_{k+1}
-```
+_Relating_ is comparing the type an argument came back with against the
+parameter type it was supposed to have. That comparison is where constraints on
+type parameters are recorded: an argument of type `Bool` arriving at a position
+written `A` is what says `A` is at least `Bool`.
 
-`fold[A,B](op: (A,B) -> B, z: B, l: List[A])` applied to `(λ, Z, xs)`:
+It happens immediately after checking, so what an argument says reaches every
+type parameter it names: those already answered as a check against the answer,
+those still open as a constraint on it. Nothing an argument knows is lost
+because of when it was checked.
+
+Take `fold[A, B](op: (A, B) -> B, z: B, l: List[A])`, applied as
+`fold(fn (a, b) -> S(b), Z, xs)` -- `op` bare, so it is waiting on both:
 
 ```
 requires   op {A,B}   z ∅     l ∅
 supplies   op ∅       z {B}   l {A}
 
-round 1    ready {z,l}   solve nothing, check, relate
-round 2    ready {op}    solve {A,B}, check, relate
+round 1    ready {z,l}  -- nothing waiting supplies what they need, which is
+                           nothing.  Answer nothing; check and relate them.
+round 2    ready {op}   -- nothing waiting supplies A or B any more.
+                           Answer {A,B}; check and relate op.
 ```
 
-`op` is checked after `B` is solved, so its body has no vote on `B`. That is the
-give-up, and it is the one a second written list makes.
+`op` is checked after `B` is answered, so its body has no vote on `B`. That is
+the one thing staging gives up, and it is exactly what a second written list
+gives up.
 
-## 5. Cycles are rejected, not broken
+## 6. When the order runs out
 
-No argument of in-degree zero means every waiting argument is on or downstream
-of a cycle. Then:
+No argument of in-degree zero means every argument left is on or downstream of a
+cycle -- each waiting on something another waiting argument could still supply,
+all the way round. The ordering has run out, and the response is to say so
+rather than to force one:
 
 ```
-solve  every unsolved type parameter that has any constraint
-check  every remaining argument
+answer  every unanswered type parameter that an argument already checked
+        mentions -- those are the ones something has been said about
+check   every remaining argument
 ```
 
-and stop ordering. "Any constraint" is the same test as above. Whatever still
-has no type reports where it always did -- `cannot infer a type for x` -- so
-this needs no diagnostic of its own and no cycle-finding: the absence of an
-in-degree-zero node _is_ the detection.
+Whatever still has no type reports where it always did --
+`cannot infer a type
+for x` -- so this needs no diagnostic of its own, and no
+cycle-finding either: the absence of an in-degree-zero node _is_ the detection.
 
-The alternative is to break the cycle by seeding one argument. Rejected. Picking
-which argument is a heuristic -- the leftmost, the leftmost on a cycle -- and
-none of them is guaranteed to pick a cycle that is not itself downstream of
-another. Breaking the wrong one solves its needs from fewer constraints than
-were available, so the answer comes out too narrow and the _next_ argument fails
-to conform: a report blaming the program for the checker's arbitrary choice. A
-coarse report is fine and a wrong one is not, so the honest move is to say the
-ordering ran out. Tarjan would make the choice sound; it is not worth a
-condensation, stamping and postorder collection for the shapes it buys.
+The alternative is to break the cycle by picking one argument to check first.
+That is rejected. Every cheap way of picking is a heuristic, and none is
+guaranteed to pick a cycle that is not itself downstream of another. Breaking
+the wrong one answers its type parameters from fewer constraints than were
+available, so the answer comes out too narrow and the _next_ argument fails to
+conform -- a report blaming the program for a choice the checker made. A coarse
+report is fine; a wrong one is not.
 
-What this costs is real and small:
+What it costs is small and real:
 
 ```
 three[A, B](g: (A) -> B, h: (B) -> A, a: A)
 ```
 
-`g` and `h` are a cycle. Round one takes `a`; round two stalls. `A` has `a`'s
-constraint and is solved, `B` has none and stays missing, so `g` checks and `h`
-reports. Breaking the cycle would have taken `B` from `g`'s body and checked
-both. One report on a program that could have checked, fixed by one annotation.
+`g` and `h` are a cycle. Round one takes `a`. Round two has no in-degree-zero
+argument, so: `A` has `a`'s constraint and is answered, `B` has none and stays
+open, `g` checks and `h` reports. Breaking the cycle would have taken `B` from
+`g`'s body and checked both.
 
-`foo[A,B,C,D](x: A, y: B, e: (C) -> D, h: (A,B) -> C, f: (A) -> B, g: (B) -> A)`
-stalls for the same reason, and `x` and `y` do not prevent it: `supplies(f)`
-meets `requires(g)` and `supplies(g)` meets `requires(f)` however much else
-supplies them.
+## 7. An answer nobody asked for is not an answer
 
-## 6. EVars
-
-**One batch, pushed once, before the first round, and popped after the last.**
-An argument is related as soon as it is checked, recording constraints on every
-parameter it names; those already solved are checked against, those still open
-are constrained. So a parameter nobody requires keeps collecting from the whole
-list, and no checked argument ever loses its vote on one solved later.
+A type parameter that **nothing** constrained is answered -- something has to
+fill the call's result type -- but that answer is not handed to the arguments as
+what their positions _are_. Those stay `TMissing`, and the parameter that could
+not be typed says so:
 
 ```
-once      push one EVar per type parameter, in reverse of the solve order
-          evar <: binder.bound                      (bounds are parallel)
-          the result type, noting occurrences
-per round as section 4, then pop what that round solved
-once      solve the rest, pop
+one[A, B](f: (A) -> B)   applied to   fn (y) -> y
+                                          ^ cannot infer a type for y
 ```
 
-**The push order is not needed for soundness, and is worth having anyway.**
-Bounds must be EVar-free whatever the order (below), so nothing depends on it.
-What it buys is the property `withEVars` has today: it pops the scope _before_
-solving, so a solution naming an entry is structurally impossible rather than
-refused by a check. Keep every EVar pushed for the whole call and that becomes a
-promise; push them so the first solved sits highest and each round can pop
-exactly what it solved, and it stays a fact. The solve order is known upfront,
-the planner being static.
+`A` stands only where the lambda left a parameter bare, so nothing determines
+it. Answering `y` from a choice the checker made would be inventing a type;
+reporting "nothing constrained `A`" instead would be the same mistake under a
+name the author never wrote. The report goes where an annotation would go.
 
-**No bound may mention an EVar**, in any order. Solving `?A` whose bound names
-an unsolved `?B` cannot answer closed, and `?A`'s choice comes from where it
-occurs in the result type alone, blind to what is pending in `?B`. The rule is
-independence, not ordering, and `addConstraint` already enforces it with
-`isClosed(type, this.batch)` against the level the group begins at. With
-EVar-free bounds any subset may be solved at any time, so staged solving needs
-nothing new -- no push order, no second group, no zonking, no rejection in the
-relation.
+This holds in every round, and it is also the backstop for section 6: the
+planner picks what to answer there by what an already-checked argument
+_mentions_, which is a guess that something was said; where nothing actually
+was, this rule keeps that answer from reaching any argument.
 
-What keeps bounds EVar-free is that arguments are **checked** against
-`solved ?? TMissing` and never against an EVar, so every actual is closed. The
-result-type relation is the one place an EVar stands on the left, and `#avoid`
-already answers for it. That same fact makes a nested application harmless: its
-batch sits above ours, but nothing it relates can mention ours, because nothing
-it checked could have seen one. `CLAUDE.md`'s "batches never nest" therefore
-wants restating -- what it protects is now bought by where EVars are _visible_
-rather than by when they exist.
+## 8. Where the code is
 
-**To verify when building this**: that no bound is ever recorded mentioning an
-EVar once they live across argument checking (`addConstraint` throws rather than
-letting one pass, which is the property to lean on); that `assertClosed` on the
-call's result still holds; and that `#avoid` is asked where it is today.
+|                                             |                                                                                                                                                                                         |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/core/batching.ts`                      | the planner: everything in sections 3 to 6, and nothing else. Pure, reads only the tree and the callee's type.                                                                          |
+| `planStages(params, args, typeParamCount)`  | the whole plan. Returns `Plan`.                                                                                                                                                         |
+| `Plan = { rounds, rest }`                   | `rounds` in order; `rest` is the type parameters no round demanded, answered last.                                                                                                      |
+| `Round = { solve, args }`                   | `solve` are type-parameter indices answered **before** `args` (argument indices) are checked.                                                                                           |
+| `collectVars(type, depth, into)`            | the type parameters a type names, counted from `depth` binders in.                                                                                                                      |
+| `collectRequired(arg, param, depth, into)`  | the co-walk of section 3. It mirrors `#checkAbs` -- the rule that checks a lambda against an expected type -- so that it waits for exactly what that rule would otherwise fail to find. |
+| `src/core/subtype.ts`                       |                                                                                                                                                                                         |
+| `Subtyper.withStagedEVars(hints, at, body)` | owns the EVars' lifetime -- section 9. `body` receives the variables and a `solveNext(count)`.                                                                                          |
+| `SolvedTypeArg = { type, constrained }`     | one answer, and whether anything said so. Section 7 is this flag.                                                                                                                       |
+| `src/core/check.ts`                         |                                                                                                                                                                                         |
+| `#applyCall`                                | the rule for an application. Runs the plan.                                                                                                                                             |
 
-## What is given up
+`#applyCall` reads, in order: infer the callee; settle an arity mismatch on its
+own; compute the plan; flatten it into `order`, the type parameters in the
+sequence they will be answered; then inside `withStagedEVars` record the
+declared bounds and the call's expected type, and run the rounds. It keeps two
+arrays -- `solved`, every answer, which fills the result type; and `told`, the
+answers that were constrained, which is what arguments are checked against. The
+helper `standing(j)` is what a _relation_ uses: an answer if there is one, the
+variable otherwise.
 
-An argument that has not been **checked** cannot constrain anything, so a
-parameter solved before it is checked is settled without its vote. That is
-`op`'s vote on `B`, and the price of answering `fold(op, z, l)` at all.
+## 9. The type variables, and how long they live
 
-Plus, at a cycle, the ordering itself -- section 5.
+A type parameter being solved for is an **EVar**: a placeholder that collects
+lower and upper bounds while arguments are related to their parameter types, and
+is then resolved to one type.
 
-Nothing else. An argument already checked keeps its say on every parameter it
-names, whenever that parameter is solved.
+EVars live in the same scope stack as ordinary variables, so pushing one makes
+it visible and popping it makes it gone. All of a call's EVars are pushed
+**once**, before the first round, and live for the whole argument list. Not one
+batch per round -- a round answers only what the next arguments demand, and an
+argument checked in round one must keep its say on a type parameter answered in
+round three.
 
-The syntax stays. A written list is still the only way to stage what no argument
-determines, and still where a type parameter's scope is decided. `foldr` keeps
-its three lists; it no longer needs them.
+They are pushed in **reverse** of the order they will be answered in, so the
+next to be answered is always on top and is popped the moment it is. The
+property that buys: no type outside `withStagedEVars` ever names an EVar, and
+that stays _structural_ -- an answer is computed with its own variable already
+out of scope -- rather than becoming a promise some later check has to keep.
+
+Three invariants hold this together:
+
+- **No bound ever mentions an EVar.** `EVarEntry.addConstraint` throws if one
+  does. It is what lets any subset be answered at any time: an answer can never
+  be waiting on another answer.
+- **Arguments are checked against answers or `TMissing`, never against an
+  EVar.** So every type an argument comes back with is EVar-free, and every
+  bound recorded from one is too. It is also why a nested call is harmless: its
+  own variables sit above ours on the stack, but nothing it relates can mention
+  ours, because nothing it checked could have seen one.
+- **Every type parameter is answered exactly once.** Where its lower and upper
+  bounds cannot be told apart, resolving one is an arbitrary pick and warns;
+  answering once means that warning cannot be repeated for the same parameter.
+  It is also what lets the call's result type be built by substitution at the
+  end.
+
+The call's **result type** is a contributor belonging to no round: it demands
+nothing and says whatever the call's context says, so it is related once at the
+start. That is what lets `Nil()` checked against `List[Bool]` know what it is
+empty of, whichever round settles the type parameter.
+
+## 10. Not in this implementation
+
+**Parameter annotations as early constraints.** An annotated lambda parameter
+stops the argument _waiting_ on that position -- that is `requires`, and it
+works today. What it does not do is _contribute_ its type before the lambda is
+checked. Doing so means elaborating the annotation once in `#applyCall` and
+again in `#checkAbs`, so everything it reports would be reported twice; the fix
+is for `#checkAbs` to accept already-elaborated parameter types, which the
+parser already arranges for a `def`. It is straightforward only for the
+outermost parameter list.
+
+**A sound choice of where to break a cycle.** Section 6 rejects instead. A
+condensation into strongly connected components would make the choice sound and
+recover programs like `three` above; it was judged not worth the machinery for
+the shapes it buys.
+
+**The co-walk stops at anything but a lambda.** `collectRequired` descends
+through curried arrows and through quantifiers, but a body that is not literally
+a lambda -- one wrapped in a `let` or a `match` -- ends the walk, so a lambda
+nested inside those is not waited for.
+
+That last one degrades gently, and so would any further gap in the walk: no
+requirement is recorded, the argument is not waited for, it is checked with the
+position still missing, and it reports exactly as it did before staging existed.
+**Stopping the walk early is always safe**, which is what makes it extensible a
+case at a time. The unsafe direction is the opposite -- descending where the
+term and the type do _not_ correspond, which records a requirement nothing will
+ever satisfy and turns an ordinary call into a rejected one.
+
+The first two are different in kind. A missing annotation constraint costs
+precision that nothing reports; rejecting a cycle costs a program that a sound
+choice would have accepted. Both are visible as reports rather than as silently
+wrong answers.
+
+## 11. What is given up for good
+
+An argument that has not been **checked** cannot constrain anything, so a type
+parameter answered before it is checked is settled without its vote. That is
+`op`'s vote on `B` in section 5 -- the price of answering `fold(op, z, l)` at
+all, and the same price a second written list pays.
+
+Nothing else. An argument already checked keeps its say on every type parameter
+it names, whenever that parameter is answered.
+
+The syntax stays: a written parameter list is still the only way to stage what
+no argument in the list determines, and still where a type parameter's scope is
+decided. `foldr` keeps its three lists; it no longer needs them.
