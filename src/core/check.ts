@@ -476,18 +476,15 @@ export class Checker {
     const demanded = this.subtyper.widestMatching(expected);
 
     // Where the list is cut, and in what order the type parameters are
-    // answered. A list with no bare lambda in it plans to one round that
-    // checks everything and demands nothing, which is what this rule did
-    // before it had rounds at all. `planStages` has the reasons.
-    const plan = planStages(
+    // answered. A list with no bare lambda in it plans to a round that checks
+    // everything and one that then answers everything, which is what this rule
+    // did before it had rounds at all. `planStages` has the reasons.
+    const rounds = planStages(
       callee.params,
       term.args,
       callee.typeParams.length,
     );
-    const order = [
-      ...plan.rounds.flatMap((round) => round.solve),
-      ...plan.rest,
-    ];
+    const order = rounds.flatMap((round) => round.solve);
     const solved: (Type | undefined)[] = callee.typeParams.map(() => undefined);
     // What an argument is *told*, which is not everything that was solved: an
     // answer nothing constrained is the checker's choice, and handing it over
@@ -547,7 +544,7 @@ export class Checker {
         // EVars; `check` coerces towards it once they are solved.
         this.subtyper.isSubtype(result, demanded);
 
-        for (const round of plan.rounds) {
+        for (const round of rounds) {
           // Before the arguments that demanded them: a bare lambda cannot be
           // checked until the positions it left bare have answers.
           const got = solveNext(round.solve.length);
@@ -557,7 +554,7 @@ export class Checker {
             if (answer.constrained) told[j] = answer.type;
           }
 
-          for (const i of round.args) {
+          for (const i of round.check) {
             const arg = term.args[i] ??
               impossible("the plan indexes the arguments");
             const param = callee.params[i] ?? impossible("arities agree above");

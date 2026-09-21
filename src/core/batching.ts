@@ -24,26 +24,29 @@
  * supplying `B` as well.
  */
 
-import type { Param, TermNode } from "../syntax/ast.ts";
+import type { TermNode } from "../syntax/ast.ts";
 import { openWith, TMissing, type TypePattern } from "./types.ts";
 
 /**
- * One round. `solve` happens *before* `args` are checked -- a bare lambda
- * cannot be checked until the positions it left bare have answers -- and the
- * indices are type parameters where `args` are arguments.
+ * Solve the type parameters in `solve`, then check the arguments in `check`
+ * -- in that order, since a bare lambda cannot be checked until the positions
+ * it left bare have answers. Both are indices: `solve` into the callee's
+ * binders, `check` into the argument list.
  */
 export type Round = {
   readonly solve: readonly number[];
-  readonly args: readonly number[];
+  readonly check: readonly number[];
 };
 
-export type Plan = {
-  readonly rounds: readonly Round[];
-  /**
-   * Type parameters no round demanded. Nothing waits on them, so they collect
-   * from the whole list and are solved once it is done.
-   */
-  readonly rest: readonly number[];
+/**
+ * An argument as the planner sees it: its position, and the three sets of type
+ * parameters that decide when it is checked.
+ */
+type StagedArg = {
+  readonly index: number;
+  readonly mentions: ReadonlySet<number>;
+  readonly requires: ReadonlySet<number>;
+  readonly supplies: ReadonlySet<number>;
 };
 
 /**
@@ -93,75 +96,82 @@ function collectRequired(
   for (const [j, written] of arg.params.entries()) {
     const position = param.params[j];
     if (position === undefined) continue;
-    if ((written as Param).annotation !== undefined) continue;
+    if (written.annotation !== undefined) continue;
     collectVars(position, inner, into);
   }
   collectRequired(arg.body, param.result, inner, into);
 }
 
-/** The rounds of one argument list, in order, always at least one. */
+/**
+ * The rounds of one argument list, in order. The last checks nothing and
+ * solves what no argument required: nothing waits on those, so they collect
+ * from the whole list first.
+ */
 export function planStages(
   params: readonly TypePattern[],
   args: readonly TermNode[],
   typeParamCount: number,
-): Plan {
-  const mentions = params.map((param) => {
-    const seen = new Set<number>();
-    collectVars(param, 0, seen);
-    return seen;
+): readonly Round[] {
+  // Arities agree: the caller refused the call before planning otherwise.
+  const argInfos = args.map((arg, index): StagedArg => {
+    const param = params[index] ?? TMissing;
+    const mentions = new Set<number>();
+    collectVars(param, 0, mentions);
+    const requires = new Set<number>();
+    collectRequired(arg, param, 0, requires);
+    // What it can say that it was not told. Disjoint from what it requires, so
+    // no argument ever waits on itself.
+    const supplies = mentions.difference(requires);
+    return { index, mentions, requires, supplies };
   });
-  const requires = args.map((arg, i) => {
-    const seen = new Set<number>();
-    collectRequired(arg, params[i] ?? TMissing, 0, seen);
-    return seen;
-  });
-  // What it can say that it was not told.
-  const supplies = mentions.map((named, i) =>
-    new Set([...named].filter((j) => !requires[i]?.has(j)))
-  );
 
   const rounds: Round[] = [];
-  const solved = new Set<number>();
-  const checked = new Set<number>();
-  let waiting = args.map((_, i) => i);
+  const unsolved = new Set(
+    Array.from({ length: typeParamCount }, (_, j) => j),
+  );
+  // Solve what `wanted` names that no earlier round solved, then check
+  // `checking`.
+  const pushRound = (
+    wanted: ReadonlySet<number>,
+    checking: readonly StagedArg[],
+  ) => {
+    const solve = [...wanted.intersection(unsolved)];
+    for (const j of solve) unsolved.delete(j);
+    rounds.push({ solve, check: checking.map((arg) => arg.index) });
+  };
+  let waiting = argInfos;
 
   while (waiting.length > 0) {
-    const needOf = (i: number) =>
-      [...requires[i] ?? []].filter((j) => !solved.has(j));
-    const ready = waiting.filter((i) =>
-      !waiting.some((j) =>
-        j !== i && needOf(i).some((k) => supplies[j]?.has(k))
-      )
+    // Nothing leaves this set but by being checked, so a type parameter no
+    // waiting argument supplies stays that way: what an earlier round answered
+    // can never make an argument wait again.
+    const supplied = new Set(waiting.flatMap((arg) => [...arg.supplies]));
+    const ready = waiting.filter((arg) =>
+      arg.requires.isDisjointFrom(supplied)
     );
 
     if (ready.length > 0) {
-      const solve = [...new Set(ready.flatMap(needOf))].sort((a, b) => a - b);
-      for (const j of solve) solved.add(j);
-      for (const i of ready) checked.add(i);
-      rounds.push({ solve, args: ready });
-      waiting = waiting.filter((i) => !checked.has(i));
-      continue;
+      const required = new Set(ready.flatMap((arg) => [...arg.requires]));
+      pushRound(required, ready);
+      waiting = waiting.filter((arg) => !ready.includes(arg));
+    } else {
+      // Nothing of in-degree zero: every argument left is on or downstream of
+      // a cycle, and the ordering has run out. Rather than break one -- which
+      // is a choice no cheap rule makes soundly, and a wrong one settles a
+      // parameter from fewer constraints than were available and then blames
+      // the next argument for not conforming -- answer what an argument
+      // already checked can speak to, check the rest, and let whatever still
+      // has no type report where it always did.
+      const spoken = new Set(
+        argInfos
+          .filter((arg) => !waiting.includes(arg))
+          .flatMap((arg) => [...arg.mentions]),
+      );
+      pushRound(spoken, waiting);
+      waiting = [];
     }
-
-    // Nothing of in-degree zero: every argument left is on or downstream of a
-    // cycle, and the ordering has run out. Rather than break one -- which is a
-    // choice no cheap rule makes soundly, and a wrong one settles a parameter
-    // from fewer constraints than were available and then blames the next
-    // argument for not conforming -- solve what an argument already checked
-    // can speak to, check the rest, and let whatever still has no type report
-    // where it always did.
-    const speakable = new Set<number>();
-    for (const i of checked) {
-      for (const j of mentions[i] ?? []) if (!solved.has(j)) speakable.add(j);
-    }
-    const solve = [...speakable].sort((a, b) => a - b);
-    for (const j of solve) solved.add(j);
-    rounds.push({ solve, args: waiting });
-    waiting = [];
   }
 
-  const rest: number[] = [];
-  for (let j = 0; j < typeParamCount; j += 1) if (!solved.has(j)) rest.push(j);
-  if (rounds.length === 0) rounds.push({ solve: [], args: [] });
-  return { rounds, rest };
+  pushRound(unsolved, []);
+  return rounds;
 }

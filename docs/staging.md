@@ -113,9 +113,9 @@ lambda cannot be checked until the positions it left bare have types.
 
 An argument requiring nothing has in-degree zero from the start, so every
 non-lambda argument goes in round one and causes no answers. A type parameter
-that no argument requires is never answered by a round at all -- nothing is
-waiting on it, so it collects constraints from the whole list and is answered by
-the last line.
+that no argument requires is answered by none of them -- nothing is waiting on
+it, so it collects constraints from the whole list and is answered by the last
+line, which the plan writes as a final round that checks nothing.
 
 _Relating_ is comparing the type an argument came back with against the
 parameter type it was supposed to have. That comparison is where constraints on
@@ -205,28 +205,28 @@ was, this rule keeps that answer from reaching any argument.
 
 ## 8. Where the code is
 
-|                                             |                                                                                                                                                                                         |
-| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/core/batching.ts`                      | the planner: everything in sections 3 to 6, and nothing else. Pure, reads only the tree and the callee's type.                                                                          |
-| `planStages(params, args, typeParamCount)`  | the whole plan. Returns `Plan`.                                                                                                                                                         |
-| `Plan = { rounds, rest }`                   | `rounds` in order; `rest` is the type parameters no round demanded, answered last.                                                                                                      |
-| `Round = { solve, args }`                   | `solve` are type-parameter indices answered **before** `args` (argument indices) are checked.                                                                                           |
-| `collectVars(type, depth, into)`            | the type parameters a type names, counted from `depth` binders in.                                                                                                                      |
-| `collectRequired(arg, param, depth, into)`  | the co-walk of section 3. It mirrors `#checkAbs` -- the rule that checks a lambda against an expected type -- so that it waits for exactly what that rule would otherwise fail to find. |
-| `src/core/subtype.ts`                       |                                                                                                                                                                                         |
-| `Subtyper.withStagedEVars(hints, at, body)` | owns the EVars' lifetime -- section 9. `body` receives the variables and a `solveNext(count)`.                                                                                          |
-| `SolvedTypeArg = { type, constrained }`     | one answer, and whether anything said so. Section 7 is this flag.                                                                                                                       |
-| `src/core/check.ts`                         |                                                                                                                                                                                         |
-| `#applyCall`                                | the rule for an application. Runs the plan.                                                                                                                                             |
+|                                                       |                                                                                                                                                                                         |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/core/batching.ts`                                | the planner: everything in sections 3 to 6, and nothing else. Pure, reads only the tree and the callee's type.                                                                          |
+| `planStages(params, args, typeParamCount)`            | the whole plan: the rounds in order, the last answering what no argument required and checking nothing.                                                                                 |
+| `Round = { solve, check }`                            | solve these type parameters, **then** check these arguments -- both lists of indices, into the callee's binders and into the argument list.                                             |
+| `StagedArg = { index, mentions, requires, supplies }` | one argument and its three sets from section 3.                                                                                                                                         |
+| `collectVars(type, depth, into)`                      | the type parameters a type names, counted from `depth` binders in.                                                                                                                      |
+| `collectRequired(arg, param, depth, into)`            | the co-walk of section 3. It mirrors `#checkAbs` -- the rule that checks a lambda against an expected type -- so that it waits for exactly what that rule would otherwise fail to find. |
+| `src/core/subtype.ts`                                 |                                                                                                                                                                                         |
+| `Subtyper.withStagedEVars(hints, at, body)`           | owns the EVars' lifetime -- section 9. `body` receives the variables and a `solveNext(count)`.                                                                                          |
+| `SolvedTypeArg = { type, constrained }`               | one answer, and whether anything said so. Section 7 is this flag.                                                                                                                       |
+| `src/core/check.ts`                                   |                                                                                                                                                                                         |
+| `#applyCall`                                          | the rule for an application. Runs the plan.                                                                                                                                             |
 
 `#applyCall` reads, in order: infer the callee; settle an arity mismatch on its
-own; compute the plan; flatten it into `order`, the type parameters in the
-sequence they will be answered; then inside `withStagedEVars` record the
-declared bounds and the call's expected type, and run the rounds. It keeps two
-arrays -- `solved`, every answer, which fills the result type; and `told`, the
-answers that were constrained, which is what arguments are checked against. The
-helper `standing(j)` is what a _relation_ uses: an answer if there is one, the
-variable otherwise.
+own; plan the rounds; flatten their `solve` lists into `order`, the type
+parameters in the sequence they will be answered; then inside `withStagedEVars`
+record the declared bounds and the call's expected type, and run the rounds. It
+keeps two arrays -- `solved`, every answer, which fills the result type; and
+`told`, the answers that were constrained, which is what arguments are checked
+against. The helper `standing(j)` is what a _relation_ uses: an answer if there
+is one, the variable otherwise.
 
 ## 9. The type variables, and how long they live
 
