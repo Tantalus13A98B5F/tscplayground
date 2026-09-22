@@ -166,6 +166,8 @@ function familyHead(head: DataHead): DataHead {
  * they did not write.
  */
 export type SolvedTypeArg = {
+  /** Which binder of the callee this answers, by position. */
+  readonly index: number;
   readonly type: Type;
   readonly constrained: boolean;
 };
@@ -1400,11 +1402,13 @@ export class Subtyper {
   /**
    * The EVars of one call, alive for its whole argument list.
    *
-   * `hints` are in *solve* order. They are pushed in reverse, so the next to be
-   * solved is always on top and is popped as soon as it is: nothing outside
-   * this method ever holds a type naming an EVar, and that stays structural --
-   * a solution is asked for with its own entry already out of scope -- rather
-   * than becoming a promise a check has to keep.
+   * `hints` are in binder order, and so are the `evars` `body` receives;
+   * `orderedIndices` are the binders in the order they will be solved. They are
+   * pushed in reverse of it, so the next to be solved is always on top and is
+   * popped as soon as it is: nothing outside this method ever holds a type
+   * naming an EVar, and that stays structural -- a solution is asked for with
+   * its own entry already out of scope -- rather than becoming a promise a
+   * check has to keep.
    *
    * Alive for the whole list, and not a batch per round, because a round
    * solves only what the next round demands. A type parameter nobody demands
@@ -1417,16 +1421,20 @@ export class Subtyper {
    * against an EVar, so nothing a nested application relates can mention one of
    * ours, and its own batch nesting above us on the stack is harmless.
    *
+   * `body` solves every one through `solveNext`, and keeps the answers itself:
+   * nothing is returned, and anything left unsolved is simply popped.
+   *
    * `at` is where the call stands, and the default for anything filed under it.
    */
   withStagedEVars(
     hints: readonly string[],
+    orderedIndices: readonly number[],
     at: Position,
     body: (
       evars: readonly FVarRef[],
       solveNext: (count: number) => readonly SolvedTypeArg[],
     ) => void,
-  ): readonly Type[] {
+  ): void {
     const outer = this.#at;
     this.#at = at;
     const mark = this.context.size;
@@ -1434,36 +1442,44 @@ export class Subtyper {
       // Reversed on the way in and back on the way out, so `entries[k]` is the
       // k-th to be solved and sits `k` from the top.
       const entries = this.context
-        .pushEVarBatch([...hints].reverse())
+        .pushEVarBatch(
+          [...orderedIndices].reverse().map((index) =>
+            hints[index] ?? impossible("the order indexes the binders")
+          ),
+        )
         .reverse();
+      const indexedEntries = orderedIndices.map((index, k) => ({
+        index,
+        entry: entries[k] ?? impossible("an entry per binder"),
+      }));
+      const evars = hints.map((_, index) =>
+        indexedEntries.find((indexed) => indexed.index === index)?.entry.ref ??
+          impossible("the order is a permutation of the binders")
+      );
 
-      const solutions: Type[] = [];
+      let solvedCount = 0;
       const solveNext = (count: number): readonly SolvedTypeArg[] => {
-        const taking = entries.slice(
-          solutions.length,
-          solutions.length + count,
-        );
-        // Asked before solving, which adds none: an entry with no bound is one
-        // nothing said anything about, so its answer is a choice.
-        const constrained = taking.map((entry) =>
-          entry.lower.length > 0 || entry.upper.length > 0
-        );
+        const taking = indexedEntries.slice(solvedCount, solvedCount + count);
+        solvedCount += taking.length;
         // Popped before solving, which is what makes the assertion below read
         // against the context rather than against an intention. The entries
         // are ordinary objects and their bounds outlive the levels.
         this.context.truncate(this.context.size - taking.length);
-        const answers = taking.map((entry) => this.solveEVar(entry, at));
-        this.context.assertClosed("a call's solved type arguments", answers);
-        solutions.push(...answers);
-        return answers.map((type, k) => ({
-          type,
-          constrained: constrained[k] ?? false,
+        const answers = taking.map(({ index, entry }) => ({
+          index,
+          // Asked before solving, which adds none: an entry with no bound is
+          // one nothing said anything about, so its answer is a choice.
+          constrained: entry.lower.length > 0 || entry.upper.length > 0,
+          type: this.solveEVar(entry, at),
         }));
+        this.context.assertClosed(
+          "a call's solved type arguments",
+          answers.map((answer) => answer.type),
+        );
+        return answers;
       };
 
-      body(entries.map((entry) => entry.ref), solveNext);
-      solveNext(entries.length - solutions.length);
-      return solutions;
+      body(evars, solveNext);
     } finally {
       this.#at = outer;
       // A throw leaves entries standing; truncating here is what keeps the

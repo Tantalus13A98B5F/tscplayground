@@ -484,31 +484,20 @@ export class Checker {
       term.args,
       callee.typeParams.length,
     );
-    const order = rounds.flatMap((round) => round.solve);
-    const solved: (Type | undefined)[] = callee.typeParams.map(() => undefined);
-    // What an argument is *told*, which is not everything that was solved: an
-    // answer nothing constrained is the checker's choice, and handing it over
-    // would type a parameter from thin air instead of saying it could not be.
-    const told: (Type | undefined)[] = callee.typeParams.map(() => undefined);
+    // Each type parameter's EVar until its round answers it, and the answer
+    // after -- which, once the last round is done, is every one of them.
+    const solved: Type[] = [];
 
-    const answers = this.subtyper.withStagedEVars(
-      order.map((j) =>
-        callee.typeParams[j]?.hint ?? impossible("the plan indexes the binders")
-      ),
+    this.subtyper.withStagedEVars(
+      callee.typeParams.map((binder) => binder.hint),
+      rounds.flatMap((round) => round.solve),
       term.at,
       (evars, solveNext) => {
-        const opened = new Map(
-          order.map((j, k) => [
-            j,
-            evars[k] ?? impossible("an EVar per type parameter"),
-          ]),
-        );
-        // A type parameter's answer once it has one, and the variable standing
-        // for it until then. A solved one is never read back through `opened`:
-        // its entry is popped, and the solution is what everything after wants.
-        const standing = (j: number): Type =>
-          solved[j] ?? opened.get(j) ??
-            impossible("every type parameter is in the order");
+        solved.push(...evars);
+        // What an argument is *told*: only answers something constrained. One
+        // nothing did is the checker's choice, and handing it over would type a
+        // parameter from thin air instead of saying it could not be.
+        const told: TypePattern[] = solved.map(() => TMissing);
 
         // The declared bound is a constraint like any other, so it takes part
         // in the `lower <: upper` check rather than being enforced separately.
@@ -516,10 +505,8 @@ export class Checker {
         // vacuous instead of needing to be excluded.
         //
         // Bounds are *parallel*, so this can never mention a sibling.
-        for (const [k, j] of order.entries()) {
-          const evar = evars[k] ?? impossible("an EVar per type parameter");
-          const binder = callee.typeParams[j] ??
-            impossible("the plan indexes the binders");
+        for (const [j, binder] of callee.typeParams.entries()) {
+          const evar = evars[j] ?? impossible("an EVar per type parameter");
           this.subtyper.isSubtype(evar, binder.bound);
         }
 
@@ -530,8 +517,8 @@ export class Checker {
         // -- which is what lets `Nil()` at `List[Bool]` know what it is empty
         // of whichever round settles the argument.
         const result = openWith(callee.result, (j, variance) => {
-          const evar = opened.get(j) ??
-            impossible("every type parameter is in the order");
+          const evar = evars[j] ??
+            impossible("the result binds only this binder");
           // Once per occurrence, so two placements accumulate -- which is how a
           // variable comes to occur both ways with neither occurrence
           // invariant.
@@ -547,23 +534,15 @@ export class Checker {
         for (const round of rounds) {
           // Before the arguments that demanded them: a bare lambda cannot be
           // checked until the positions it left bare have answers.
-          const got = solveNext(round.solve.length);
-          for (const [k, j] of round.solve.entries()) {
-            const answer = got[k] ?? impossible("a solution per solved binder");
-            solved[j] = answer.type;
-            if (answer.constrained) told[j] = answer.type;
+          for (const answer of solveNext(round.solve.length)) {
+            solved[answer.index] = answer.type;
+            if (answer.constrained) told[answer.index] = answer.type;
           }
 
-          for (const i of round.check) {
-            const arg = term.args[i] ??
-              impossible("the plan indexes the arguments");
-            const param = callee.params[i] ?? impossible("arities agree above");
+          for (const { arg, param } of round.check) {
             const actual = this.check(
               arg,
-              openMany<unknown>(
-                param,
-                callee.typeParams.map((_, j) => told[j] ?? TMissing),
-              ),
+              openMany<unknown>(param, told),
             );
 
             // Related as soon as it is checked, so what it says reaches every
@@ -578,10 +557,7 @@ export class Checker {
             // parameter type were in the pattern and are already answered for,
             // and EVar positions record rather than refuse -- so what is left
             // is `exhausted`, the relation giving up before it could record.
-            const against = openMany(
-              param,
-              callee.typeParams.map((_, j) => standing(j)),
-            );
+            const against = openMany(param, solved);
             const verdict = this.subtyper.isSubtype(actual, against, arg.at);
             if (verdict !== true) {
               this.#reportVerdict(verdict, actual, against, arg.at);
@@ -591,19 +567,11 @@ export class Checker {
       },
     );
 
-    for (const [k, j] of order.entries()) {
-      solved[j] = answers[k] ?? impossible("a solution per type parameter");
-    }
-
     // The result the call was instantiated from, opened with what the rounds
     // came to -- the same substitution the parameter types got above, and the
     // reason nothing has to carry a type out of the scope the EVars lived in.
-    const result = openMany(
-      callee.result,
-      solved.map((type) =>
-        type ?? impossible("every one is solved by the end")
-      ),
-    );
+    // An EVar the rounds left standing would be caught here, its entry popped.
+    const result = openMany(callee.result, solved);
     this.context.assertClosed("application", [result]);
     return result;
   }

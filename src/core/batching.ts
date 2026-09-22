@@ -25,25 +25,31 @@
  */
 
 import type { TermNode } from "../syntax/ast.ts";
-import { openWith, TMissing, type TypePattern } from "./types.ts";
+import {
+  impossible,
+  openWith,
+  TMissing,
+  type Type,
+  type TypePattern,
+} from "./types.ts";
 
 /**
  * Solve the type parameters in `solve`, then check the arguments in `check`
  * -- in that order, since a bare lambda cannot be checked until the positions
- * it left bare have answers. Both are indices: `solve` into the callee's
- * binders, `check` into the argument list.
+ * it left bare have answers. `solve` indexes the callee's binders.
  */
 export type Round = {
   readonly solve: readonly number[];
-  readonly check: readonly number[];
+  readonly check: readonly StagedArg[];
 };
 
 /**
- * An argument as the planner sees it: its position, and the three sets of type
- * parameters that decide when it is checked.
+ * An argument, the parameter type it is checked at, and the three sets of type
+ * parameters that decide when.
  */
-type StagedArg = {
-  readonly index: number;
+export type StagedArg = {
+  readonly arg: TermNode;
+  readonly param: Type;
   readonly mentions: ReadonlySet<number>;
   readonly requires: ReadonlySet<number>;
   readonly supplies: ReadonlySet<number>;
@@ -108,13 +114,13 @@ function collectRequired(
  * from the whole list first.
  */
 export function planStages(
-  params: readonly TypePattern[],
+  params: readonly Type[],
   args: readonly TermNode[],
   typeParamCount: number,
 ): readonly Round[] {
-  // Arities agree: the caller refused the call before planning otherwise.
-  const argInfos = args.map((arg, index): StagedArg => {
-    const param = params[index] ?? TMissing;
+  const argInfos = args.map((arg, i): StagedArg => {
+    const param = params[i] ??
+      impossible("the caller refuses a call of the wrong arity");
     const mentions = new Set<number>();
     collectVars(param, 0, mentions);
     const requires = new Set<number>();
@@ -122,7 +128,7 @@ export function planStages(
     // What it can say that it was not told. Disjoint from what it requires, so
     // no argument ever waits on itself.
     const supplies = mentions.difference(requires);
-    return { index, mentions, requires, supplies };
+    return { arg, param, mentions, requires, supplies };
   });
 
   const rounds: Round[] = [];
@@ -137,7 +143,7 @@ export function planStages(
   ) => {
     const solve = [...wanted.intersection(unsolved)];
     for (const j of solve) unsolved.delete(j);
-    rounds.push({ solve, check: checking.map((arg) => arg.index) });
+    rounds.push({ solve, check: checking });
   };
   let waiting = argInfos;
 

@@ -198,6 +198,13 @@ it. Answering `y` from a choice the checker made would be inventing a type;
 reporting "nothing constrained `A`" instead would be the same mistake under a
 name the author never wrote. The report goes where an annotation would go.
 
+Handing the choice over would not make the argument fail instead. The choice at
+a parameter position is `unknown`, and a lambda that only passes `y` along
+checks at it: `one(fn (y) -> y)` would be accepted, silently, as
+`unknown -> unknown`. One that does use `y` is refused, but by a report about
+the invented type -- `cannot match on unknown` for a `match` on `y` -- where the
+fix is an annotation the report does not mention.
+
 This holds in every round, and it is also the backstop for section 6: the
 planner picks what to answer there by what an already-checked argument
 _mentions_, which is a guess that something was said; where nothing actually
@@ -205,28 +212,29 @@ was, this rule keeps that answer from reaching any argument.
 
 ## 8. Where the code is
 
-|                                                       |                                                                                                                                                                                         |
-| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/core/batching.ts`                                | the planner: everything in sections 3 to 6, and nothing else. Pure, reads only the tree and the callee's type.                                                                          |
-| `planStages(params, args, typeParamCount)`            | the whole plan: the rounds in order, the last answering what no argument required and checking nothing.                                                                                 |
-| `Round = { solve, check }`                            | solve these type parameters, **then** check these arguments -- both lists of indices, into the callee's binders and into the argument list.                                             |
-| `StagedArg = { index, mentions, requires, supplies }` | one argument and its three sets from section 3.                                                                                                                                         |
-| `collectVars(type, depth, into)`                      | the type parameters a type names, counted from `depth` binders in.                                                                                                                      |
-| `collectRequired(arg, param, depth, into)`            | the co-walk of section 3. It mirrors `#checkAbs` -- the rule that checks a lambda against an expected type -- so that it waits for exactly what that rule would otherwise fail to find. |
-| `src/core/subtype.ts`                                 |                                                                                                                                                                                         |
-| `Subtyper.withStagedEVars(hints, at, body)`           | owns the EVars' lifetime -- section 9. `body` receives the variables and a `solveNext(count)`.                                                                                          |
-| `SolvedTypeArg = { type, constrained }`               | one answer, and whether anything said so. Section 7 is this flag.                                                                                                                       |
-| `src/core/check.ts`                                   |                                                                                                                                                                                         |
-| `#applyCall`                                          | the rule for an application. Runs the plan.                                                                                                                                             |
+|                                                             |                                                                                                                                                                                                                                             |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/core/batching.ts`                                      | the planner: everything in sections 3 to 6, and nothing else. Pure, reads only the tree and the callee's type.                                                                                                                              |
+| `planStages(params, args, typeParamCount)`                  | the whole plan: the rounds in order, the last answering what no argument required and checking nothing.                                                                                                                                     |
+| `Round = { solve, check }`                                  | solve these type parameters, **then** check these arguments. `solve` is indices into the callee's binders; `check` is the arguments themselves.                                                                                             |
+| `StagedArg = { arg, param, mentions, requires, supplies }`  | one argument, the parameter type it is checked at, and its three sets from section 3.                                                                                                                                                       |
+| `collectVars(type, depth, into)`                            | the type parameters a type names, counted from `depth` binders in.                                                                                                                                                                          |
+| `collectRequired(arg, param, depth, into)`                  | the co-walk of section 3. It mirrors `#checkAbs` -- the rule that checks a lambda against an expected type -- so that it waits for exactly what that rule would otherwise fail to find.                                                     |
+| `src/core/subtype.ts`                                       |                                                                                                                                                                                                                                             |
+| `Subtyper.withStagedEVars(hints, orderedIndices, at, body)` | owns the EVars' lifetime -- section 9. Takes the binders' hints and the order they will be solved in; `body` receives the variables in binder order and a `solveNext(count)`. The one place solve order is translated back to binder order. |
+| `SolvedTypeArg = { index, type, constrained }`              | one answer, the binder it answers, and whether anything said so. Section 7 is this flag.                                                                                                                                                    |
+| `src/core/check.ts`                                         |                                                                                                                                                                                                                                             |
+| `#applyCall`                                                | the rule for an application. Runs the plan.                                                                                                                                                                                                 |
 
 `#applyCall` reads, in order: infer the callee; settle an arity mismatch on its
-own; plan the rounds; flatten their `solve` lists into `order`, the type
-parameters in the sequence they will be answered; then inside `withStagedEVars`
-record the declared bounds and the call's expected type, and run the rounds. It
-keeps two arrays -- `solved`, every answer, which fills the result type; and
-`told`, the answers that were constrained, which is what arguments are checked
-against. The helper `standing(j)` is what a _relation_ uses: an answer if there
-is one, the variable otherwise.
+own; plan the rounds; then inside `withStagedEVars`, handed the rounds' `solve`
+lists end to end as the order, record the declared bounds and the call's
+expected type, and run the rounds. Everything it holds is in binder order. It
+keeps two arrays. `solved` starts as the EVars and takes each answer as it
+comes, so it is what a _relation_ opens a parameter type with, and by the end it
+is the answers alone, which fill the result type. `told` starts as all
+`TMissing` and takes only the answers that were constrained, so it is what
+arguments are checked against.
 
 ## 9. The type variables, and how long they live
 
@@ -251,7 +259,10 @@ Three invariants hold this together:
 
 - **No bound ever mentions an EVar.** `EVarEntry.addConstraint` throws if one
   does. It is what lets any subset be answered at any time: an answer can never
-  be waiting on another answer.
+  be waiting on another answer. It is also why the call's EVars are one batch
+  and not one per round: the check counts from where the batch was pushed, so
+  nested per-round batches would let an early round's bound name a later round's
+  variable, and carry it out when answered.
 - **Arguments are checked against answers or `TMissing`, never against an
   EVar.** So every type an argument comes back with is EVar-free, and every
   bound recorded from one is too. It is also why a nested call is harmless: its
