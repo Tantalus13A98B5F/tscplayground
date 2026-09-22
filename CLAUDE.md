@@ -222,12 +222,14 @@ Which is why a parameter list is not one batch. `planStages` cuts it into
 rounds. An argument _requires_ a type parameter where it left a parameter bare
 in that position, and _supplies_ one it names anywhere else -- a bare lambda's
 parameter type **is** the solution of what it required, so relating that back
-says only `?A <: solution(A)`, and a requirer supplies its result alone. An
-argument nothing still waiting can supply to has parameters as constrained as
-they will ever be, so answering them now gives up nothing; that is the whole
-order, and it is deliberately not a measure of how constrained a parameter
-already is. So `fold(op, z, l)` is one list, and what is given up to get it is
-`op`'s own vote on `B` -- the same thing a second written list gives up.
+says only `?A <: solution(A)`, and a requirer supplies its result alone. Where
+the type stops short of a lambda, at a bare `T`, a bare parameter anywhere in
+the lambda requires what stands there. An argument nothing still waiting can
+supply to has parameters as constrained as they will ever be, so answering them
+now gives up nothing; that is the whole order, and it is deliberately not a
+measure of how constrained a parameter already is. So `fold(op, z, l)` is one
+list, and what is given up to get it is `op`'s own vote on `B` -- the same thing
+a second written list gives up.
 
 Where no argument can go first, every one left is on or downstream of a cycle
 and the ordering has run out. It is not broken: picking which argument to break

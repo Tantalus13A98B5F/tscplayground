@@ -25,7 +25,7 @@ apply(fn (y) -> y, True)
 
 even though the sibling `True` says perfectly well that `A` is `Bool`. A
 _second_ parameter list worked, because by the time it is reached the first
-list's type parameters have answers. That is why the list library writes
+list's type parameters have answers. That is why the list library used to write
 `foldr(xs)(z)(op)` rather than `foldr(xs, z, op)`.
 
 Staging computes that split from the types instead of asking the author to write
@@ -53,6 +53,11 @@ compared here; they are bookkeeping about which type parameters sit where.
 lambda parameter bare. These are what it must be _told_ before it can be checked
 at all. An annotated parameter requires nothing, its type being written down;
 `fn (a: Bool, b) -> e` waits on one position rather than two.
+
+Where the walk reaches a lambda and the type has stopped short of it -- a lambda
+at a bare `T` rather than at an arrow -- the lambda will be checked against
+whatever `T` becomes. So if it leaves any parameter bare, it requires everything
+that type names. That is what lets `set!(r, fn (n) -> S(n))` wait for `r`.
 
 **`mentions(i)`** -- every type parameter occurring anywhere in its parameter
 type.
@@ -306,7 +311,10 @@ position still missing, and it reports exactly as it did before staging existed.
 **Stopping the walk early is always safe**, which is what makes it extensible a
 case at a time. The unsafe direction is the opposite -- descending where the
 term and the type do _not_ correspond, which records a requirement nothing will
-ever satisfy and turns an ordinary call into a rejected one.
+ever satisfy and turns an ordinary call into a rejected one. Requiring what a
+lambda stands at when the type stops short is not that: without it, the lambda
+is checked against a missing part and its bare parameter reports, so only a call
+that already reported is changed.
 
 The first two are different in kind. A missing annotation constraint costs
 precision that nothing reports; rejecting a cycle costs a program that a sound
@@ -325,4 +333,5 @@ it names, whenever that parameter is answered.
 
 The syntax stays: a written parameter list is still the only way to stage what
 no argument in the list determines, and still where a type parameter's scope is
-decided. `foldr` keeps its three lists; it no longer needs them.
+decided. The list library no longer writes them for folding: `foldr` is one
+list.

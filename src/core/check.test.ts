@@ -460,6 +460,32 @@ Deno.test("the walk reaches under an arrow and under a quantifier", () => {
   )).toBe("Bool");
 });
 
+Deno.test("a lambda standing where the type stops waits on what stands there", () => {
+  // `v` is at a bare `T`, so the lambda is checked against whatever `T` turns
+  // out to be -- here the annotated sibling says, and `m` is told `Bool`.
+  expect(typeOf(
+    ...BOOL,
+    "let give = fn [T](u: T, v: T) -> v;",
+    "give(fn (n: Bool) -> n, fn (m) -> m)",
+  )).toBe("Bool -> Bool");
+
+  // Curried, with the bare parameter one lambda in: `a` is written, `b` is
+  // not, and that is still a lambda left waiting on what `T` becomes.
+  expect(typeOf(
+    ...BOOL,
+    "let give = fn [T](u: T, v: T) -> v;",
+    "give(fn (n: Bool) -> fn (m: Bool) -> m, fn (a: Bool) -> fn (b) -> b)",
+  )).toBe("Bool -> Bool -> Bool");
+
+  // The same, one arrow in: `x` is annotated and the type stops at `B`, where
+  // the lambda goes on to answer with another whose `y` is bare.
+  expect(typeOf(
+    ...BOOL,
+    "let k = fn [A, B](f: (A) -> B, a: A, b: B) -> b;",
+    "k(fn (x: Bool) -> fn (y) -> y, True, fn (z: Bool) -> z)",
+  )).toBe("Bool -> Bool");
+});
+
 Deno.test("what no argument determines is still the author's to write", () => {
   // `A` stands only where the lambda left a parameter bare, so nothing
   // constrains it. Answering anyway would type `y` from thin air; the report

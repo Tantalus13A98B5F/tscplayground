@@ -81,13 +81,16 @@ function collectVars(
  * needed. `depth` is what makes a quantifier harmless: the indices stay the
  * *callee's* however many binders they are read under.
  *
+ * Where the type stops short of the term -- a lambda standing at `T` rather
+ * than at an arrow -- the rest of the lambda is checked against whatever that
+ * type becomes, so if it leaves any parameter bare it requires everything the
+ * type names. That is how `set!(r, fn (n) -> S(n))` waits for `r`.
+ *
  * It mirrors `#checkAbs`, which is the correctness criterion: a pattern of
  * another quantifier arity demands nothing of the lambda's parts, so neither
  * does this, and a parameter the pattern does not reach is one it says nothing
  * about. Stopping early is always safe -- the argument is then not waited for,
  * is checked with the position still missing, and reports as it does today.
- * Descending where the shapes do *not* correspond is the unsafe direction: it
- * records a requirement nothing will satisfy.
  */
 function collectRequired(
   arg: TermNode,
@@ -95,7 +98,11 @@ function collectRequired(
   depth: number,
   into: Set<number>,
 ): void {
-  if (arg.kind !== "Abs" || param.kind !== "TFun") return;
+  if (arg.kind !== "Abs") return;
+  if (param.kind !== "TFun") {
+    if (leavesParamBare(arg)) collectVars(param, depth, into);
+    return;
+  }
   if (param.typeParams.length !== arg.typeParams.length) return;
 
   const inner = depth + param.typeParams.length;
@@ -106,6 +113,13 @@ function collectRequired(
     collectVars(position, inner, into);
   }
   collectRequired(arg.body, param.result, inner, into);
+}
+
+/** Whether a lambda, or one it answers with, has a parameter left bare. */
+function leavesParamBare(term: TermNode): boolean {
+  if (term.kind !== "Abs") return false;
+  return term.params.some((param) => param.annotation === undefined) ||
+    leavesParamBare(term.body);
 }
 
 /**
