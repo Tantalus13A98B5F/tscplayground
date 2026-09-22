@@ -31,10 +31,10 @@ let plain = Cons(Z, Nil())
 // rescue it either. `let r : Ref[MList[Nat]] = ref!(MNil())` is refused as
 // bounded below by `unknown` and above by `MList[Nat]`.
 let cell = ref!(ms)
-let _ = modify(cell)(fn (xs) -> setTail(xs, MNil[Nat]()))
+let _ = modify(cell, fn (xs) -> setTail(xs, MNil[Nat]()))
 
 let counted = mlength(mfromList(plain))
 let counter = ref!(Z)
-let _ = modify(counter)(fn (m) -> add(m)(counted))
+let _ = modify(counter, fn (m) -> add(m)(counted))
 
 Pair(get!(counter), mtoList(get!(cell)))

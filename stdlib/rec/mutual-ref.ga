@@ -30,11 +30,13 @@ let rtag = ref!(diverge[Nat, Nat]())
 let alt = fn (n: Nat) -> get!(ralt)(n)
 let tag = fn (n: Nat) -> get!(rtag)(n)
 
-let _ = set!(ralt, fn (n: Nat) -> match n with
+// The writes need no annotation: the cell is checked first and says what the
+// function it is handed takes.
+let _ = set!(ralt, fn (n) -> match n with
   | Z -> Nil()
   | S(k) -> Cons(tag(k), alt(k)))
 
-let _ = set!(rtag, fn (n: Nat) -> match n with
+let _ = set!(rtag, fn (n) -> match n with
   | Z -> Z
   | S(k) -> length(alt(k)))
 

@@ -12,21 +12,21 @@
 // before it, this needed `Nil[Nat]()`.
 let ns = Cons(Z, Cons(S(Z), Nil()))
 
-// Staged, so `A` is settled by the list before the function is looked at and
-// `B` comes from the function: every lambda below is *bare*, and would need a
-// parameter annotation in the one-list form `map(f, xs)`.
-let flags = map(ns)(isZero)
-let doubled = map(ns)(fn (n) -> add(n)(n))
+// The list is checked before the function, so `A` is settled by the time the
+// function is looked at and `B` comes from the function. Every lambda below is
+// *bare*.
+let flags = map(ns, isZero)
+let tripled = map(ns, fn (n) -> add(n)(add(n)(n)))
 
-// `foldr(xs)(z)(op)`, and `B` need have nothing to do with `A`: `z` fixes it,
-// so the operator's `acc` is known by the time the lambda is checked.
-let anyZero = foldr(ns)(False)(fn (h, acc) -> or(isZero(h), acc))
+// `B` need have nothing to do with `A`: `z` fixes it, so the operator's `acc`
+// is known by the time the lambda is checked.
+let anyZero = foldr(ns, False, fn (h, acc) -> or(isZero(h), acc))
 
 // Nothing constrains this `Nil()` at all, so it is `List[never]` -- an answer
 // and not a gap, since `isEmpty` asks nothing of the element type.
-let sizes = Pair(length(flags), length(doubled))
+let sizes = Pair(length(flags), length(tripled))
 
 // Taken apart where it is built: a sole constructor is the type `sizes` has,
 // so the one arm covers it and this says nothing about the cases it is not.
-let Pair(nflags, ndoubled) = sizes
+let Pair(nflags, ntripled) = sizes
 Pair(nflags, and(anyZero, and(isEmpty(Nil()), not(False))))

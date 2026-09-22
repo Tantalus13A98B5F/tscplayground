@@ -10,7 +10,7 @@ let six = cadd(three, three)
 let nine = cmul(three, three)
 
 let ns = ccons(three, ccons(six, cnil()))
-let flags = cmap(ns)(cisZero)
-let total = cfoldr(ns)(czero)(fn (h, acc) -> cadd(h, acc))
+let flags = cmap(ns, cisZero)
+let total = cfoldr(ns, czero, fn (h, acc) -> cadd(h, acc))
 
 cpair(clength(flags), cfst(cpair(cadd(nine, total), ctrue)))

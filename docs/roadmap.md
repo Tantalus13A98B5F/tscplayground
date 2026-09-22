@@ -70,38 +70,21 @@ not one. That phase is still worth having on its own -- it turns a forward
 reference into "`foo` is declared below; its signature is not available here"
 rather than `unknown name foo` -- and it is additive, so it can land whenever.
 
-## 2. Batching one parameter list
-
-Today a parameter list is one batch, and the staging that a bare lambda needs is
-the author's to write: `foldLeft(z)(op)`, a second list so that `z` is solved
-before `op` is checked. TypeScript reaches the same effect without the syntax --
-it defers the context-sensitive arguments of a single list, fixes what the rest
-determines, and checks the deferred ones against that. So the benefit is
-available to a language that never asks the author to split the list, and the
-question is what it costs us.
-
-The cost is the one `docs/clti.md` names in "Context-sensitive arguments in
-rounds": TS checks a deferred argument while the call's batch is still live,
-which overlaps batches and takes "a constraint mentioning an EVar can only mean
-a sibling" with them. The form that keeps the invariant is to _cut_ the list
-rather than defer within it -- solve the batch at the cut, and check what is
-after it against the solutions, exactly as a second written list behaves. One
-list, several batches, and `withEVars` still owns each one alone.
-
-What is left to decide is where the cut falls. "Before the first
-context-sensitive argument" is one batch boundary and recovers
-`f(fn (x) -> id(x), True)` only if the lambda is not first, which is the
-left-to-right restriction TS lifts; a cut before _each_ context-sensitive
-argument recovers it wherever it sits, at one solve per lambda. Neither reaches
-`both(True, fn (y) -> y)`, where nothing in the list determines the parameter --
-that answer is an annotation here as it is in Scala, and TS only appears to have
-one because it has implicit `any`.
-
-Which is why this is an item and not a dependency: the syntax stays, since a
-written list is still the only way to stage what no argument determines. This
-would make the common case stop needing it.
-
 ## Landed
+
+### Staging one parameter list
+
+A parameter list is no longer one batch. `planStages` cuts it into rounds and
+`#applyCall` runs them, so `fold(op, z, l)` works in one list. `docs/staging.md`
+is the model; `src/core/batching.ts` is the planner. What the item below argued
+for is what landed, except that the cut is computed from two relations over the
+arguments rather than placed "before the first context-sensitive argument", and
+that `both(True, fn (y) -> y)` is reached after all -- `x: A` determines `A`,
+which the item did not notice.
+
+Cycles are rejected rather than broken, and a type parameter nothing constrains
+is never answered: both would settle something from a choice and then blame an
+argument for it.
 
 ### Sugar for single-case datatypes
 
@@ -223,8 +206,8 @@ principal type would survive a `let` and not a call, which is most of what this
 step is for. Scala widens singletons and unions at instantiation and leaves
 nominal precision alone for the same reason, and pays the same price: this is
 `foldLeft(Nil)`, which has always wanted `List.empty[Int]`. `docs/clti.md` has
-the argument, including why the pressure belongs on _Batching one parameter
-list_ instead.
+the argument, including why the pressure belongs on _Staging one parameter list_
+instead.
 
 The known cost is the usual one for inference under subtyping: `ref!(Cons(...))`
 infers `Ref[Cons[Bool]]`, a cell nothing can `set!` a `Nil` into, and the fix is

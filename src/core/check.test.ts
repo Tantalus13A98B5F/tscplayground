@@ -377,11 +377,11 @@ Deno.test("an invariant occurrence is settled by a bound from one side", () => {
   ).toBe("Bool");
 });
 
-Deno.test("a bare lambda in the same list has no type to take", () => {
-  // What an argument is checked against hides the type parameters behind
-  // missing parts, so `(A) -> A` arrives as `(?) -> ?` and `y` is told
-  // nothing. The constraint from the other argument cannot help: it is
-  // collected after this argument has already had to be checked.
+Deno.test("a bare lambda is told what its siblings settled", () => {
+  // One list, cut into rounds: nothing waiting can say anything more about
+  // `A` than `True` already did, so `A` is answered and only then is the
+  // lambda checked -- against a parameter type that no longer hides it.
+  // Position is not the criterion, so either order works.
   for (
     const call of [
       "both(True, fn (y) -> y)",
@@ -391,9 +391,7 @@ Deno.test("a bare lambda in the same list has no type to take", () => {
     const decl = call.startsWith("both(True")
       ? "let both = fn [A](x: A, f: (A) -> A) -> f(x);"
       : "let both = fn [A](f: (A) -> A, x: A) -> f(x);";
-    const [, ...messages] = run(...BOOL, decl, call);
-    expect(messages.length).toBe(1);
-    expect(messages[0]).toContain("cannot infer a type for y");
+    expect(typeOf(...BOOL, decl, call)).toBe("Bool");
   }
 
   // Annotated, in either order, and nothing else has changed.
@@ -413,20 +411,16 @@ Deno.test("a bare lambda in the same list has no type to take", () => {
   ).toBe("Bool");
 });
 
-Deno.test("a bare lambda that destructures needs a later list", () => {
-  // Reported at the parameter now rather than at the `match`: there is no
-  // type to destructure because there was none to begin with. One message
-  // either way, and it names the thing the author can fix.
-  const [, ...messages] = run(
+Deno.test("a bare lambda may destructure what a sibling settled", () => {
+  // The body needs the parameter's *structure*, which is the case a bare
+  // lambda used to need a later list for.
+  expect(typeOf(
     ...BOOL,
     "let both = fn [A](x: A, f: (A) -> A) -> f(x);",
     "both(True, fn (y) -> match y with | True -> False | False -> True)",
-  );
-  expect(messages.length).toBe(1);
-  expect(messages[0]).toContain("cannot infer a type for y");
+  )).toBe("Bool");
 
-  // Staged over two lists, the same body is fine: the first list settles `A`
-  // from `True` alone, so by the second one `y` has a type to match on.
+  // Staged over two lists, the same body, and the same answer.
   expect(
     typeOf(
       ...BOOL,
@@ -434,6 +428,98 @@ Deno.test("a bare lambda that destructures needs a later list", () => {
       "staged(True)(fn (y) -> match y with | True -> False | False -> True)",
     ),
   ).toBe("Bool");
+});
+
+Deno.test("an annotated parameter waits on nothing", () => {
+  // Half a lambda's parameters may be all that is waiting: `a` is read from
+  // the term, so this argument needs only `B` before it can be checked.
+  expect(typeOf(
+    ...BOOL,
+    ...LIST,
+    "let each = fn [A, B](f: (A, B) -> B, z: B, xs: List[A]) -> z;",
+    "each(fn (a: Bool, b) -> b, True, Nil())",
+  )).toBe("Bool");
+});
+
+Deno.test("the walk reaches under an arrow and under a quantifier", () => {
+  // Curried: `y` stands at `B`, two arrows in, and that is still a thing this
+  // argument is waiting to be told. Reading the outermost list alone would
+  // record nothing, check the argument early and report on `y`.
+  expect(typeOf(
+    ...BOOL,
+    "let f = fn [A, B](g: (A) -> (B) -> B, a: A, b: B) -> g(a)(b);",
+    "f(fn (x) -> fn (y) -> y, True, False)",
+  )).toBe("Bool");
+
+  // Under the lambda's own binder, where the indices are read one depth in.
+  // `C` is the argument's to bind; only `A` is waited for.
+  expect(typeOf(
+    ...BOOL,
+    "let h = fn [A](p: [C](C, A) -> A, a: A) -> a;",
+    "h(fn [C](c, x) -> x, True)",
+  )).toBe("Bool");
+});
+
+Deno.test("a lambda standing where the type stops waits on what stands there", () => {
+  // `v` is at a bare `T`, so the lambda is checked against whatever `T` turns
+  // out to be -- here the annotated sibling says, and `m` is told `Bool`.
+  expect(typeOf(
+    ...BOOL,
+    "let give = fn [T](u: T, v: T) -> v;",
+    "give(fn (n: Bool) -> n, fn (m) -> m)",
+  )).toBe("Bool -> Bool");
+
+  // Curried, with the bare parameter one lambda in: `a` is written, `b` is
+  // not, and that is still a lambda left waiting on what `T` becomes.
+  expect(typeOf(
+    ...BOOL,
+    "let give = fn [T](u: T, v: T) -> v;",
+    "give(fn (n: Bool) -> fn (m: Bool) -> m, fn (a: Bool) -> fn (b) -> b)",
+  )).toBe("Bool -> Bool -> Bool");
+
+  // The same, one arrow in: `x` is annotated and the type stops at `B`, where
+  // the lambda goes on to answer with another whose `y` is bare.
+  expect(typeOf(
+    ...BOOL,
+    "let k = fn [A, B](f: (A) -> B, a: A, b: B) -> b;",
+    "k(fn (x: Bool) -> fn (y) -> y, True, fn (z: Bool) -> z)",
+  )).toBe("Bool -> Bool");
+});
+
+Deno.test("what no argument determines is still the author's to write", () => {
+  // `A` stands only where the lambda left a parameter bare, so nothing
+  // constrains it. Answering anyway would type `y` from thin air; the report
+  // is at the parameter, which is the thing an annotation fixes.
+  const [, ...alone] = run(
+    ...BOOL,
+    "let one = fn [A, B](f: (A) -> B) -> f;",
+    "one(fn (y) -> y)",
+  );
+  expect(alone.length).toBe(1);
+  expect(alone[0]).toContain("cannot infer a type for y");
+
+  // A cycle: each waits on what the other would say, so the list has no order
+  // and neither is checked with an answer. Both report, because neither `A`
+  // nor `B` was constrained by anything else either.
+  const [, ...cycle] = run(
+    ...BOOL,
+    "let two = fn [A, B](g: (A) -> B, h: (B) -> A) -> True;",
+    "two(fn (x) -> x, fn (y) -> y)",
+  );
+  expect(cycle.length).toBe(2);
+  expect(cycle[0]).toContain("cannot infer a type for x");
+  expect(cycle[1]).toContain("cannot infer a type for y");
+
+  // The same cycle with one argument that does say what `A` is. The ordering
+  // still runs out -- `g` and `h` each wait on the other -- but `A` has an
+  // answer to give `g`, so only `h` is left with nothing.
+  const [, ...seeded] = run(
+    ...BOOL,
+    "let three = fn [A, B](g: (A) -> B, h: (B) -> A, a: A) -> True;",
+    "three(fn (x) -> x, fn (y) -> y, True)",
+  );
+  expect(seeded.length).toBe(1);
+  expect(seeded[0]).toContain("cannot infer a type for y");
 });
 
 Deno.test("an explicit type application discharges the quantifier", () => {

@@ -12,10 +12,9 @@
 #require "data/bool.ga"
 #require "rec/fix.ga"
 
-// Staged, so the cell settles `A` before the function is looked at and a bare
-// lambda reaches it knowing its own parameter. No second binder is needed
-// here, unlike `foldr` -- there is only one type argument, and the cell has it.
-let modify = fn [A](r: Ref[A]) -> fn (f: (A) -> A) -> set!(r, f(get!(r)))
+// The cell settles `A` before the function is looked at, so a bare lambda
+// reaches it knowing its own parameter.
+let modify = fn [A](r: Ref[A], f: (A) -> A) -> set!(r, f(get!(r)))
 
 let replace = fn [A](r: Ref[A], v: A) ->
   let old = get!(r)
@@ -34,7 +33,7 @@ let replace = fn [A](r: Ref[A], v: A) ->
 // the program is the one being defined. `fixFrom` ducks it by taking the seed
 // as a parameter, which is honest where the seed is meant -- iterating from an
 // approximation -- and evasive where it is not.
-let fixFrom = fn [A, B](seed: (A) -> B) -> fn (f: ((A) -> B) -> (A) -> B) ->
+let fixFrom = fn [A, B](seed: (A) -> B, f: ((A) -> B) -> (A) -> B) ->
   let r = ref!(seed)
   let g = fn (v: A) -> get!(r)(v)
   let _ = set!(r, f(g))

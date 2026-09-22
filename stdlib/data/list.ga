@@ -16,39 +16,30 @@ let isEmpty = fn [A](xs: List[A]) -> match xs with
 // `(xs)` is the fixed point applied, so the binding is a function and not the
 // combinator.
 //
-// `foldr` and `map` are *staged*, the way Scala 2 stages `foldLeft(z)(op)`,
-// and the staging is a typing decision rather than a stylistic one. Each
-// parameter list is one batch of type arguments, solved before the next list
-// is checked, so splitting the binders across the lists is what puts a type
-// argument in hand before the argument that needs it:
+// One parameter list each, and a caller may still pass a bare lambda: the
+// checker stages the list itself. `op`'s parameters stand at `A` and `B`, which
+// `xs` and `z` say, so those two are checked first and `op` is told both --
+// what Scala 2 needs `foldLeft(z)(op)` written out for. What it gives up is
+// `op`'s own say on `B`: `z` alone fixes it, which is why a fold from `Nil()`
+// has to say what the list is empty of (`uses-both.ga`).
 //
-//     foldr(xs)   fixes A, from the list
-//          (z)    fixes B, from the initial value
-//          (op)   is checked with both known, so a bare lambda works
-//
-// Neither shortcut survives. One binder over both -- `fn [A, B](xs) -> ...` --
-// solves B at the first list with nothing constraining it, so B is `never` and
-// the next argument is refused against it. And putting `op` and `z` in one
-// list is no better: one list is one batch, `op` is checked before `z` has
-// contributed anything, and `acc` is left with no type to have.
-//
-// The lists are written on one `fn`, which is sugar for the nested ones and
-// resolved in the parser: currying already gives a batch per list, so there is
-// no multi-list function type behind this and the type is the curried one.
-let foldr = fn [A](xs: List[A])[B](z: B)(op: (A, B) -> B) ->
+// A binder still decides scope. `fn [A, B](xs: List[A]) -> fn (z: B) -> ...`
+// binds `B` a list too early: it is solved at `(xs)` with nothing constraining
+// it, so it is `never` and the next argument is refused against it.
+let foldr = fn [A, B](xs: List[A], z: B, op: (A, B) -> B) ->
   fix(fn (self: (List[A]) -> B) -> fn (ys: List[A]) ->
     match ys with
     | Nil -> z
     | Cons(h, t) -> op(h, self(t)))(xs)
 
-let map = fn [A](xs: List[A])[B](f: (A) -> B) ->
+let map = fn [A, B](xs: List[A], f: (A) -> B) ->
   fix(fn (self: (List[A]) -> List[B]) -> fn (ys: List[A]) ->
     match ys with
     | Nil -> Nil()
     | Cons(h, t) -> Cons(f(h), self(t)))(xs)
 
 // Through `foldr`, and with a bare lambda, which is the whole point of it.
-let length = fn [A](xs: List[A]) -> foldr(xs)(Z)(fn (h, acc) -> S(acc))
+let length = fn [A](xs: List[A]) -> foldr(xs, Z, fn (h, acc) -> S(acc))
 
 let append = fn [A](xs: List[A], ys: List[A]) ->
-  foldr(xs)(ys)(fn (h, acc) -> Cons(h, acc))
+  foldr(xs, ys, fn (h, acc) -> Cons(h, acc))

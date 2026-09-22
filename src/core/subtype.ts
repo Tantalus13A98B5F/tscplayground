@@ -155,6 +155,23 @@ function familyHead(head: DataHead): DataHead {
   return { name: head.family, family: head.family, params: head.params };
 }
 
+/**
+ * A type argument a call settled, and whether anything said so.
+ *
+ * An answer reached with no constraint at all is a choice rather than an
+ * inference, so it fills the result type but is not handed back to the
+ * arguments as what their positions *are*. Those stay missing, and the
+ * parameter that could not be typed says so -- which is the report an author
+ * can act on, where "nothing constrained `A`" is the same mistake under a name
+ * they did not write.
+ */
+export type SolvedTypeArg = {
+  /** Which binder of the callee this answers, by position. */
+  readonly index: number;
+  readonly type: Type;
+  readonly constrained: boolean;
+};
+
 export class Subtyper {
   #fuel: number;
 
@@ -1383,59 +1400,91 @@ export class Subtyper {
   }
 
   /**
-   * Push one EVar behind each of `hints`, run `body` over them, then solve the
-   * batch and hand the answers back in order.
+   * The EVars of one call, alive for its whole argument list.
    *
-   * The solutions and not a substituted type: the caller still holds the
-   * unopened result the batch was instantiated from, so opening *that* with
-   * them is one ordinary substitution, where carrying a type back out would
-   * need a second mechanism to put the answers into it.
+   * `hints` are in binder order, and so are the `evars` `body` receives;
+   * `orderedIndices` are the binders in the order they will be solved. They are
+   * pushed in reverse of it, so the next to be solved is always on top and is
+   * popped as soon as it is: nothing outside this method ever holds a type
+   * naming an EVar, and that stays structural -- a solution is asked for with
+   * its own entry already out of scope -- rather than becoming a promise a
+   * check has to keep.
    *
-   * The scope and the variables, and nothing else -- not even their declared
-   * bounds, which are a constraint like any other and the caller's to record.
-   * This owns only the part a caller could get wrong: a batch is pushed
-   * together, decided together, and gone before anything outside can see it.
+   * Alive for the whole list, and not a batch per round, because a round
+   * solves only what the next round demands. A type parameter nobody demands
+   * collects from every argument and is solved at the end, and an argument
+   * checked early keeps its say on one solved late. Bounds are unaffected:
+   * `addConstraint` refuses any that mentions an EVar, in either direction, so
+   * any subset may be solved at any time.
    *
-   * That is the invariant the rest of the file rests on. Nothing outside this
-   * method holds a type naming an EVar, which is what lets the relation record
-   * without asking whether it is allowed to, and the lattice join without
-   * checking its operands.
+   * Arguments are *checked* against solutions or missing parts and never
+   * against an EVar, so nothing a nested application relates can mention one of
+   * ours, and its own batch nesting above us on the stack is harmless.
    *
-   * Batches never nest. A nested application is checked before `body` runs --
-   * an argument's pattern hides the type parameters rather than naming them --
-   * so a constraint mentioning an EVar can only mean a sibling.
+   * `body` solves every one through `solveNext`, and keeps the answers itself:
+   * nothing is returned, and anything left unsolved is simply popped.
    *
-   * `at` is where the batch stands -- the application as a whole -- and the
-   * default for anything filed under it, which a single argument's own ask
-   * narrows for its own length.
+   * `at` is where the call stands, and the default for anything filed under it.
    */
-  withEVars(
+  withStagedEVars(
     hints: readonly string[],
+    orderedIndices: readonly number[],
     at: Position,
-    body: (evars: readonly FVarRef[]) => void,
-  ): readonly Type[] {
+    body: (
+      evars: readonly FVarRef[],
+      solveNext: (count: number) => readonly SolvedTypeArg[],
+    ) => void,
+  ): void {
     const outer = this.#at;
     this.#at = at;
+    const mark = this.context.size;
     try {
-      // The scope covers the collecting and not the deciding. Every bound is
-      // closed by `batch` when recorded, so a solution never named the entries
-      // anyway, and solving with them popped makes the check below structural
-      // rather than a promise -- the entries' own bounds being ordinary
-      // objects that outlive the levels that held them.
-      const batch = this.context.inScope(() => {
-        const entries = this.context.pushEVarBatch(hints);
-        body(entries.map((entry) => entry.ref));
-        return entries;
-      });
+      // Reversed on the way in and back on the way out, so `entries[k]` is the
+      // k-th to be solved and sits `k` from the top.
+      const entries = this.context
+        .pushEVarBatch(
+          [...orderedIndices].reverse().map((index) =>
+            hints[index] ?? impossible("the order indexes the binders")
+          ),
+        )
+        .reverse();
+      const indexedEntries = orderedIndices.map((index, k) => ({
+        index,
+        entry: entries[k] ?? impossible("an entry per binder"),
+      }));
+      const evars = hints.map((_, index) =>
+        indexedEntries.find((indexed) => indexed.index === index)?.entry.ref ??
+          impossible("the order is a permutation of the binders")
+      );
 
-      // A variable given up on answers `TBad` and needs nothing special to:
-      // whoever gave up recorded `TBad` as the bound, and it stays `TBad`
-      // through the lattice.
-      const solutions = batch.map((entry) => this.solveEVar(entry, at));
-      this.context.assertClosed("a batch's solutions", solutions);
-      return solutions;
+      let solvedCount = 0;
+      const solveNext = (count: number): readonly SolvedTypeArg[] => {
+        const taking = indexedEntries.slice(solvedCount, solvedCount + count);
+        solvedCount += taking.length;
+        // Popped before solving, which is what makes the assertion below read
+        // against the context rather than against an intention. The entries
+        // are ordinary objects and their bounds outlive the levels.
+        this.context.truncate(this.context.size - taking.length);
+        const answers = taking.map(({ index, entry }) => ({
+          index,
+          // Asked before solving, which adds none: an entry with no bound is
+          // one nothing said anything about, so its answer is a choice.
+          constrained: entry.lower.length > 0 || entry.upper.length > 0,
+          type: this.solveEVar(entry, at),
+        }));
+        this.context.assertClosed(
+          "a call's solved type arguments",
+          answers.map((answer) => answer.type),
+        );
+        return answers;
+      };
+
+      body(evars, solveNext);
     } finally {
       this.#at = outer;
+      // A throw leaves entries standing; truncating here is what keeps the
+      // first bug reported the real one.
+      this.context.truncate(mark);
     }
   }
 }

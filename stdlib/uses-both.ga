@@ -7,7 +7,7 @@
 
 // Church to datatype needs no recursion at all: the numeral *is* the loop, so
 // this is one application and the arguments are the algebra.
-let toNat = fn (n: CNat) -> n(fn (x: Nat) -> S(x), Z)
+let toNat = fn (n: CNat) -> n(fn (x) -> S(x), Z)
 
 // Datatype to Church needs `fix`, a `Nat` carrying no fold of its own. The
 // asymmetry is the whole comparison in one pair of bindings.
@@ -17,24 +17,18 @@ let toCNat = fix(fn (self: (Nat) -> CNat) -> fn (n: Nat) ->
   | S(k) -> csucc(self(k)))
 
 // The one type argument written under `stdlib/`, and the one place staging
-// *costs* something. Staging makes `z` the argument that fixes `B`, so `z` has
-// to know its own type -- and `Nil()` does not: written bare it settles at
-// `List[never]` before `B` exists, and the operator's `Cons(h, t)` is then
-// refused against it. Saying what the empty list is empty *of* is the whole of
-// the fix. (`cfoldr(xs)[List[A]]` does the same job from the other end, naming
-// what the fold answers with; this one names the thing that was missing.)
+// *costs* something. The operator's `t` stands at the fold's `B`, so `z` is
+// checked first and fixes `B` alone -- and a bare `Nil()` answers a
+// `Nil[never]`, which the operator's `Cons(h, t)` then does not fit. The
+// operator's own say on `B` is what was given up to let it go bare. Saying what
+// the empty list is empty *of* is the whole of the fix, the same ascription
+// Scala's `foldLeft(Nil)` has always needed.
 //
-// The unstaged `xs(fn (h: A, t: List[A]) -> Cons(h, t), Nil())` needs no type
-// argument at all, for the mirror-image reason: there the *operator* is
-// annotated, `B` comes from it, and `Nil()` is what benefits. One of the two
-// has to say what the fold answers with, and staging picks `z`.
-// `Nil[A]()` answers a `Nil[A]`, which is what it is, so `B` settles there and
-// the `Cons` the operator answers with no longer fits. A staged argument is the
-// one place a constructor's own type is too precise to be a guess, and saying
-// which type is meant is the fix -- the same ascription Scala's `foldLeft(Nil)`
-// has always needed.
+// Annotating the operator instead -- `fn (h: A, t: List[A]) -> ...` -- works
+// too: it then waits on nothing, is checked alongside `z`, and `B` comes from
+// both. One of the two has to say what the fold answers with.
 let toList = fn [A](xs: CList[A]) ->
   let empty : List[A] = Nil[A]();
-  cfoldr(xs)(empty)(fn (h, t) -> Cons(h, t))
+  cfoldr(xs, empty, fn (h, t) -> Cons(h, t))
 
 Pair(toNat(cadd(toCNat(S(Z)), toCNat(S(S(Z))))), length(toList(cnil())))
